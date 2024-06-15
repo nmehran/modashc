@@ -1,0 +1,43 @@
+name: Master and PR Tests
+
+on:
+  push:
+    branches:
+      - master
+
+  pull_request:
+    branches:
+      - '*'
+    types:
+      - opened
+      - reopened
+      - edited
+      - synchronize
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.11']
+
+    defaults:
+      run:
+        working-directory: ./test  # Set the working directory for all run commands
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4  # Update to the latest version
+
+    - name: Set up Python
+      uses: actions/setup-python@v5  # Update to the latest version
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Set PYTHONPATH
+      run: echo "PYTHONPATH=${{ github.workspace }}" >> $GITHUB_ENV
+
+    - name: Run tests
+      run: |
+        python -m unittest discover -s ./ -p 'test_*.py'
