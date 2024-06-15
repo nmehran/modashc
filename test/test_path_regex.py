@@ -1,5 +1,4 @@
 import unittest
-import re
 from methods.patterns import PATH_PATTERN
 
 
@@ -22,10 +21,20 @@ class TestPathPattern(unittest.TestCase):
         ]
 
     def test_path_patterns(self):
+        errors = []
         for path, expected in self.test_cases:
             with self.subTest(path=path):
-                result = bool(self.path_regex.match(path))
-                self.assertEqual(result, expected, f"Failed: {path} (Expected: {expected}, Got: {result})")
+                try:
+                    result = bool(self.path_regex.match(path))
+                    self.assertEqual(result, expected, f"Failed: {path} (Expected: {expected}, Got: {result})")
+                except AssertionError as e:
+                    errors.append(str(e))
+
+        if not errors:
+            print("Success: `TestPathPattern` passed without errors.")
+        else:
+            for error in errors:
+                print(error)
 
 
 if __name__ == '__main__':

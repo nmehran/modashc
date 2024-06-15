@@ -26,16 +26,19 @@ class TestCompile(unittest.TestCase):
 
         # Check the result and print output
         self.assertEqual(result.returncode, 0, f"Error compiling output to '{self.output_file}' using `modashc.py`")
-        if result.returncode == 0:
-            print(f"Successfully compiled output to '{self.output_file}' using `modashc.py`")
-            if result.stdout:
-                print(f"Output:\n{result.stdout}")
-        else:
-            if result.stderr:
-                print(f"Error output:\n{result.stderr}")
 
         # Optionally, check if the output file exists
         self.assertTrue(os.path.exists(self.output_file), "Output file was not created")
+        if result.returncode == 0:
+            print(f"Compiled output to '{self.output_file}' using `modashc.py`")
+            if result.stdout:
+                print(f"Output:\n{result.stdout}")
+        else:
+            print(f"Error compiling output to '{self.output_file}' using `modashc.py`")
+            if result.stderr:
+                print(f"Error:\n{result.stderr}")
+
+        print("Success: `TestCompile` passed without errors.")
 
 
 if __name__ == '__main__':
