@@ -174,7 +174,8 @@ def assert_recursion_limit(seen_sources, script_path, referrer):
 
     if seen_sources[script_path][referrer] >= RECURSION_LIMIT:
         error_message = (f"Maximum recursion limit of {RECURSION_LIMIT} reached.  "
-                         f"Ensure there are no circular dependencies and try again.")
+                         f"Ensure there are no circular dependencies and try again:"
+                         f"\nReferrer: {referrer}\nCurrent-Script: {script_path}")
         raise RecursionError(error_message)
     return
 
