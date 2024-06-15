@@ -1,7 +1,6 @@
 import os
 import re
 import argparse
-from collections import defaultdict
 
 from methods.patterns import (
     FUNCTION_PATTERN,
@@ -10,7 +9,7 @@ from methods.patterns import (
     VARIABLE_PATTERN,
 )
 
-from methods.sources import get_sources, depth_first_sort_sources
+from methods.sources import get_sources
 
 SET_SHEBANG = "#!/bin/bash"
 SET_DECLARATIVE = "set -eEuo pipefail"
@@ -236,9 +235,9 @@ def construct_set_declaration(all_sets):
     return 'set ' + ' '.join(options) if options else ''
 
 
-def construct_file_separator(filepath, delimiter="-", length=120):
+def construct_file_separator(filepath, entry_point, delimiter="-", length=120):
     # Get the basename of the file for the header
-    filename = os.path.basename(filepath)
+    filename = os.path.relpath(filepath, start=os.path.dirname(entry_point))
 
     # Create the header with the filename centered
     header_line = f"{filename}".center(length - 1, delimiter)
@@ -260,7 +259,7 @@ def write_output(filename, content):
         file.write(content)
 
 
-def merge_files(ordered_dependencies: list[str]):
+def merge_files(ordered_dependencies: list[str], entry_point):
     all_sets = []
     file_contents = {}
 
@@ -276,7 +275,7 @@ def merge_files(ordered_dependencies: list[str]):
     output = [SET_SHEBANG, '', SET_DECLARATIVE, '']
 
     for filepath in ordered_dependencies:
-        separator = construct_file_separator(filepath)
+        separator = construct_file_separator(filepath, entry_point)
         output.append('')
         output.append(separator)
 
@@ -289,8 +288,7 @@ def merge_files(ordered_dependencies: list[str]):
 
 def compile_sources(entry_point: str, output_file: str):
     sources = get_sources(entry_point)
-    ordered_sources = depth_first_sort_sources(sources, entry_point)
-    output = merge_files(ordered_sources)
+    output = merge_files(sources, entry_point)
     write_output(output_file, '\n'.join(output))
 
 
