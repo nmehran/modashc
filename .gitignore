@@ -1,5 +1,5 @@
 # Project
-/test/outputs/*
+/test/outputs/*.sh
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
