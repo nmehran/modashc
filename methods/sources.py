@@ -1,5 +1,9 @@
 import os
 import re
+from collections import defaultdict
+
+RECURSION_LIMIT = 2
+
 
 from methods.patterns import (
     BASENAME_PATTERN,
@@ -34,6 +38,10 @@ def validate_path(path):
     return True
 
 
+def strip_first_and_last_quotes(text):
+    return re.sub(r'^[\'"]|[\'"]$', '', text)
+
+
 def define_variable(var_match, context):
     """Define a variable based on known context."""
     var_name = var_match.group(3)
@@ -43,7 +51,7 @@ def define_variable(var_match, context):
         for var, value in context.items():
             var_value = var_value.replace(f"${{{var}}}", value).replace(f"${var}", value)
 
-    return var_name, var_value
+    return var_name, strip_first_and_last_quotes(var_value)
 
 
 def resolve_shell_functions(path):
@@ -92,7 +100,7 @@ def strip_quotes(path):
 
 
 def get_valid_path(command):
-    if command[0] == command[-1] and command.startswith(('"', '\'')):
+    if len(command) > 2 and command[0] == command[-1] and command.startswith(('"', '\'')):
         command = os.path.abspath(command)
         if os.path.isfile(command) or os.path.isdir(command):
             return command
@@ -113,6 +121,9 @@ def resolve_command(command, context):
 
     # Handle shell functions like $(dirname ...) and $(basename ...)
     command = resolve_shell_functions(command)
+
+    if not command:
+        return ""
 
     # If path, normalize and convert to absolute path
     if path := get_valid_path(command):
@@ -150,7 +161,7 @@ def change_directory(cd_match, current_dir, context):
     cd_path = strip_quotes(cd_match.group(3))  # Remove potential quotes
     new_path = ""
     try:
-        new_path = resolve_command(os.path.expandvars(cd_path), context)
+        new_path = os.path.abspath(resolve_command(os.path.expandvars(cd_path), context))
         os.chdir(new_path)
         return new_path
     except FileNotFoundError:
@@ -158,15 +169,37 @@ def change_directory(cd_match, current_dir, context):
     return current_dir
 
 
-def extract_sources_and_variables(script_path, context, sources, seen_sources, current_dir=None):
+def assert_recursion_limit(seen_sources, script_path, referrer):
+    seen_sources[script_path][referrer] += 1
+
+    if seen_sources[script_path][referrer] >= RECURSION_LIMIT:
+        error_message = (f"Maximum recursion limit of {RECURSION_LIMIT} reached.  "
+                         f"Ensure there are no circular dependencies and try again.")
+        raise RecursionError(error_message)
+    return
+
+
+def is_relative_path(path: str):
+    return path.startswith('.')
+
+
+def extract_sources_and_variables(script_path, context, sources, seen_sources: dict, current_dir=None):
     """Extract source statements and global variables from a shell script."""
 
     if not validate_path(script_path):
         raise FileExistsError(f"Error: File does not exist - {script_path}")
 
     if current_dir is None:
-        current_dir = os.path.dirname(script_path)
+        current_dir = os.path.abspath(os.path.dirname(script_path))
         os.chdir(current_dir)
+
+    if script_path not in seen_sources:
+        seen_sources[script_path] = defaultdict(int)
+
+    referrer = context.get('BASH_SOURCE', script_path)
+    assert_recursion_limit(seen_sources, script_path, referrer)
+
+    context['BASH_SOURCE'] = os.path.abspath(script_path)
 
     with open(script_path, 'r') as file:
         for line in file:
@@ -174,6 +207,8 @@ def extract_sources_and_variables(script_path, context, sources, seen_sources, c
                 # Skip lines that are commented or start with a quote
                 if not command or re.match(r'\s*["\']', line):
                     continue
+
+                command = resolve_command(command, context)
 
                 cd_match = CD_PATTERN.search(command)
                 if cd_match:
@@ -191,20 +226,21 @@ def extract_sources_and_variables(script_path, context, sources, seen_sources, c
                     # Strip quotes which might be used to enclose paths with spaces
                     stripped_path = strip_quotes(source_path)
                     if stripped_path:
-                        resolved_path = resolve_command(stripped_path, context)
+                        resolved_path = strip_quotes(resolve_command(stripped_path, context))
                         extract_sources_and_variables(resolved_path, context, sources, seen_sources, current_dir)
-                        if resolved_path not in seen_sources:
-                            seen_sources.add(resolved_path)
+                        if seen_sources[script_path][referrer] == 1:
+                            if is_relative_path(resolved_path):
+                                resolved_path = os.path.join(current_dir, resolved_path)
+
                             sources.append(resolved_path)
 
     return sources
 
 
 def get_sources(entrypoint):
-    context = {'0': entrypoint}  # Initialize context with the entry point
-
+    context = {'0': os.path.abspath(entrypoint)}  # Initialize context with the entry point
     sources = []
-    extract_sources_and_variables(entrypoint, context, sources, seen_sources=set())
+    extract_sources_and_variables(entrypoint, context, sources, seen_sources={})
 
     sources.append(entrypoint)
     return sources
