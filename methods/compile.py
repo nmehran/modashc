@@ -287,7 +287,7 @@ def merge_files(ordered_dependencies: list[str], entry_point):
 
 def compile_sources(entry_point: str, output_file: str):
     if not validate_path(entry_point):
-        raise FileExistsError
+        raise FileNotFoundError(f"Error: File does not exist - {entry_point}")
 
     sources = get_sources(os.path.abspath(entry_point))
     output = merge_files(sources, entry_point)

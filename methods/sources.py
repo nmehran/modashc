@@ -165,7 +165,7 @@ def change_directory(cd_match, current_dir, context):
         os.chdir(new_path)
         return new_path
     except FileNotFoundError:
-        print(f"Warning: Directory not found {new_path}")
+        print(f"Warning: Directory not found: {new_path}")
     return current_dir
 
 
@@ -188,7 +188,7 @@ def extract_sources_and_variables(script_path, context, sources, seen_sources: d
     """Extract source statements and global variables from a shell script."""
 
     if not validate_path(script_path):
-        raise FileExistsError(f"Error: File does not exist - {script_path}")
+        raise FileNotFoundError(f"Error: File does not exist - {script_path}")
 
     if current_dir is None:
         current_dir = os.path.abspath(os.path.dirname(script_path))
