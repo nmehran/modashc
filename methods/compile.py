@@ -1,6 +1,5 @@
 import os
 import re
-import argparse
 
 from methods.patterns import (
     FUNCTION_PATTERN,
@@ -9,7 +8,7 @@ from methods.patterns import (
     VARIABLE_PATTERN,
 )
 
-from methods.sources import get_sources
+from methods.sources import get_sources, validate_path
 
 SET_SHEBANG = "#!/bin/bash"
 SET_DECLARATIVE = "set -eEuo pipefail"
@@ -287,18 +286,9 @@ def merge_files(ordered_dependencies: list[str], entry_point):
 
 
 def compile_sources(entry_point: str, output_file: str):
-    sources = get_sources(entry_point)
+    if not validate_path(entry_point):
+        raise FileExistsError
+
+    sources = get_sources(os.path.abspath(entry_point))
     output = merge_files(sources, entry_point)
     write_output(output_file, '\n'.join(output))
-
-
-def main(entry_point, output_file):
-    compile_sources(entry_point, output_file)
-
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Merge Bash scripts into a single script.')
-    parser.add_argument('entrypoint', type=str, help='The entry-point Bash script that initiates the merging process.')
-    parser.add_argument('output', type=str, help='The output file where the merged script will be saved.')
-    args = parser.parse_args()
-    main(entry_point=args.entrypoint, output_file=args.output)
