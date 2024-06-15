@@ -1,38 +1,46 @@
 import os
 import subprocess
-
+import unittest
 
 PWD = os.getcwd()
 
 # Path to `compile.py`
 COMPILE_SCRIPT = os.path.abspath(f"{PWD}/../modashc.py")
 
+# Global variables for entry point and output file
+ENTRY_POINT = os.path.abspath(f'{PWD}/sample_dir/script_main.sh')
+OUTPUT_FILE = os.path.abspath(f'{PWD}/outputs/merged_script.sh')
 
-def test_compile(entry_point, output_file):
 
-    # Build the command as a list of strings
-    command = ['python', COMPILE_SCRIPT, os.path.abspath(entry_point), os.path.abspath(output_file)]
+class TestCompile(unittest.TestCase):
+    def setUp(self):
+        self.entry_point = ENTRY_POINT
+        self.output_file = OUTPUT_FILE
 
-    # Run the command
-    result = subprocess.run(command, capture_output=True, text=True)
+    def test_compile(self):
+        # Build the command as a list of strings
+        command = ['python', COMPILE_SCRIPT, self.entry_point, self.output_file]
 
-    # Check the result and print output
-    if result.returncode == 0:
-        print(f"Successfully compiled output to '{output_file}' using `modashc.py`")
-        if stdout := result.stdout:
-            print(f"Output:\n{stdout}")
-    else:
-        print(f"Error compiling output to '{output_file}' using `modashc.py")
-        if stderr := result.stderr:
-            print(f"Output:\n{stderr}")
+        # Run the command
+        result = subprocess.run(command, capture_output=True, text=True)
+
+        # Check the result and print output
+        self.assertEqual(result.returncode, 0, f"Error compiling output to '{self.output_file}' using `modashc.py`")
+        if result.returncode == 0:
+            print(f"Successfully compiled output to '{self.output_file}' using `modashc.py`")
+            if result.stdout:
+                print(f"Output:\n{result.stdout}")
+        else:
+            if result.stderr:
+                print(f"Error output:\n{result.stderr}")
+
+        # Optionally, check if the output file exists
+        self.assertTrue(os.path.exists(self.output_file), "Output file was not created")
 
 
 if __name__ == '__main__':
-    # Example usage
-    test_entry_point = f'{PWD}/sample_dir/script_main.sh'
-    test_output_file = f'{PWD}/outputs/merged_script.sh'
-    test_compile(test_entry_point, test_output_file)
+    unittest.main()
 
     # Uncomment below to test the main method directly:
     # from modashc import main
-    # main(test_entry_point, test_output_file)
+    # main(ENTRY_POINT, OUTPUT_FILE)
