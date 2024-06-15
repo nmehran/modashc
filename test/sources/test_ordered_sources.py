@@ -1,4 +1,4 @@
-from methods.sources import depth_first_sort_sources
+from methods.sources import sort_sources_depth_first
 
 
 # Comprehensive Test Case
@@ -57,7 +57,7 @@ expected_order = [
 ]
 
 # Run the depth-first sort
-ordered_sources = depth_first_sort_sources(sources, entry_point)
+ordered_sources = sort_sources_depth_first(sources, entry_point)
 
 # Assertions
 assert ordered_sources == expected_order, f"Expected {expected_order}, but got {ordered_sources}"
