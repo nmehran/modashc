@@ -24,8 +24,7 @@
 - **Error Reporting**: The tool provides basic warnings and error messages. However, detailed debugging information for complex scripts might require manual inspection.
 - **Function Definitions**: The extraction of function definitions assumes standard Bash syntax. Non-standard or malformed function definitions may not be correctly identified and extracted.
 - **Comment Handling**: By default, the tool strips comments. This might result in the loss of important inline documentation unless explicitly managed.
-- **File System Changes**: `modashc` changes the working directory during script processing, which could affect scripts that rely on relative paths in a specific directory structure.
-
+- **File System Changes**: `modashc` tracks the working directory during script processing using heuristics.  However, it may not accurately resolve `cd` commands called using unconventional or complex patterns.
 ## Installation
 
 1. Clone the repository:
