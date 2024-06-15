@@ -9,11 +9,16 @@
 - **Variable Substitution**: Substitutes variables using a provided context and environment variables.
 - **Error Handling**: Validates paths and provides warnings for potential issues like unresolved variables.
 - **Extract Components**: Extracts global variables, function definitions, and source statements from scripts.
-
+- **Dependency Detection**: 
+  - **Static Dependencies**: Automatically detects and includes statically defined dependencies.
+  - **Relative Dependencies**: Resolves dependencies specified using relative paths.
+  - **Dynamic Dependencies**: Dynamically includes other scripts, based on the current working directory, references to environment variables, or a limited-subset of shell functions.
+  - **Circular Dependency Detection**: Identifies recursive dependencies (circular imports).
+  
 ## Limitations
 
 - **Environment Specific**: `modashc` assumes a Unix-like environment for path and shell function handling. It may not work correctly on non-Unix systems.
-- **Complex Expressions**: The tool may struggle with overly complex expressions or deeply nested shell functions that are not directly supported.
+- **Dynamic Sources**: The tool may not properly resolve dynamic sources which are resolved at runtime or source directives which use functions that are not directly supported.
 - **Limited Shell Function Support**: While it supports common shell functions like `$(dirname ...)`, `$(basename ...)`, and `$(realpath ...)`, other custom or less common shell functions may not be resolved correctly.
 - **Variable Resolution**: `modashc` resolves variables based on the provided context and environment. Unresolved or dynamically generated variables at runtime may not be accurately substituted.
 - **Error Reporting**: The tool provides basic warnings and error messages. However, detailed debugging information for complex scripts might require manual inspection.
