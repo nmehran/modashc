@@ -1,3 +1,4 @@
+#!/bin/bash
 # script_main.sh
 
 # Entry point script that covers all dependencies
