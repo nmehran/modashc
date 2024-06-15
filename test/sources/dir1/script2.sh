@@ -1,1 +1,0 @@
-. "./sources/dir1/script1.sh"
