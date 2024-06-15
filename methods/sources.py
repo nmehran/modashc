@@ -129,6 +129,25 @@ def resolve_path(path, context):
     return os.path.abspath(path)
 
 
+def sort_sources_depth_first(sources, entry_point):
+    ordered_sources = []
+    visited = set()
+
+    def dfs(file_path):
+        if file_path in visited:
+            return
+        visited.add(file_path)
+        # First recurse for each source file listed under the current file
+        for src in sources.get(file_path, []):
+            dfs(src)
+        # Append the current file to the ordered list after processing all its dependencies
+        ordered_sources.append(file_path)
+
+    # Start DFS from the entry point
+    dfs(entry_point)
+    return ordered_sources
+
+
 def get_sources(entrypoint):
     context = {'0': entrypoint}  # Initialize context with the entry point
     file_sources = {}
@@ -167,25 +186,7 @@ def get_sources(entrypoint):
         # Remove the file from the call stack after processing
         call_stack.remove(current_file)
 
-    return file_sources
-
-
-def depth_first_sort_sources(sources, entry_point):
-    ordered_sources = []
-    visited = set()
-
-    def dfs(file_path):
-        if file_path in visited:
-            return
-        visited.add(file_path)
-        # First recurse for each source file listed under the current file
-        for src in sources.get(file_path, []):
-            dfs(src)
-        # Append the current file to the ordered list after processing all its dependencies
-        ordered_sources.append(file_path)
-
-    # Start DFS from the entry point
-    dfs(entry_point)
+    ordered_sources = sort_sources_depth_first(file_sources, entrypoint)
     return ordered_sources
 
 
