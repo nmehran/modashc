@@ -183,6 +183,12 @@ def extract_sources(content):
     return list(sources)
 
 
+def sanitize_sources(content: str):
+    def replacement_func(match):
+        return f"{match.group(1)}:"
+    return SOURCE_PATTERN.sub(replacement_func, content)
+
+
 def extract_set_declarations(content):
     sets = set()
     inside_function = False
@@ -291,4 +297,5 @@ def compile_sources(entry_point: str, output_file: str):
 
     sources = get_sources(os.path.abspath(entry_point))
     output = merge_files(sources, entry_point)
-    write_output(output_file, '\n'.join(output))
+    content = sanitize_sources(content='\n'.join(output))
+    write_output(output_file, content)
