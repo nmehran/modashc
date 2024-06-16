@@ -62,7 +62,25 @@ python modashc.py scripts/main.sh merged_output.sh
 
 ## Contributing
 
-Contributions are welcome! Please submit a pull request or open an issue to discuss your ideas or report bugs.
+Contributions are welcome! Please submit a pull request or open an issue to contribute features or report bugs. Feel free to discuss ideas and ask questions in [GitHub Discussions](https://github.com/nmehran/modashc/discussions).
+
+## Features Roadmap
+
+### Dynamic Dependency Resolution
+- [ ] Implement a secure, sandboxed shell interpreter
+
+### Performance Optimization
+- [ ] Downstream codebase written in C++
+- [ ] Implement multi-threading where appropriate
+
+### Testing
+- [x] Unit tests
+  - [x] Write unit tests for existing functionality
+  - [ ] Achieve high code coverage
+- [ ] Conduct vulnerability assessments
+- [x] Continuous Integration (CI)
+  - [x] Set up CI pipeline to run tests automatically
+  - [x] Ensure tests are run on every commit and pull request
 
 ## License
 
