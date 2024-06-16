@@ -3,15 +3,15 @@ import re
 
 # Regular expression to match source statements and global variable definitions
 # Example: source /path/to/file or . /path/to/file
-SOURCE_PATTERN = re.compile(r'(^|;\s*|\s&{2}\s*)(source|\.)\s+([^\n#;]*)')
+SOURCE_PATTERN = re.compile(r'(^|;\s*|\s*&{2}\s*|\$\(\s*)(source|\.)\s+([^\n#;]*)')
 
 # Regex to match bash variable declarations which can be used to define paths
 # Example: export VAR=value or VAR=value
-VARIABLE_PATTERN = re.compile(r'(^|;\s*\b|\s&{2}\s*)(export\s+)?([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*([^\n#;]*)', re.MULTILINE)
+VARIABLE_PATTERN = re.compile(r'(^|;\s*|\s*&{2}\s*)(export\s+)?([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*([^\n#;]*)', re.MULTILINE)
 
 # Regex for cd commands, accommodating paths with optional quotes and surrounding whitespace
 # Example: cd /path/to/dir or cd "/path with spaces"
-CD_PATTERN = re.compile(r'(^|;\s*\b|\s&{2}\s*)cd\s+("([^"]*)"|\'([^\']*)\'|([^\s#;]+))')
+CD_PATTERN = re.compile(r'(^|;\s*|\s*&{2}\s*)cd\s+("([^"]*)"|\'([^\']*)\'|([^\s#;]+))')
 
 # Regex to match dirname command usage, handling nested and mismatched quotes
 # Example: $(dirname "/path/to/dir")
