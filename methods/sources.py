@@ -2,9 +2,6 @@ import os
 import re
 from collections import defaultdict
 
-RECURSION_LIMIT = 2
-
-
 from methods.patterns import (
     BASENAME_PATTERN,
     CD_PATTERN,
@@ -13,6 +10,8 @@ from methods.patterns import (
     SOURCE_PATTERN,
     VARIABLE_PATTERN,
 )
+
+RECURSION_LIMIT = 2
 
 
 def validate_path(path):
@@ -169,10 +168,11 @@ def change_directory(cd_match, current_dir, context):
     return current_dir
 
 
-def assert_recursion_limit(seen_sources, script_path, referrer):
+def enforce_recursion_limit(seen_sources, script_path, references):
+    referrer = references[-1]
     seen_sources[script_path][referrer] += 1
 
-    if seen_sources[script_path][referrer] >= RECURSION_LIMIT:
+    if seen_sources[script_path][referrer] >= RECURSION_LIMIT and script_path in references:
         error_message = (f"Maximum recursion limit of {RECURSION_LIMIT} reached.  "
                          f"Ensure there are no circular dependencies and try again:"
                          f"\nReferrer: {referrer}\nCurrent-Script: {script_path}")
@@ -184,21 +184,30 @@ def is_relative_path(path: str):
     return path.startswith('.')
 
 
-def extract_sources_and_variables(script_path, context, sources, seen_sources: dict, current_dir=None):
+def resolve_path(source_path: str, current_dir: str, context: dict):
+    stripped_path = strip_quotes(source_path)
+    resolved_path = strip_quotes(resolve_command(stripped_path, context))
+    if is_relative_path(resolved_path):
+        resolved_path = os.path.join(current_dir, resolved_path)
+    if resolved_path:
+        return os.path.abspath(resolved_path)
+    return None
+
+
+def extract_sources_and_variables(script_path, context, current_dir, sources, seen_sources: dict, references=None):
     """Extract source statements and global variables from a shell script."""
 
     if not validate_path(script_path):
         raise FileNotFoundError(f"Error: File does not exist - {script_path}")
 
-    if current_dir is None:
-        current_dir = os.path.abspath(os.path.dirname(script_path))
-        os.chdir(current_dir)
-
     if script_path not in seen_sources:
         seen_sources[script_path] = defaultdict(int)
 
-    referrer = context.get('BASH_SOURCE', script_path)
-    assert_recursion_limit(seen_sources, script_path, referrer)
+    if references is None:
+        references = (script_path,)
+    else:
+        enforce_recursion_limit(seen_sources, script_path, references)
+        references = (*references, script_path)
 
     context['BASH_SOURCE'] = os.path.abspath(script_path)
 
@@ -225,14 +234,10 @@ def extract_sources_and_variables(script_path, context, sources, seen_sources: d
                 source_matches = SOURCE_PATTERN.findall(line)
                 for _, _, source_path in source_matches:
                     # Strip quotes which might be used to enclose paths with spaces
-                    stripped_path = strip_quotes(source_path)
-                    if stripped_path:
-                        resolved_path = strip_quotes(resolve_command(stripped_path, context))
-                        extract_sources_and_variables(resolved_path, context, sources, seen_sources, current_dir)
-                        if seen_sources[script_path][referrer] == 1:
-                            if is_relative_path(resolved_path):
-                                resolved_path = os.path.join(current_dir, resolved_path)
-
+                    resolved_path = resolve_path(source_path, current_dir, context)
+                    if resolved_path:
+                        extract_sources_and_variables(resolved_path, context, current_dir, sources, seen_sources, references)
+                        if seen_sources[resolved_path][script_path] == 1:
                             sources.append(resolved_path)
 
     return sources
@@ -241,7 +246,11 @@ def extract_sources_and_variables(script_path, context, sources, seen_sources: d
 def get_sources(entrypoint):
     context = {'0': os.path.abspath(entrypoint)}  # Initialize context with the entry point
     sources = []
-    extract_sources_and_variables(entrypoint, context, sources, seen_sources={})
+
+    current_directory = os.path.abspath(os.path.dirname(entrypoint))
+    os.chdir(current_directory)
+
+    extract_sources_and_variables(entrypoint, context, current_directory, sources, seen_sources={})
 
     sources.append(entrypoint)
     return sources
