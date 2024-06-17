@@ -27,6 +27,7 @@ class TestVariableAssignmentRegex(unittest.TestCase):
             "declare -i Var=value": "declare -i Var=value",
             "export VAR=value": "export VAR=value",
             "declare -xr var123=123": "declare -xr var123=123",
+            "THIS_DIR=\"$(dirname \"$0\")\"": "THIS_DIR=\"$(dirname \"$0\")\"",
             "local v_=true": "local v_=true",
             "local _user='John Doe'": "local _user='John Doe'",
             "function my_func() { local loc_var=inside; }": None,  # Exclude single-line function scopes
