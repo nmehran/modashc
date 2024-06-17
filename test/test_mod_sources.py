@@ -20,7 +20,7 @@ class TestGetSources(unittest.TestCase):
 
         # Example usage
         entry_point = os.path.abspath("./sample_dir/script_main.sh")
-        actual_sources = [os.path.relpath(path) for path in get_sources(entry_point)]
+        actual_sources = [os.path.relpath(path) for path in get_sources(entry_point)[0]]
 
         self.assertEqual(expected_sources, actual_sources)
 
