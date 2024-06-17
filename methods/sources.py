@@ -47,7 +47,7 @@ def define_variable(var_match, context):
     var_value = var_match.group(4)
     if "$" in var_value:
         # substitute known variables from context
-        for var, value in context.items():
+        for var, value in context['vars'].items():
             var_value = var_value.replace(f"${{{var}}}", value).replace(f"${var}", value)
 
     return var_name, strip_first_and_last_quotes(var_value)
@@ -112,7 +112,7 @@ def resolve_command(command, context):
     command = command.strip()
 
     # First, substitute known variables from context
-    for var, value in context.items():
+    for var, value in context['vars'].items():
         command = command.replace(f"${{{var}}}", value).replace(f"${var}", value)
 
     # Expand environment variables
@@ -156,7 +156,7 @@ def get_commands(line: str):
 
 
 def resolve_cd_path(cd_match: re.Match):
-    return cd_match.group(3)
+    return cd_match.group(2)
 
 
 def change_directory(path: str, context: dict) -> str:
@@ -181,15 +181,17 @@ def change_directory(path: str, context: dict) -> str:
     except Exception as e:
         raise OSError(f"Warning: Could not change to directory: {new_path}.\nError:\n{e}")
 
-    context['#current_directory'] = new_path
+    context['current_directory'] = new_path
     return new_path
 
 
-def enforce_recursion_limit(script_path, references):
+def enforce_recursion_limit(seen_sources, script_path, references):
     referrer = references[-1]
+    seen_sources[script_path][referrer] += 1
 
-    if script_path in references:
-        error_message = (f"Recursion detected: ensure there are no circular dependencies and try again:"
+    if seen_sources[script_path][referrer] >= RECURSION_LIMIT and script_path in references:
+        error_message = (f"Maximum recursion limit of {RECURSION_LIMIT} reached.  "
+                         f"Ensure there are no circular dependencies and try again:"
                          f"\nReferrer: {referrer}\nCurrent-Script: {script_path}")
         raise RecursionError(error_message)
     return
@@ -221,46 +223,53 @@ def resolve_path(source_path: str, context: dict):
     stripped_path = strip_quotes(source_path)
     resolved_path = strip_quotes(resolve_command(stripped_path, context))
     if is_relative_path(resolved_path):
-        current_dir = context['#current_directory']
+        current_dir = context['current_directory']
         resolved_path = os.path.join(current_dir, resolved_path)
     if resolved_path:
         return os.path.abspath(resolved_path)
     return None
 
 
-def extract_sources_and_variables(script_path, context, sources, references=None):
+def extract_sources_and_variables(script_path, context, sources, seen_sources: dict, references=None):
     """Extract source statements and global variables from a shell script."""
 
     if not validate_path(script_path):
         raise FileNotFoundError(f"Error: File does not exist - {script_path}")
 
+    if script_path not in context['path_declarations']:
+        context['path_declarations'][script_path] = defaultdict(list)
+
+    if script_path not in seen_sources:
+        seen_sources[script_path] = defaultdict(int)
+
     if references is None:
         references = (script_path,)
     else:
-        enforce_recursion_limit(script_path, references)
+        enforce_recursion_limit(seen_sources, script_path, references)
         references = (*references, script_path)
 
-    context['BASH_SOURCE'] = os.path.abspath(script_path)
+    context['vars']['BASH_SOURCE'] = os.path.abspath(script_path)
 
     with open(script_path, 'r') as file:
-        for line in file:
+        for num, line in enumerate(file):
             for command in get_commands(line):
                 # Skip lines that are commented or start with a quote
                 if not command or re.match(r'\s*["\']', line):
                     continue
 
-                command = resolve_command(command, context)
+                resolved_command = resolve_command(command, context)
 
-                cd_match = CD_PATTERN.search(command)
+                cd_match = CD_PATTERN.search(resolved_command)
                 if cd_match:
                     cd_path = resolve_cd_path(cd_match)
-                    change_directory(cd_path, context)
+                    current_directory = change_directory(cd_path, context)
+                    context['path_declarations'][script_path][num].append(current_directory)
 
                 # Match variable definitions
                 var_match = VARIABLE_PATTERN.match(line)
                 if var_match:
                     var_name, var_value = define_variable(var_match, context)
-                    context[var_name] = resolve_command(var_value, context)
+                    context['vars'][var_name] = resolve_command(var_value, context)
 
                 # Match source statements
                 source_matches = SOURCE_PATTERN.findall(line)
@@ -268,8 +277,8 @@ def extract_sources_and_variables(script_path, context, sources, references=None
                     # Strip quotes which might be used to enclose paths with spaces
                     resolved_path = resolve_path(source_path, context)
                     if resolved_path:
-                        extract_sources_and_variables(resolved_path, context, sources, references)
-                        if resolved_path not in sources:
+                        extract_sources_and_variables(resolved_path, context, sources, seen_sources, references)
+                        if seen_sources[resolved_path][script_path] == 1:
                             sources.append(resolved_path)
 
     return sources
@@ -280,9 +289,12 @@ def get_sources(entrypoint):
 
     # Initialize context with the entry point
     current_directory = os.path.abspath(os.path.dirname(entrypoint))
-    context = {'0': os.path.abspath(entrypoint), '#current_directory': current_directory}
+    context = {
+        'vars': {'0': os.path.abspath(entrypoint)},
+        'current_directory': current_directory,
+        'path_declarations': {}}
     change_directory(current_directory, context)
 
-    extract_sources_and_variables(entrypoint, context, sources)
+    extract_sources_and_variables(entrypoint, context, sources, seen_sources={})
     sources.append(entrypoint)
-    return sources
+    return sources, context

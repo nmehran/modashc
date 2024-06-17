@@ -2,19 +2,20 @@ import os
 import re
 
 from methods.patterns import (
+    CD_PATTERN,
     FUNCTION_PATTERN,
     SET_PATTERN,
     SOURCE_PATTERN,
     VARIABLE_PATTERN,
 )
 
-from methods.sources import get_sources, validate_path
+from methods.sources import get_sources, validate_path, is_within_subtree, is_relative_path
 
 SET_SHEBANG = "#!/bin/bash"
 SET_DECLARATIVE = "set -eEuo pipefail"
 
 
-def extract_desired_content_including_functions(content, strip_comments=True):
+def extract_desired_content_including_functions(content, path_context, entry_directory, strip_comments=True):
     output = []
     bracket_depth = 0  # Track the depth of curly braces to handle nested function blocks
     lines = content.splitlines()
@@ -28,7 +29,7 @@ def extract_desired_content_including_functions(content, strip_comments=True):
     if lines and lines[0].strip().startswith("#!"):
         start_index = 1  # Skip the first line if it's a shebang
 
-    for line in lines[start_index:]:
+    for num, line in enumerate(lines[start_index:], start=start_index):
         stripped_line = line.strip()
 
         # Skip empty lines and comments if strip_comments is True
@@ -40,6 +41,13 @@ def extract_desired_content_including_functions(content, strip_comments=True):
             bracket_depth += stripped_line.count('{')
         if '}' in stripped_line:
             bracket_depth -= stripped_line.count('}')
+
+        if path_declarations := path_context.get(num):
+            for path in path_declarations:
+                if is_within_subtree(path, entry_directory):
+                    line = CD_PATTERN.sub(':', line, count=1)
+                elif is_relative_path(path):
+                    line = CD_PATTERN.sub(f'cd "{path}"', line, count=1)
 
         # Include lines based on current state
         if bracket_depth > 0:
@@ -264,9 +272,10 @@ def write_output(filename, content):
         file.write(content)
 
 
-def merge_files(ordered_dependencies: list[str], entry_point):
+def merge_files(ordered_dependencies: list[str], entry_point, context):
     all_sets = []
     file_contents = {}
+    entry_directory = os.path.dirname(entry_point)
 
     for filepath in ordered_dependencies:
         if filepath.endswith('.sh'):
@@ -284,7 +293,8 @@ def merge_files(ordered_dependencies: list[str], entry_point):
         output.append('')
         output.append(separator)
 
-        definitions = extract_desired_content_including_functions(file_contents[filepath])
+        path_context = context['path_declarations'].get(filepath, {})
+        definitions = extract_desired_content_including_functions(file_contents[filepath], path_context, entry_directory)
         output.append(definitions)
         output.append('')
 
@@ -293,9 +303,12 @@ def merge_files(ordered_dependencies: list[str], entry_point):
 
 def compile_sources(entry_point: str, output_file: str):
     if not validate_path(entry_point):
-        raise FileNotFoundError(f"Error: File does not exist - {entry_point}")
+        raise FileNotFoundError(f"Error: Could not resolve the path to the entry point - {entry_point}")
 
-    sources = get_sources(os.path.abspath(entry_point))
-    output = merge_files(sources, entry_point)
+    if not os.path.isfile(entry_point):
+        raise OSError(f"Error: entry point must be a file - {entry_point}")
+
+    sources, context = get_sources(os.path.abspath(entry_point))
+    output = merge_files(sources, entry_point, context)
     content = sanitize_sources(content='\n'.join(output))
     write_output(output_file, content)
