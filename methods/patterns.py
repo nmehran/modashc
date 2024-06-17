@@ -11,7 +11,7 @@ VARIABLE_PATTERN = re.compile(r'(^|;\s*|\s*&{2}\s*)(export\s+)?([a-zA-Z_][a-zA-Z
 
 # Regex for cd commands, accommodating paths with optional quotes and surrounding whitespace
 # Example: cd /path/to/dir or cd "/path with spaces"
-CD_PATTERN = re.compile(r'(^|;\s*|\s*&{2}\s*)cd\s+("([^"]*)"|\'([^\']*)\'|([^\s#;]+))')
+CD_PATTERN = re.compile(r'^\s*(cd)\s+((?:".*?"|\'.*?\'|\$\(.*?\)|\$\{.*?}|(?:\\ |\S)+)+)(?=\s*(?:\|\||&&|;|$))')
 
 # Regex to match dirname command usage, handling nested and mismatched quotes
 # Example: $(dirname "/path/to/dir")
