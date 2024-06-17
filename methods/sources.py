@@ -271,7 +271,7 @@ def extract_sources_and_variables(script_path, context, sources, seen_sources: d
                 if cd_match:
                     cd_path = resolve_cd_path(cd_match)
                     current_directory = change_directory(cd_path, context)
-                    context['path_declarations'][script_path][num].append(('cd', current_directory, cd_match.groups()))
+                    context['path_declarations'][script_path][num].append(('cd', current_directory, cd_match.groups(), current_directory))
 
                 # Match variable definitions
                 var_match = VARIABLE_COMPLEX_PATTERN.match(line)
@@ -280,7 +280,7 @@ def extract_sources_and_variables(script_path, context, sources, seen_sources: d
                     resolved_command, is_valid_path = resolve_command(var_value, context)
                     context['vars'][var_name] = resolved_command
                     if is_valid_path:
-                        context['path_declarations'][script_path][num].append(('var', resolved_command, var_match.groups()))
+                        context['path_declarations'][script_path][num].append(('var', resolved_command, var_match.groups(), context['current_directory']))
 
                 # Match source statements
                 source_matches = SOURCE_PATTERN.findall(line)

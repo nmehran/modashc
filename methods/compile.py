@@ -9,13 +9,13 @@ from methods.patterns import (
     VARIABLE_COMPLEX_PATTERN,
 )
 
-from methods.sources import get_sources, validate_path, is_within_subtree, is_relative_path
+from methods.sources import get_sources, validate_path, is_within_subtree, is_relative_path, change_directory, strip_quotes
 
 SET_SHEBANG = "#!/bin/bash"
 SET_DECLARATIVE = "set -eEuo pipefail"
 
 
-def extract_desired_content_including_functions(content, path_context, entry_directory, strip_comments=True):
+def extract_desired_content_including_functions(filepath, content, context, entry_directory: str, strip_comments=True):
     output = []
     bracket_depth = 0  # Track the depth of curly braces to handle nested function blocks
     lines = content.splitlines()
@@ -23,13 +23,9 @@ def extract_desired_content_including_functions(content, path_context, entry_dir
     # Patterns to skip
     set_pattern = SET_PATTERN
     source_pattern = SOURCE_PATTERN
+    path_context = context['path_declarations'].get(filepath, {})
 
-    # Handle shebang if present in the first line
-    start_index = 0
-    if lines and lines[0].strip().startswith("#!"):
-        start_index = 1  # Skip the first line if it's a shebang
-
-    for num, line in enumerate(lines[start_index:], start=start_index):
+    for num, line in enumerate(lines):
         stripped_line = line.strip()
 
         # Skip empty lines and comments if strip_comments is True
@@ -43,14 +39,24 @@ def extract_desired_content_including_functions(content, path_context, entry_dir
             bracket_depth -= stripped_line.count('}')
 
         if path_declarations := path_context.get(num):
-            for (path_type, path) in path_declarations:
-                if is_within_subtree(path, entry_directory):
-                    if path_type == 'cd':
+            for (path_type, path, match_groups, current_directory) in path_declarations:
+                if path_type == 'cd':
+                    if is_within_subtree(path, entry_directory):
                         line = CD_PATTERN.sub(':', line, count=1)
-                    elif path_type == 'var':
-                        line = CD_PATTERN.sub(':', line, count=1)
-                elif is_relative_path(path):
-                    line = CD_PATTERN.sub(f'cd "{path}"', line, count=1)
+                    elif is_relative_path(path):
+                        line = CD_PATTERN.sub(f'cd "{path}"', line, count=1)
+                    change_directory(path, context)
+
+                else:  # else path-type is `var`
+                    var_name, sign, var_value = match_groups
+                    value = strip_quotes(var_value)
+                    if value.endswith('.sh') and is_within_subtree(value, entry_directory):
+                        if os.path.isfile(value):
+                            # The current file is included in the compiled script
+                            line = VARIABLE_COMPLEX_PATTERN.sub(f'{var_name}{sign}"$BASH_SOURCE"', line, count=1)
+                    elif is_relative_path(value):
+                        assert os.path.abspath(value) == path
+                        line = VARIABLE_COMPLEX_PATTERN.sub(f'{var_name}{sign}"{path}"', line, count=1)
 
         # Include lines based on current state
         if bracket_depth > 0:
@@ -187,7 +193,7 @@ def extract_sources(content):
         if not inside_function:
             for match in re.finditer(SOURCE_PATTERN, line):
                 # Extract path, removing any leading/trailing whitespace and quotes
-                path = match.group(3).strip().strip('\'"')
+                path: str = match.group(3).strip().strip('\'"')
                 if path:  # Only add non-empty paths
                     sources.add(path)
 
@@ -296,8 +302,8 @@ def merge_files(ordered_dependencies: list[str], entry_point, context):
         output.append('')
         output.append(separator)
 
-        path_context = context['path_declarations'].get(filepath, {})
-        definitions = extract_desired_content_including_functions(file_contents[filepath], path_context, entry_directory)
+        contents = file_contents[filepath]
+        definitions = extract_desired_content_including_functions(filepath, contents, context, entry_directory)
         output.append(definitions)
         output.append('')
 
