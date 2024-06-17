@@ -7,7 +7,23 @@ SOURCE_PATTERN = re.compile(r'(^|;\s*|\s*&{2}\s*|\$\(\s*)(source|\.)\s+([^\n#;]*
 
 # Regex to match bash variable declarations which can be used to define paths
 # Example: export VAR=value or VAR=value
-VARIABLE_PATTERN = re.compile(r'(^|;\s*|\s*&{2}\s*)(export\s+)?([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*([^\n#;]*)', re.MULTILINE)
+VARIABLE_SIMPLE_PATTERN = re.compile(
+    r'(^|;\s*|\s*&{2}\s*|&&\s*)(declare(?:\s+-[a-zA-Z]*)*\s+|export\s+|local\s+)?'
+    r'([a-zA-Z_][a-zA-Z0-9_]*)\s*\+?=\s*([^\n#|&]*)',
+    re.MULTILINE
+)
+VARIABLE_COMPLEX_PATTERN = re.compile(
+    r'^(?:export\s+|local\s+|declare\s+[\-\w]*\s*)?\s*'  # Matches 'export', 'local', 'declare' with flags
+    r'([a-zA-Z_][a-zA-Z0-9_]*)(?:\s*(=|\+=)\s*)'  # Captures variable names with '=' or '+='
+    r'('
+        r'"(?:\\.|[^"\\])*"'  # Matches double-quoted strings
+        r"|'(?:\\.|[^'\\])*'"  # Matches single-quoted strings
+        r"|\$\((?:[^()]|\((?:[^()]*|\([^()]*\))*\))*\)"  # Matches nested parentheses within $()
+        r"|\$\{[^}]*\}"  # Matches simple curly braces
+        r"|[^|;#\"\']+"  # Matches any other characters except pipe, semicolon, hash, single or double quote
+    r')+',
+    re.MULTILINE
+)
 
 # Regex for cd commands, accommodating paths with optional quotes and surrounding whitespace
 # Example: cd /path/to/dir or cd "/path with spaces"
@@ -35,4 +51,5 @@ FUNCTION_PATTERN = re.compile(r'function\s+\w+|\w+\(\)\s*{', re.MULTILINE)
 
 # Regex for file paths
 # Example: "/path/to/file" or './path/to/file'
-PATH_PATTERN = re.compile(r"^(['\"])([a-zA-Z0-9_. \\/-]+)\1$")
+PATH_PATTERN = re.compile(r"^([a-zA-Z0-9_. \\/-]+)$")
+PATH_QUOTED_PATTERN = re.compile(r"^(['\"])([a-zA-Z0-9_. \\/-]+)\1$")

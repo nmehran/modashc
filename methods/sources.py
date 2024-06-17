@@ -6,9 +6,10 @@ from methods.patterns import (
     BASENAME_PATTERN,
     CD_PATTERN,
     DIRNAME_PATTERN,
+    PATH_PATTERN,
     REALPATH_PATTERN,
     SOURCE_PATTERN,
-    VARIABLE_PATTERN,
+    VARIABLE_COMPLEX_PATTERN,
 )
 
 RECURSION_LIMIT = 2
@@ -43,8 +44,9 @@ def strip_first_and_last_quotes(text):
 
 def define_variable(var_match, context):
     """Define a variable based on known context."""
-    var_name = var_match.group(3)
-    var_value = var_match.group(4)
+
+    var_name = var_match.group(1).strip()
+    var_value = var_match.group(3).strip()
     if "$" in var_value:
         # substitute known variables from context
         for var, value in context['vars'].items():
@@ -99,16 +101,15 @@ def strip_quotes(path):
 
 
 def get_valid_path(command):
-    if len(command) > 2 and command[0] == command[-1] and command.startswith(('"', '\'')):
+    if len(command) >= 1 and PATH_PATTERN.match(command):
         command = os.path.abspath(command)
-        if os.path.isfile(command) or os.path.isdir(command):
+        if os.path.exists(command):
             return command
     return ""
 
 
 def resolve_command(command, context):
     """Resolve a path using dynamic context, supporting shell operations."""
-
     command = command.strip()
 
     # First, substitute known variables from context
@@ -121,14 +122,15 @@ def resolve_command(command, context):
     # Handle shell functions like $(dirname ...) and $(basename ...)
     command = resolve_shell_functions(command)
 
-    if not command:
-        return ""
-
     # If path, normalize and convert to absolute path
+    is_valid_path = False
     if path := get_valid_path(command):
-        return path
+        is_valid_path = True
+        command = path
+    elif not command:
+        command = ""
 
-    return command
+    return command, is_valid_path
 
 
 def sort_sources_depth_first(sources, entry_point):
@@ -166,7 +168,11 @@ def change_directory(path: str, context: dict) -> str:
     path = os.path.expandvars(strip_quotes(path))
 
     # Resolve non-environment variables in the path given current context
-    new_path = os.path.abspath(resolve_command(path, context))
+    resolved_command, is_valid_path = resolve_command(path, context)
+    if not is_valid_path:
+        raise ValueError(f"No path could be resolved for the value: {path}")
+
+    new_path = os.path.abspath(resolved_command)
 
     # If the path is a file, use its directory part
     if os.path.isfile(new_path):
@@ -179,7 +185,7 @@ def change_directory(path: str, context: dict) -> str:
     try:
         os.chdir(new_path)
     except Exception as e:
-        raise OSError(f"Warning: Could not change to directory: {new_path}.\nError:\n{e}")
+        raise OSError(f"Could not change to directory: {new_path}.\nError:\n{e}")
 
     context['current_directory'] = new_path
     return new_path
@@ -221,12 +227,14 @@ def is_within_subtree(paths, directory):
 
 def resolve_path(source_path: str, context: dict):
     stripped_path = strip_quotes(source_path)
-    resolved_path = strip_quotes(resolve_command(stripped_path, context))
-    if is_relative_path(resolved_path):
-        current_dir = context['current_directory']
-        resolved_path = os.path.join(current_dir, resolved_path)
-    if resolved_path:
-        return os.path.abspath(resolved_path)
+    resolved_command, is_valid_path = resolve_command(stripped_path, context)
+    resolved_path = strip_quotes(resolved_command)
+    if is_valid_path:
+        if is_relative_path(resolved_path):
+            current_dir = context['current_directory']
+            resolved_path = os.path.join(current_dir, resolved_path)
+        if resolved_path:
+            return os.path.abspath(resolved_path)
     return None
 
 
@@ -257,19 +265,22 @@ def extract_sources_and_variables(script_path, context, sources, seen_sources: d
                 if not command or re.match(r'\s*["\']', line):
                     continue
 
-                resolved_command = resolve_command(command, context)
+                resolved_command = resolve_command(command, context)[0]
 
                 cd_match = CD_PATTERN.search(resolved_command)
                 if cd_match:
                     cd_path = resolve_cd_path(cd_match)
                     current_directory = change_directory(cd_path, context)
-                    context['path_declarations'][script_path][num].append(current_directory)
+                    context['path_declarations'][script_path][num].append(('cd', current_directory))
 
                 # Match variable definitions
-                var_match = VARIABLE_PATTERN.match(line)
+                var_match = VARIABLE_COMPLEX_PATTERN.match(line)
                 if var_match:
                     var_name, var_value = define_variable(var_match, context)
-                    context['vars'][var_name] = resolve_command(var_value, context)
+                    resolved_command, is_valid_path = resolve_command(var_value, context)
+                    context['vars'][var_name] = resolved_command
+                    if is_valid_path:
+                        context['path_declarations'][script_path][num].append(('var', resolved_command))
 
                 # Match source statements
                 source_matches = SOURCE_PATTERN.findall(line)

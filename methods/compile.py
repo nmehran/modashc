@@ -6,7 +6,7 @@ from methods.patterns import (
     FUNCTION_PATTERN,
     SET_PATTERN,
     SOURCE_PATTERN,
-    VARIABLE_PATTERN,
+    VARIABLE_COMPLEX_PATTERN,
 )
 
 from methods.sources import get_sources, validate_path, is_within_subtree, is_relative_path
@@ -43,9 +43,12 @@ def extract_desired_content_including_functions(content, path_context, entry_dir
             bracket_depth -= stripped_line.count('}')
 
         if path_declarations := path_context.get(num):
-            for path in path_declarations:
+            for (path_type, path) in path_declarations:
                 if is_within_subtree(path, entry_directory):
-                    line = CD_PATTERN.sub(':', line, count=1)
+                    if path_type == 'cd':
+                        line = CD_PATTERN.sub(':', line, count=1)
+                    elif path_type == 'var':
+                        line = CD_PATTERN.sub(':', line, count=1)
                 elif is_relative_path(path):
                     line = CD_PATTERN.sub(f'cd "{path}"', line, count=1)
 
@@ -137,7 +140,7 @@ def extract_globals(content):
         return _value
 
     # Regex to capture global and exported variables, ensuring they're not part of a comment or inside a function
-    global_pattern = VARIABLE_PATTERN
+    global_pattern = VARIABLE_COMPLEX_PATTERN
 
     extracted_globals = {}
     inside_function = False
@@ -155,7 +158,7 @@ def extract_globals(content):
                 part = part.strip()
                 match = global_pattern.match(part)
                 if match:
-                    var_name = match.group(2)
+                    var_name = match.group(1).strip()
                     value = match.group(3).strip()
                     value = handle_multiline_assignment(lines, value)
                     extracted_globals[var_name] = value
