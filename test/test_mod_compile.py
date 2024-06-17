@@ -18,26 +18,38 @@ class TestCompile(unittest.TestCase):
         self.output_file = OUTPUT_FILE
 
     def test_compile(self):
-        # Build the command as a list of strings
-        command = ['python', COMPILE_SCRIPT, self.entry_point, self.output_file]
+        # Compile the scripts using modashc.py
+        compile_command = ['python', COMPILE_SCRIPT, self.entry_point, self.output_file]
+        compile_result = subprocess.run(compile_command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 
-        # Run the command
-        result = subprocess.run(command, capture_output=True, text=True)
-
-        # Check the result and print output
-        self.assertEqual(result.returncode, 0, f"Error compiling output to '{self.output_file}' using `modashc.py`")
-
-        # Optionally, check if the output file exists
+        # Assert that compilation was successful
+        self.assertEqual(compile_result.returncode, 0,
+                         f"Error compiling output to '{self.output_file}' using `modashc.py`")
         self.assertTrue(os.path.exists(self.output_file), "Output file was not created")
-        if result.returncode == 0:
-            print(f"Compiled output to '{self.output_file}' using `modashc.py`")
-            if result.stdout:
-                print(f"Output:\n{result.stdout}")
-        else:
-            print(f"Error compiling output to '{self.output_file}' using `modashc.py`")
-            if result.stderr:
-                print(f"Error:\n{result.stderr}")
 
+        # Execute the compiled output script
+        execution_command = ['bash', self.output_file]
+        execution_result = subprocess.run(execution_command,
+                                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                          text=True)
+
+        # Define the expected output
+        expected_output = (
+            "This directory contains the compiled outputs used by the `modashc` test suite.\n"
+            "This is script6.sh in dir1\n"
+            "This is script5.sh in the root directory\n"
+            "This is script4.sh in the root directory\n"
+            "This is script3.sh in 'dir with spaces'\n"
+            "This is script2.sh in dir2\n"
+            "This is script1.sh in dir1\n"
+            "This is the main script\n"
+        )
+
+        # Check if the actual output from executing the compiled script matches the expected output
+        self.assertEqual(execution_result.stdout, expected_output,
+                         "The execution output did not match the expected result")
+
+        # Inform about test success
         print("Success: `TestCompile` passed without errors.")
 
 
