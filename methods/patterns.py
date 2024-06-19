@@ -45,13 +45,13 @@ VARIABLE_SIMPLE_PATTERN = re.compile(
     re.MULTILINE
 )
 VARIABLE_COMPLEX_PATTERN = re.compile(
-    r'^(?:export\s+|local\s+|declare\s+[\-\w]*\s*)?\s*'  # Optionally matches 'export', 'local', or 'declare' with optional flags
-    r'([a-zA-Z_][a-zA-Z0-9_]*)\s*(=|\+=)\s*'  # Captures the variable name, starting with a letter or underscore, followed by any alphanumeric characters or underscores
+    r'^(?:export\s+|local\s+|declare\s+[\-\w]*\s*)?\s*'
+    r'([a-zA-Z_][a-zA-Z0-9_]*)(?:\s*(=|\+=)\s*)'
     r'('
-        r'"(?:\\["\\$]|[^"\\$]|\$\([^)]*?\))*"'  # Matches double-quoted strings, allowing escaped characters and nested command substitutions
-        r"|'(?:\\.|[^'\\])*'"  # Matches single-quoted strings, allowing escaped characters
-        r"|\$\((?:[^()]|\([^()]*\))*\)"  # Matches command substitutions with nested parentheses
-        r"|[^|;#\"\'\n]+"  # Matches unquoted strings, stops at a pipe, semicolon, hash, quote, or newline
+        r'"(?:\\["\\$]|[^"\\$]*|\$(?!\()|\$\([^)]*\))*"'  # Matches double-quoted strings with improved command substitution handling
+        r"|'(?:\\.|[^'\\])*'"  # Matches single-quoted strings
+        r"|\$\((?:[^()]*|\((?:[^()]*|\([^()]*\))*\))*\)"  # Improved nesting for $() with nested parentheses
+        r"|[^|;#\"\'\n]+"  # Matches unquoted strings without pipe, semicolon, hash, or quotes
     r')',
     re.MULTILINE
 )

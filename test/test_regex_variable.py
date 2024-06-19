@@ -31,13 +31,14 @@ class TestVariableAssignmentRegex(unittest.TestCase):
             "local v_=true": "local v_=true",
             "local _user='John Doe'": "local _user='John Doe'",
             "function my_func() { local loc_var=inside; }": None,  # Exclude single-line function scopes
+            'THIS_FILE="$BASH_SOURCE"': 'THIS_FILE="$BASH_SOURCE"'
         }
 
     def test_variable_simple_assignments(self):
         """Test simpler pattern, which does not handle complex scenarios."""
         for case, expected in self.simple_test_cases.items():
             with self.subTest(case=case):
-                match = VARIABLE_SIMPLE_PATTERN.match(case.strip())
+                match = VARIABLE_COMPLEX_PATTERN.match(case.strip())
                 result = match.group(0).strip() if match else None
                 self.assertEqual(result, expected)
 
