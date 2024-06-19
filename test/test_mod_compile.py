@@ -23,8 +23,10 @@ class TestCompile(unittest.TestCase):
         compile_result = subprocess.run(compile_command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 
         # Assert that compilation was successful
-        self.assertEqual(compile_result.returncode, 0,
-                         f"Error compiling output to '{self.output_file}' using `modashc.py`")
+        self.assertEqual(first=compile_result.returncode,
+                         second=0,
+                         msg=f"Error compiling output to '{self.output_file}' using `modashc.py`\n"
+                             f"Error: {compile_result.stdout}")
         self.assertTrue(os.path.exists(self.output_file), "Output file was not created")
 
         # Execute the compiled output script
@@ -35,8 +37,8 @@ class TestCompile(unittest.TestCase):
 
         # Define the expected output
         expected_output = (
+            "This is the last dependency: script6.sh in dir1\n"
             "This directory contains the compiled outputs used by the `modashc` test suite.\n"
-            "This is script6.sh in dir1\n"
             "This is script5.sh in the root directory\n"
             "This is script4.sh in the root directory\n"
             "This is script3.sh in 'dir with spaces'\n"

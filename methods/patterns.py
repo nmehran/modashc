@@ -3,7 +3,7 @@ import re
 
 # A capture pattern with a 'command' placeholder, dynamically formatted at run-time, used to capture a command and its respective argument
 COMMAND_TEMPLATE_PATTERN = (
-    r'(?:^|\s*(?:&&|\|\||;)\s*)'  # Match start or command separators (&&, ||, ;)
+    r'((?:^|\s*(?:&&|\|\||;)\s*))'  # Match start or command separators (&&, ||, ;), consume them
     r'(?!#)'  # Ensure no '#' follows after optional spaces on this command line
     r'(?:'  # Begin group for command structure
     r'(?:"?\$\()?\s*'  # Optional command substitution at the start
@@ -58,25 +58,6 @@ VARIABLE_COMPLEX_PATTERN = re.compile(
 
 # Regex for cd commands, accommodating paths with optional quotes and surrounding whitespace
 # Example: cd /path/to/dir or cd "/path with spaces"
-# CD_PATTERN = re.compile(
-#     r'(?:^|\||;|\s*&{2}\s*)'
-#     r'\s*(cd)\s+'
-#     r'((?:".*?"|\'.*?\'|\$\(.*?\)|\$\{.*?}|(?:\\ |\S)+)+)'
-#     r'(?=\s*(?:\|\||&&|;|$))',
-#     re.MULTILINE
-# )
-
-# CD_PATTERN = re.compile(
-#     r'(?:^|\||;|\s*&{2}\s*)'
-#     r'\s*(cd)\s*'  # Captures the variable name, starting with a letter or underscore, followed by any alphanumeric characters or underscores
-#     r'('
-#         r'"(?:\\["\\$]|[^"\\$]|\$\([^)]*?\))*"'  # Matches double-quoted strings, allowing escaped characters and nested command substitutions
-#         r"|'(?:\\.|[^'\\])*'"  # Matches single-quoted strings, allowing escaped characters
-#         r"|\$\((?:[^()]|\([^()]*\))*\)"  # Matches command substitutions with nested parentheses
-#         r"|[^|;#\"\'\n&]+"  # Matches unquoted strings, stops at a pipe, semicolon, hash, quote, or newline
-#     r')',
-#     re.MULTILINE
-# )
 CD_PATTERN = create_command_pattern(command='cd')
 
 # Regex to match dirname command usage, handling nested and mismatched quotes
