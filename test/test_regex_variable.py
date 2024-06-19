@@ -54,6 +54,8 @@ class TestVariableAssignmentRegex(unittest.TestCase):
             "VAR=value # this is a comment": "VAR=value",
             "arr=( item1 item2 item3 )": "arr=( item1 item2 item3 )",
             "VAR=value; ANOTHER_VAR=another_value": "VAR=value",
+            "# var=is_a_comment": None,
+            "\"var=is_in_quotes\"": None,
         }}
 
         for case, expected in complex_test_cases.items():
