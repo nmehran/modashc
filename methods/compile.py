@@ -10,6 +10,7 @@ from methods.patterns import (
 )
 
 from methods.sources import get_sources, validate_path, is_within_subtree, is_relative_path, change_directory, strip_quotes
+from methods.shell.utilities import replace_bash_command
 
 SET_SHEBANG = "#!/bin/bash"
 SET_DECLARATIVE = "set -eEuo pipefail"
@@ -39,12 +40,12 @@ def extract_desired_content_including_functions(filepath, content, context, entr
             bracket_depth -= stripped_line.count('}')
 
         if path_declarations := path_context.get(num):
-            for (path_type, path, match_groups, current_directory) in path_declarations:
-                if path_type == 'cd':
+            for (cmd_type, path, match_groups, current_directory) in path_declarations:
+                if cmd_type == 'cd':
                     if is_within_subtree(path, entry_directory):
-                        line = CD_PATTERN.sub(':', line, count=1)
+                        line = replace_bash_command(cmd_type, ':', line, CD_PATTERN)
                     elif is_relative_path(path):
-                        line = CD_PATTERN.sub(f'cd "{path}"', line, count=1)
+                        line = replace_bash_command(cmd_type, f'cd "{path}"', line, CD_PATTERN)
                     change_directory(path, context)
 
                 else:  # else path-type is `var`
