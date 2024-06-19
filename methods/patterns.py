@@ -1,6 +1,38 @@
 import re
 
 
+# A capture pattern with a 'command' placeholder, dynamically formatted at run-time, used to capture a command and its respective argument
+COMMAND_TEMPLATE_PATTERN = (
+    r'(?:^|\s*(?:&&|\|\||;)\s*)'  # Match start or command separators (&&, ||, ;)
+    r'(?!#)'  # Ensure no '#' follows after optional spaces on this command line
+    r'(?:'  # Begin group for command structure
+    r'(?:"?\$\()?\s*'  # Optional command substitution at the start
+    r'|[^"\';|&]?'  # Match unquoted sequences not containing spaces or separators
+    r')*?'  # Non-greedy match for repeated sequences
+    r'({command})'  # Capture the exact command
+    r'((?:\s+'  # Whitespace before arguments
+    r'(?:'  # Different argument types
+    r'"(?:\\.|[^"\\])*"'  # Double-quoted strings allowing escaped characters
+    r"|'(?:\\.|[^'\\])*'"  # Single-quoted strings allowing escaped characters
+    r"|\$\((?:[^()]*|\((?:[^()]*|\([^()]*\))*\))*\)"  # Improved nested command substitution
+    r"|\$?\w+"  # Unquoted words or variables
+    r'|[^"\'\s;|&|(?:\)\")]+?'
+    r')+)*)'  # Repeat for multiple arguments, capturing all
+)
+
+
+def create_command_pattern(command):
+    # Escape the command to handle any special characters it might contain
+    escaped_command = re.escape(command)
+
+    # Create a regex pattern dynamically based on the command
+    pattern = re.compile(
+        COMMAND_TEMPLATE_PATTERN.format(command=escaped_command)
+    )
+
+    return pattern
+
+
 # Regular expression to match source statements and global variable definitions
 # Example: source /path/to/file or . /path/to/file
 SOURCE_PATTERN = re.compile(r'(^|;\s*|\s*&{2}\s*|\$\(\s*)(source|\.)\s+([^\n#;]*)')
@@ -26,7 +58,26 @@ VARIABLE_COMPLEX_PATTERN = re.compile(
 
 # Regex for cd commands, accommodating paths with optional quotes and surrounding whitespace
 # Example: cd /path/to/dir or cd "/path with spaces"
-CD_PATTERN = re.compile(r'^\s*(cd)\s+((?:".*?"|\'.*?\'|\$\(.*?\)|\$\{.*?}|(?:\\ |\S)+)+)(?=\s*(?:\|\||&&|;|$))')
+# CD_PATTERN = re.compile(
+#     r'(?:^|\||;|\s*&{2}\s*)'
+#     r'\s*(cd)\s+'
+#     r'((?:".*?"|\'.*?\'|\$\(.*?\)|\$\{.*?}|(?:\\ |\S)+)+)'
+#     r'(?=\s*(?:\|\||&&|;|$))',
+#     re.MULTILINE
+# )
+
+# CD_PATTERN = re.compile(
+#     r'(?:^|\||;|\s*&{2}\s*)'
+#     r'\s*(cd)\s*'  # Captures the variable name, starting with a letter or underscore, followed by any alphanumeric characters or underscores
+#     r'('
+#         r'"(?:\\["\\$]|[^"\\$]|\$\([^)]*?\))*"'  # Matches double-quoted strings, allowing escaped characters and nested command substitutions
+#         r"|'(?:\\.|[^'\\])*'"  # Matches single-quoted strings, allowing escaped characters
+#         r"|\$\((?:[^()]|\([^()]*\))*\)"  # Matches command substitutions with nested parentheses
+#         r"|[^|;#\"\'\n&]+"  # Matches unquoted strings, stops at a pipe, semicolon, hash, quote, or newline
+#     r')',
+#     re.MULTILINE
+# )
+CD_PATTERN = create_command_pattern(command='cd')
 
 # Regex to match dirname command usage, handling nested and mismatched quotes
 # Example: $(dirname "/path/to/dir")
@@ -52,3 +103,4 @@ FUNCTION_PATTERN = re.compile(r'function\s+\w+|\w+\(\)\s*{', re.MULTILINE)
 # Example: "/path/to/file" or './path/to/file'
 PATH_PATTERN = re.compile(r"^([a-zA-Z0-9_. \\/-]+)$")
 PATH_QUOTED_PATTERN = re.compile(r"^(['\"])([a-zA-Z0-9_. \\/-]+)\1$")
+

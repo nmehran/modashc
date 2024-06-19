@@ -2,6 +2,7 @@ import os
 import re
 from collections import defaultdict
 
+from methods.shell.utilities import extract_bash_commands
 from methods.patterns import (
     BASENAME_PATTERN,
     CD_PATTERN,
@@ -157,8 +158,8 @@ def get_commands(line: str):
     return map(str.strip, lines)
 
 
-def resolve_cd_path(cd_match: re.Match):
-    return cd_match.group(2)
+def resolve_cd_path(cd_match: tuple[str, str]):
+    return cd_match[0][1]
 
 
 def change_directory(path: str, context: dict) -> str:
@@ -267,11 +268,11 @@ def extract_sources_and_variables(script_path, context, sources, seen_sources: d
 
                 resolved_command = resolve_command(command, context)[0]
 
-                cd_match = CD_PATTERN.search(resolved_command)
+                cd_match = extract_bash_commands('cd', resolved_command, CD_PATTERN)
                 if cd_match:
                     cd_path = resolve_cd_path(cd_match)
                     current_directory = change_directory(cd_path, context)
-                    context['path_declarations'][script_path][num].append(('cd', current_directory, cd_match.groups(), current_directory))
+                    context['path_declarations'][script_path][num].append(('cd', current_directory, cd_match, current_directory))
 
                 # Match variable definitions
                 var_match = VARIABLE_COMPLEX_PATTERN.match(line)
