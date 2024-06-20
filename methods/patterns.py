@@ -17,7 +17,64 @@ COMMAND_TEMPLATE_PATTERN = (
     r"|\$\((?:[^()]*|\((?:[^()]*|\([^()]*\))*\))*\)"  # Improved nested command substitution
     r"|\$?\w+"  # Unquoted words or variables
     r'|[^"\'\s;|&|(?:\)\")]+?'
-    r')+)*)'  # Repeat for multiple arguments, capturing all
+    r')+)*'
+    r')'  # Repeat for multiple arguments, capturing all
+)
+
+# COMMAND_TEMPLATE_PATTERN = (
+#     r'\\"|"(?:\\"|[^"$])*"|\'(?:\\\'|[^\'])*\'|(^|[|;&()\n{{}}])+\s*'
+#     r'\b({command})\b'
+#     r"("
+#         r'\s*(?:"[^"]+"|[^|;&()\n{{}}])*'
+#     r")"
+# )
+
+# COMMAND_TEMPLATE_PATTERN = (
+#     r'\\"|"(?:\\"|[^"$])*"|\'(?:\\\'|[^\'])*\'|(^|[|;&()\n{{}}])+\s*'
+#     r'\b({command})\b'
+#     r"("
+#         r'\s*(?:"[^"]+"|[^|;&\n])*'
+#     r")"
+# )
+
+# r'\\"|"(?:\\"|[^"$])*"|\'(?:\\\'|[^\'])*\'|(^|[|;&()\n{{}}])+\s*'
+
+# COMMAND_TEMPLATE_PATTERN = (
+#     r'\\"|"(?:\\"|[^"$])*"|\'(?:\\\'|[^\'])*\'|(^|[|;&()\n{{}}])+\s*'
+#     # r'(?:'  # Begin group for command structure
+#     # r'(?:"?\$\()?\s*'  # Optional command substitution at the start
+#     # r'|[^"\';|&]?'  # Match unquoted sequences not containing spaces or separators
+#     # r')*?'  # Non-greedy match for repeated sequences
+#     r'({command})'  # Capture the exact command
+#     r'((?:\s+'  # Whitespace before arguments
+#     r'(?:'  # Different argument types
+#     r'"(?:\\.|[^"\\])*"'  # Double-quoted strings allowing escaped characters
+#     r"|'(?:\\.|[^'\\])*'"  # Single-quoted strings allowing escaped characters
+#     r"|\$\((?:[^()]*|\((?:[^()]*|\([^()]*\))*\))*\)"  # Improved nested command substitution
+#     # r"|\$?\w+"  # Unquoted words or variables
+#     r'|[^"\'\s;|&|(?:\)\")]+?'
+#     r')+)*'
+#     r')'  # Repeat for multiple arguments, capturing all
+# )
+
+COMMAND_TEMPLATE_PATTERN = (
+    r'''\\"|"(?:\\"|[^"$])*"|\'(?:\\\'|[^\'])*\''''
+    r'|(^|[|;&()\n{{}}]*?\s*)'
+    # r'(?!#)'  # Ensure no '#' follows after optional spaces on this command line
+    # r'(?:'  # Begin group for command structure
+    # r'(?:"?\$\()?\s*'  # Optional command substitution at the start
+    # r'|[^"\';|&]?'  # Match unquoted sequences not containing spaces or separators
+    # r')*?'  # Non-greedy match for repeated sequences
+    r'({command})'  # Capture the exact command
+    r'((?:\s+'  # Whitespace before arguments
+    r'(?:'  # Different argument types
+    r'"(?:\\.|[^"\\])*"'  # Double-quoted strings allowing escaped characters
+    r"|'(?:\\.|[^'\\])*'"  # Single-quoted strings allowing escaped characters
+    r"|\$\((?:[^()]*|\((?:[^()]*|\([^()]*\))*\))*\)"  # Improved nested command substitution
+    # r"|\$?\w+"  # Unquoted words or variables
+    r'|[^"\'\s;|&|(?:\)\")]+?'
+    r')+)*'
+    r')'  # Repeat for multiple arguments, capturing all
 )
 
 
@@ -27,7 +84,7 @@ def create_command_pattern(command):
 
     # Create a regex pattern dynamically based on the command
     pattern = re.compile(
-        COMMAND_TEMPLATE_PATTERN.format(command=escaped_command)
+        COMMAND_TEMPLATE_PATTERN.format(command=escaped_command), re.DOTALL
     )
 
     return pattern
@@ -40,8 +97,7 @@ SOURCE_PATTERN = re.compile(r'(^|;\s*|\s*&{2}\s*|\$\(\s*)(source|\.)\s+([^\n#;]*
 # Regex to match bash variable declarations which can be used to define paths
 # Example: export VAR=value or VAR=value
 VARIABLE_SIMPLE_PATTERN = re.compile(
-    r'(^|;\s*|\s*&{2}\s*|&&\s*)(declare(?:\s+-[a-zA-Z]*)*\s+|export\s+|local\s+)?'
-    r'([a-zA-Z_][a-zA-Z0-9_]*)\s*\+?=\s*([^\n#|&]*)',
+    r'(^|;\s*|\s*&{2}\s*|&&\s*)(declare(?:\s+-[a-zA-Z]*)*\s+|export\s+|local\s+)?',
     re.MULTILINE
 )
 VARIABLE_COMPLEX_PATTERN = re.compile(
