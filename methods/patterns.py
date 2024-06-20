@@ -1,80 +1,19 @@
 import re
 
 
-# A capture pattern with a 'command' placeholder, dynamically formatted at run-time, used to capture a command and its respective argument
+# A regex pattern with a 'command' placeholder to be formatted dynamically at runtime.
 COMMAND_TEMPLATE_PATTERN = (
-    r'((?:^|\s*(?:&&|\|\||;)\s*))'  # Match start or command separators (&&, ||, ;), consume them
-    r'(?!#)'  # Ensure no '#' follows after optional spaces on this command line
-    r'(?:'  # Begin group for command structure
-    r'(?:"?\$\()?\s*'  # Optional command substitution at the start
-    r'|[^"\';|&]?'  # Match unquoted sequences not containing spaces or separators
-    r')*?'  # Non-greedy match for repeated sequences
-    r'({command})'  # Capture the exact command
-    r'((?:\s+'  # Whitespace before arguments
-    r'(?:'  # Different argument types
-    r'"(?:\\.|[^"\\])*"'  # Double-quoted strings allowing escaped characters
-    r"|'(?:\\.|[^'\\])*'"  # Single-quoted strings allowing escaped characters
-    r"|\$\((?:[^()]*|\((?:[^()]*|\([^()]*\))*\))*\)"  # Improved nested command substitution
-    r"|\$?\w+"  # Unquoted words or variables
-    r'|[^"\'\s;|&|(?:\)\")]+?'
-    r')+)*'
-    r')'  # Repeat for multiple arguments, capturing all
-)
-
-# COMMAND_TEMPLATE_PATTERN = (
-#     r'\\"|"(?:\\"|[^"$])*"|\'(?:\\\'|[^\'])*\'|(^|[|;&()\n{{}}])+\s*'
-#     r'\b({command})\b'
-#     r"("
-#         r'\s*(?:"[^"]+"|[^|;&()\n{{}}])*'
-#     r")"
-# )
-
-# COMMAND_TEMPLATE_PATTERN = (
-#     r'\\"|"(?:\\"|[^"$])*"|\'(?:\\\'|[^\'])*\'|(^|[|;&()\n{{}}])+\s*'
-#     r'\b({command})\b'
-#     r"("
-#         r'\s*(?:"[^"]+"|[^|;&\n])*'
-#     r")"
-# )
-
-# r'\\"|"(?:\\"|[^"$])*"|\'(?:\\\'|[^\'])*\'|(^|[|;&()\n{{}}])+\s*'
-
-# COMMAND_TEMPLATE_PATTERN = (
-#     r'\\"|"(?:\\"|[^"$])*"|\'(?:\\\'|[^\'])*\'|(^|[|;&()\n{{}}])+\s*'
-#     # r'(?:'  # Begin group for command structure
-#     # r'(?:"?\$\()?\s*'  # Optional command substitution at the start
-#     # r'|[^"\';|&]?'  # Match unquoted sequences not containing spaces or separators
-#     # r')*?'  # Non-greedy match for repeated sequences
-#     r'({command})'  # Capture the exact command
-#     r'((?:\s+'  # Whitespace before arguments
-#     r'(?:'  # Different argument types
-#     r'"(?:\\.|[^"\\])*"'  # Double-quoted strings allowing escaped characters
-#     r"|'(?:\\.|[^'\\])*'"  # Single-quoted strings allowing escaped characters
-#     r"|\$\((?:[^()]*|\((?:[^()]*|\([^()]*\))*\))*\)"  # Improved nested command substitution
-#     # r"|\$?\w+"  # Unquoted words or variables
-#     r'|[^"\'\s;|&|(?:\)\")]+?'
-#     r')+)*'
-#     r')'  # Repeat for multiple arguments, capturing all
-# )
-
-COMMAND_TEMPLATE_PATTERN = (
-    r'''\\"|"(?:\\"|[^"$])*"|\'(?:\\\'|[^\'])*\''''
-    r'|(^|[|;&()\n{{}}]*?\s*)'
-    # r'(?!#)'  # Ensure no '#' follows after optional spaces on this command line
-    # r'(?:'  # Begin group for command structure
-    # r'(?:"?\$\()?\s*'  # Optional command substitution at the start
-    # r'|[^"\';|&]?'  # Match unquoted sequences not containing spaces or separators
-    # r')*?'  # Non-greedy match for repeated sequences
-    r'({command})'  # Capture the exact command
-    r'((?:\s+'  # Whitespace before arguments
-    r'(?:'  # Different argument types
-    r'"(?:\\.|[^"\\])*"'  # Double-quoted strings allowing escaped characters
-    r"|'(?:\\.|[^'\\])*'"  # Single-quoted strings allowing escaped characters
-    r"|\$\((?:[^()]*|\((?:[^()]*|\([^()]*\))*\))*\)"  # Improved nested command substitution
-    # r"|\$?\w+"  # Unquoted words or variables
-    r'|[^"\'\s;|&|(?:\)\")]+?'
-    r')+)*'
-    r')'  # Repeat for multiple arguments, capturing all
+    r'''\\"|"(?:\\"|[^"$])*"|\'(?:\\\'|[^\'])*\''''  # Search unquoted commands and command separators
+    r'|(^|[|;&()\n{{}}]*?\s*)'  # Captures the start of the input or delimiters followed by optional whitespace
+    r'({command})'  # Captures the 'command' specified
+    r'((?:\s+'  # Matches leading whitespace before arguments
+    r'(?:'  # Starts grouping for different argument types
+    r'"(?:\\.|[^"\\])*"'  # Matches double-quoted strings with escaped characters
+    r"|'(?:\\.|[^'\\])*'"  # Matches single-quoted strings with escaped characters
+    r"|\$\((?:[^()]*|\((?:[^()]*|\([^()]*\))*\))*\)"  # Accurately matches complex nested command substitutions
+    r'|[^"\'\s;|&|(?:\)\")]+?'  # Matches unquoted arguments excluding specific characters
+    r')+)*'  # Repeats to capture multiple arguments
+    r')'  # Captures all following arguments as a group
 )
 
 
@@ -135,9 +74,3 @@ SET_PATTERN = re.compile(r'^\s*set\s+([-\w\s]+)', re.MULTILINE)
 # Regex to capture bash function definitions
 # Example: function my_func or my_func() {
 FUNCTION_PATTERN = re.compile(r'function\s+\w+|\w+\(\)\s*{', re.MULTILINE)
-
-# Regex for file paths
-# Example: "/path/to/file" or './path/to/file'
-PATH_PATTERN = re.compile(r"^([a-zA-Z0-9_. \\/-]+)$")
-PATH_QUOTED_PATTERN = re.compile(r"^(['\"])([a-zA-Z0-9_. \\/-]+)\1$")
-

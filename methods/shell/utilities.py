@@ -75,6 +75,7 @@ def remove_comments(text, comment_patterns, exclusion_patterns=None, escape_excl
 
     # Combine exclusions and comment markers into a single regex
     comment_regex = '|'.join([re.escape(pattern) for pattern in comment_patterns])
+
     # pattern = re.compile(rf"""
     #     {exclusion_regex}                         # Match exclusions
     #     |\\"|"(?:\\"|[^"$])*"|'(?:\\'|[^'])*'     # Match quoted strings, including escaped quotes
