@@ -74,3 +74,7 @@ SET_PATTERN = re.compile(r'^\s*set\s+([-\w\s]+)', re.MULTILINE)
 # Regex to capture bash function definitions
 # Example: function my_func or my_func() {
 FUNCTION_PATTERN = re.compile(r'function\s+\w+|\w+\(\)\s*{', re.MULTILINE)
+
+# Description: Regex to strip matching outer quotes from a string and unescape any escaped quotes inside
+# Example: "'This \'escaped\' example!'" becomes "This 'escaped' example!"
+QUOTE_STRIP_PATTERN = re.compile(r'^([\'"]+)(.*?)(\1)$')

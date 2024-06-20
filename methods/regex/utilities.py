@@ -1,5 +1,8 @@
 import re
-from methods.patterns import create_command_pattern
+from methods.regex.patterns import (
+    QUOTE_STRIP_PATTERN,
+    create_command_pattern
+)
 
 
 def extract_bash_commands(command, input_string, pattern=None, search_comments=False):
@@ -54,7 +57,7 @@ def replace_bash_command(command: str, replacement: str, input_string: str, patt
     return ''.join(updated_string_parts)
 
 
-def remove_comments(text, comment_patterns, exclusion_patterns=None, escape_exclusions=True):
+def remove_comments(text, comment_patterns, exclusion_patterns=None, escape_exclusions=True) -> str:
     """
     Removes comments from text, taking into account quoted strings and optional exclusions.
 
@@ -97,4 +100,27 @@ def remove_comments(text, comment_patterns, exclusion_patterns=None, escape_excl
     # Apply the regex
     return re.sub(pattern, remove_or_keep, text)
 
+
+def strip_matching_quotes(s: str) -> str:
+    """
+    Strip matching outer quotes from a string and unescape any escaped quotes inside.
+
+    Args:
+    s (str): The input string potentially enclosed in matching single or double quotes.
+
+    Returns:
+    str: The unquoted string with inner escaped quotes unescaped, if outer quotes matched;
+         otherwise, the original string.
+    """
+    # Early exit if the string is too short to be quoted or doesn't start and end with the same quote
+    if len(s) < 2 or s[0] != s[-1] or s[0] not in "\"'":
+        return s
+
+    # Regex to strip only if the outermost characters are matching quotes
+    match = QUOTE_STRIP_PATTERN.match(s)
+    if match:
+        # Extract the content between the quotes and unescape any escaped quotes
+        return re.sub(r'\\([\'"])', r'\1', match.group(2))
+
+    return s
 

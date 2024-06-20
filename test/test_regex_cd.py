@@ -1,6 +1,6 @@
 import unittest
-from methods.patterns import CD_PATTERN
-from methods.shell.utilities import extract_bash_commands
+from methods.regex.patterns import CD_PATTERN
+from methods.regex.utilities import extract_bash_commands
 
 
 class TestCDCommandRegex(unittest.TestCase):

@@ -15,9 +15,9 @@ class TestFunctionDetection(unittest.TestCase):
         # Define a regex pattern to correctly identify all valid function calls excluding those in quotes or comments
         self.pattern = re.compile(
             r'''
-            (?:^|\s|;|\s*&{2}|\(\s*)\s*           # Match start of line, whitespace, semicolon, or double ampersands followed by any whitespace
+            (?:^|\s|;|\s*&{2}|\(\s*)\s*   # Match start of line, whitespace, semicolon, or double ampersands followed by any whitespace
             \b(\w+)\b                     # Match the function name as a whole word
-            (?!\s*=\s*(?![=!<>~]))            # Ensure no '=' sign follows immediately after, unless it's a comparison
+            (?!\s*=\s*(?![=!<>~]))        # Ensure no '=' sign follows immediately after, unless it's a comparison
             ''', re.VERBOSE | re.MULTILINE)
 
     def test_function_calls(self):

@@ -1,5 +1,5 @@
 import unittest
-from methods.patterns import VARIABLE_SIMPLE_PATTERN, VARIABLE_COMPLEX_PATTERN
+from methods.regex.patterns import VARIABLE_COMPLEX_PATTERN
 
 
 class TestVariableAssignmentRegex(unittest.TestCase):
