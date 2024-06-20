@@ -7,7 +7,6 @@ from methods.patterns import (
     BASENAME_PATTERN,
     CD_PATTERN,
     DIRNAME_PATTERN,
-    PATH_PATTERN,
     REALPATH_PATTERN,
     SOURCE_PATTERN,
     VARIABLE_COMPLEX_PATTERN,
@@ -102,7 +101,7 @@ def strip_quotes(path):
 
 
 def get_valid_path(command):
-    if len(command) >= 1 and PATH_PATTERN.match(command):
+    if len(command) >= 1:
         command = os.path.abspath(command)
         if os.path.exists(command):
             return command
