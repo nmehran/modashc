@@ -16,6 +16,7 @@ class TestCDCommandRegex(unittest.TestCase):
             "cd some_dir": "cd some_dir",
             "cd \"$(dirname something)\"": "cd \"$(dirname something)\"",
             "cd $(echo ../dir)": "cd $(echo ../dir)",
+            'cd "../dir with spaces" || exit 1': 'cd "../dir with spaces"',
             "cd '/some directory/with spaces'": "cd '/some directory/with spaces'",
             "cd /directory/with\\ spaces": "cd /directory/with\\ spaces",
             "cd ~": "cd ~",
@@ -41,7 +42,8 @@ class TestCDCommandRegex(unittest.TestCase):
             'echo $(cd /nested/path && ls)': 'cd /nested/path',  # command substitution with command separator
             'echo "$(cd /nested/path)"': 'cd /nested/path',  # command substitution within double-quote
             'echo \'$(cd /nested/path && ls)\'': None,  # False command substitution within single-quote
-            'cd "$(dirname "$BASH_SOURCE")" || exit 1': 'cd "$(dirname "$BASH_SOURCE")"'
+            'echo \'# && cd fake\' && cd "$(dirname "$BASH_SOURCE")" || exit 1': 'cd "$(dirname "$BASH_SOURCE")"',
+            'echo \'# && cd fake\' # && cd "$(dirname "$BASH_SOURCE")" || exit 1': None  # Commented command
         }
 
         for case, expected in test_cases.items():
