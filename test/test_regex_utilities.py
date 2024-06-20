@@ -1,5 +1,28 @@
 import unittest
-from methods.shell.utilities import remove_comments
+from methods.regex.utilities import (
+    remove_comments,
+    strip_matching_quotes
+)
+
+
+class TestStripMatchingQuotes(unittest.TestCase):
+    def test_strip_matching_quotes(self):
+        test_cases = {
+            r"\"This is a test.\"": r"\"This is a test.\"",
+            r"'Another \'escaped\' example!'": "Another 'escaped' example!",
+            r"\"No matching quotes'": r"\"No matching quotes'",
+            "Mismatched \"quotes'": "Mismatched \"quotes'",
+            "No quotes at all": "No quotes at all",
+            "": "",
+            "\"\"": "",
+            "''": "",
+            "\"\"\"Triple quotes\"\"\"": "Triple quotes",
+            "\"Escaped \\\" quote\"": "Escaped \" quote"
+        }
+
+        for input_string, expected_output in test_cases.items():
+            with self.subTest(input_string=input_string):
+                self.assertEqual(strip_matching_quotes(input_string), expected_output)
 
 
 class TestRemoveComments(unittest.TestCase):
@@ -33,5 +56,5 @@ class TestRemoveComments(unittest.TestCase):
                 self.assertEqual(result, expected)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()
