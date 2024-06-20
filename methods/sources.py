@@ -2,8 +2,8 @@ import os
 import re
 from collections import defaultdict
 
-from methods.shell.utilities import extract_bash_commands
-from methods.patterns import (
+from methods.regex.utilities import extract_bash_commands, strip_matching_quotes
+from methods.regex.patterns import (
     BASENAME_PATTERN,
     CD_PATTERN,
     DIRNAME_PATTERN,
@@ -38,10 +38,6 @@ def validate_path(path):
     return True
 
 
-def strip_first_and_last_quotes(text):
-    return re.sub(r'^[\'"]|[\'"]$', '', text)
-
-
 def define_variable(var_match, context):
     """Define a variable based on known context."""
 
@@ -52,7 +48,7 @@ def define_variable(var_match, context):
         for var, value in context['vars'].items():
             var_value = var_value.replace(f"${{{var}}}", value).replace(f"${var}", value)
 
-    return var_name, strip_first_and_last_quotes(var_value)
+    return var_name, strip_matching_quotes(var_value)
 
 
 def resolve_shell_functions(path):
@@ -102,7 +98,8 @@ def strip_quotes(path):
 
 def get_valid_path(command):
     if len(command) >= 1:
-        command = os.path.abspath(command)
+        unquoted_command = strip_matching_quotes(command)
+        command = os.path.abspath(unquoted_command)
         if os.path.exists(command):
             return command
     return ""
@@ -203,8 +200,18 @@ def enforce_recursion_limit(seen_sources, script_path, references):
     return
 
 
+def is_absolute_path(path):
+    # Strip matching single and double quotes from the start and end of the path
+    stripped_path = strip_matching_quotes(path)
+    # Use os.path.isabs to check if the path is absolute
+    return os.path.isabs(stripped_path)
+
+
 def is_relative_path(path: str):
-    return path.startswith('.')
+    # Strip matching single and double quotes from the start and end of the path
+    stripped_path = strip_matching_quotes(path)
+    # If path is not absolute and exists, it is relative
+    return not os.path.isabs(stripped_path) and os.path.exists(path)
 
 
 def is_within_subtree(paths, directory):
