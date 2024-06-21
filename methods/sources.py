@@ -51,40 +51,32 @@ def define_variable(var_match, context):
     return var_name, strip_matching_quotes(var_value)
 
 
-def resolve_shell_functions(path):
+def resolve_shell_path_commands(path_command: str):
     """Resolve shell functions like $(dirname ...) and $(basename ...)"""
 
-    # Match patterns like $(dirname <path>) or $(basename <path>)
+    commands = {
+        'dirname': (os.path.dirname, DIRNAME_PATTERN),
+        'basename': (os.path.basename, BASENAME_PATTERN),
+        'realpath': (os.path.abspath, REALPATH_PATTERN)
+    }
+
     while True:
-        dirname_match = DIRNAME_PATTERN.search(path)
-        basename_match = BASENAME_PATTERN.search(path)
-        realpath_match = REALPATH_PATTERN.search(path)
+        modified = False
+        for cmd_name, (func, pattern) in commands.items():
+            match = pattern.search(path_command)
+            if match:
+                full_match = match.group(0)
+                path_match = match.group(1)
+                result = func(strip_quotes(path_match))
+                # Replace the matched pattern with the result wrapped in an echo statement
+                path_command = path_command.replace(full_match, result)
+                modified = True
+                break  # Stop after the first replacement to re-evaluate from the start
 
-        # If a $(dirname ...) is found, replace it with the Python dirname result
-        if dirname_match:
-            full_match = dirname_match.group(0)
-            inner_path = dirname_match.group(1)
-            # Compute the directory name using os.path.dirname
-            dirname_result = os.path.dirname(strip_quotes(inner_path))
-            path = path.replace(full_match, dirname_result)
-        # If a $(basename ...) is found, replace it with the Python basename result
-        elif basename_match:
-            full_match = basename_match.group(0)
-            inner_path = basename_match.group(1)
-            # Compute the base name using os.path.basename
-            basename_result = os.path.basename(strip_quotes(inner_path))
-            path = path.replace(full_match, basename_result)
-        elif realpath_match:
-            full_match = realpath_match.group(0)
-            inner_path = realpath_match.group(1)
-            # Compute the base name using os.path.basename
-            realpath_result = os.path.abspath(strip_quotes(inner_path))
-            path = path.replace(full_match, realpath_result)
-        else:
-            # No more matches, break the loop
-            break
+        if not modified:
+            break  # Exit the loop if no more commands are found
 
-    return path
+    return path_command
 
 
 def strip_quotes(path):
@@ -117,7 +109,7 @@ def resolve_command(command, context):
     command = os.path.expandvars(command)
 
     # Handle shell functions like $(dirname ...) and $(basename ...)
-    command = resolve_shell_functions(command)
+    command = resolve_shell_path_commands(command)
 
     # If path, normalize and convert to absolute path
     is_valid_path = False
