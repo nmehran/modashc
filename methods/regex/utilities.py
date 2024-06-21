@@ -6,16 +6,19 @@ from methods.regex.patterns import (
 
 
 def extract_bash_commands(command, input_string, pattern=None, search_comments=False):
+    matches = []
+
+    if not re.search(rf'\b{command}\b', input_string):
+        return matches
+
     # Step 1: Regex to find the command followed by its arguments
     if pattern is None:
-        escaped_command = re.escape(command)
-        pattern = create_command_pattern(escaped_command)
+        pattern = create_command_pattern(command)
 
     if not search_comments:
         input_string = remove_comments(input_string, ['#'])
 
     # Step 2: Find all matches for the command
-    matches = []
     for match in pattern.finditer(input_string):
         # Extract the full command with its arguments
         groups: tuple = match.groups()
@@ -28,8 +31,7 @@ def extract_bash_commands(command, input_string, pattern=None, search_comments=F
 
 def replace_bash_command(command: str, replacement: str, input_string: str, pattern=None, search_comments=False):
     if pattern is None:
-        escaped_command = re.escape(command)
-        pattern = create_command_pattern(escaped_command)
+        pattern = create_command_pattern(command)
 
     if not search_comments:
         input_string = remove_comments(input_string, ['#'])
