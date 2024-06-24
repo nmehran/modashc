@@ -120,6 +120,9 @@ VARIABLE_REFERENCE_PATTERN = re.compile(r'''
         ))
         ''', re.VERBOSE)
 
+# Capture a variable name matched by `VARIABLE_REFERENCE_PATTERN`
+VARIABLE_NAME_PATTERN = re.compile(r'\${?(\w+)}?')
+
 # Regex to capture bash function definitions
 # Example: function my_func or my_func() {
 FUNCTION_PATTERN = re.compile(r'function\s+\w+|\w+\(\)\s*{', re.MULTILINE)
