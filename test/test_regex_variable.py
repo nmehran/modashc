@@ -120,6 +120,9 @@ class TestVariableReference(unittest.TestCase):
             'Result: $(echo $INSIDE_COMMAND) and ${OUTSIDE}': [('$INSIDE_COMMAND', ''),
                                                                ('${OUTSIDE}', '')],
 
+            # Variable in quoted command substitution
+            'cd "$(dirname "$BASH_SOURCE")" || exit 1': [('$BASH_SOURCE', '')],
+
             # Variables in arithmetic expansion
             'Total: $(($VAR1 + ${VAR2})) items': [('$VAR1', ''),
                                                   ('${VAR2}', '')],
