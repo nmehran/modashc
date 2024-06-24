@@ -9,7 +9,7 @@ from methods.regex.patterns import (
     DIRNAME_PATTERN,
     REALPATH_PATTERN,
     SOURCE_PATTERN,
-    VARIABLE_COMPLEX_PATTERN,
+    VARIABLE_ASSIGNMENT_PATTERN,
 )
 
 RECURSION_LIMIT = 2
@@ -41,8 +41,8 @@ def validate_path(path):
 def define_variable(var_match, context):
     """Define a variable based on known context."""
 
-    var_name = var_match.group(1).strip()
-    var_value = var_match.group(3).strip()
+    var_name = var_match.group(2).strip()
+    var_value = var_match.group(4).strip()
     if "$" in var_value:
         # substitute known variables from context
         for var, value in context['vars'].items():
@@ -273,7 +273,7 @@ def extract_sources_and_variables(script_path, context, sources, seen_sources: d
                     context['path_declarations'][script_path][num].append(('cd', current_directory, cd_match, current_directory))
 
                 # Match variable definitions
-                var_match = VARIABLE_COMPLEX_PATTERN.match(line)
+                var_match = VARIABLE_ASSIGNMENT_PATTERN.match(line)
                 if var_match:
                     var_name, var_value = define_variable(var_match, context)
                     resolved_command, is_valid_path = resolve_command(var_value, context)

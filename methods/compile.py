@@ -6,7 +6,7 @@ from methods.regex.patterns import (
     FUNCTION_PATTERN,
     SET_PATTERN,
     SOURCE_PATTERN,
-    VARIABLE_COMPLEX_PATTERN,
+    VARIABLE_ASSIGNMENT_PATTERN,
 )
 
 from methods.sources import get_sources, validate_path, is_within_subtree, is_relative_path, change_directory, strip_quotes
@@ -49,15 +49,15 @@ def extract_desired_content_including_functions(filepath, content, context, entr
                     change_directory(path, context)
 
                 else:  # else path-type is `var`
-                    var_name, sign, var_value = match_groups
+                    scope, var_name, sign, var_value = match_groups
                     value = strip_quotes(var_value)
                     if value.endswith('.sh') and is_within_subtree(value, entry_directory):
                         if os.path.isfile(value):
                             # The current file is included in the compiled script
-                            line = VARIABLE_COMPLEX_PATTERN.sub(f'{var_name}{sign}"$BASH_SOURCE"', line, count=1)
+                            line = VARIABLE_ASSIGNMENT_PATTERN.sub(f'{var_name}{sign}"$BASH_SOURCE"', line, count=1)
                     elif is_relative_path(value):
                         assert os.path.abspath(value) == path
-                        line = VARIABLE_COMPLEX_PATTERN.sub(f'{var_name}{sign}"{path}"', line, count=1)
+                        line = VARIABLE_ASSIGNMENT_PATTERN.sub(f'{var_name}{sign}"{path}"', line, count=1)
 
         # Include lines based on current state
         if bracket_depth > 0:
@@ -147,7 +147,7 @@ def extract_globals(content):
         return _value
 
     # Regex to capture global and exported variables, ensuring they're not part of a comment or inside a function
-    global_pattern = VARIABLE_COMPLEX_PATTERN
+    global_pattern = VARIABLE_ASSIGNMENT_PATTERN
 
     extracted_globals = {}
     inside_function = False
@@ -165,8 +165,8 @@ def extract_globals(content):
                 part = part.strip()
                 match = global_pattern.match(part)
                 if match:
-                    var_name = match.group(1).strip()
-                    value = match.group(3).strip()
+                    var_name = match.group(2).strip()
+                    value = match.group(4).strip()
                     value = handle_multiline_assignment(lines, value)
                     extracted_globals[var_name] = value
 

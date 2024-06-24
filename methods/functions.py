@@ -1,7 +1,5 @@
 import re
 
-VARIABLE_PATTERN = re.compile(r'(^|;\s*|\s*&{2}\s*|&&\s*)(declare(?:\s+-[a-zA-Z]*)*\s+|export\s+|local\s+)?([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*([^\n#;]*)', re.MULTILINE)
-
 
 def find_function_calls(bash_file):
 
