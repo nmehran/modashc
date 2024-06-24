@@ -9,7 +9,7 @@ from methods.regex.patterns import (
     VARIABLE_ASSIGNMENT_PATTERN,
 )
 
-from methods.sources import get_sources, validate_path, is_within_subtree, is_relative_path, change_directory, strip_quotes
+from methods.sources import get_sources, validate_path, is_within_subtree, is_relative_path, change_directory, strip_quotes, extract_bash_commands
 from methods.regex.utilities import replace_bash_command
 
 SET_SHEBANG = "#!/bin/bash"
@@ -203,7 +203,9 @@ def extract_sources(content):
 
 def sanitize_sources(content: str):
     def replacement_func(match):
-        return f"{match.group(1)}:"
+        if source_match := match.group(1):
+            return f"{source_match}:"
+        return match.group(0)
     return SOURCE_PATTERN.sub(replacement_func, content)
 
 
