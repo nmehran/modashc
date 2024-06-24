@@ -126,3 +126,15 @@ def strip_matching_quotes(s: str) -> str:
 
     return s
 
+
+def replace_substring(original, old, new, start, end):
+    if new is None:
+        return original
+
+    before = original[:start]
+    substring = original[start:end]
+    after = original[end:]
+
+    replaced_substring = substring.replace(old, new)
+
+    return ''.join([before, replaced_substring, after])
