@@ -2,7 +2,7 @@ import os
 import re
 from collections import defaultdict
 
-from methods.regex.utilities import extract_bash_commands, strip_matching_quotes
+from methods.regex.utilities import extract_bash_commands, strip_matching_quotes, replace_substring
 from methods.regex.patterns import (
     BASENAME_PATTERN,
     CD_PATTERN,
@@ -10,6 +10,8 @@ from methods.regex.patterns import (
     REALPATH_PATTERN,
     SOURCE_PATTERN,
     VARIABLE_ASSIGNMENT_PATTERN,
+    VARIABLE_NAME_PATTERN,
+    VARIABLE_REFERENCE_PATTERN,
 )
 
 RECURSION_LIMIT = 2
@@ -43,10 +45,9 @@ def define_variable(var_match, context):
 
     var_name = var_match.group(2).strip()
     var_value = var_match.group(4).strip()
-    if "$" in var_value:
-        # substitute known variables from context
-        for var, value in context['vars'].items():
-            var_value = var_value.replace(f"${{{var}}}", value).replace(f"${var}", value)
+
+    # substitute known variables from context
+    var_value = resolve_variable_references(var_value, context)
 
     return var_name, strip_matching_quotes(var_value)
 
@@ -97,13 +98,39 @@ def get_valid_path(command):
     return ""
 
 
+def resolve_variable_references(command, context):
+
+    search_start = 0
+    while True:
+        variable_reference = VARIABLE_REFERENCE_PATTERN.search(command, search_start)
+        if not variable_reference:
+            break
+
+        outer_reference, inner_reference = variable_reference.groups()
+        start, end = variable_reference.span()
+
+        try:
+            if inner_reference:
+                inner_name = VARIABLE_NAME_PATTERN.match(inner_reference).group(1)
+                inner_definition = context['vars'].get(inner_name)
+                command = replace_substring(command, inner_reference, inner_definition, start, end)
+
+            outer_name = VARIABLE_NAME_PATTERN.match(outer_reference).group(1)
+            outer_definition = context['vars'].get(outer_name)
+            command = replace_substring(command, outer_reference, outer_definition, start, end)
+
+            search_start = end
+
+        except AttributeError:
+            # Cases where pattern matching fails
+            search_start = end
+
+    return command
+
+
 def resolve_command(command, context):
     """Resolve a path using dynamic context, supporting shell operations."""
-    command = command.strip()
-
-    # First, substitute known variables from context
-    for var, value in context['vars'].items():
-        command = command.replace(f"${{{var}}}", value).replace(f"${var}", value)
+    command = resolve_variable_references(command.strip(), context)
 
     # Expand environment variables
     command = os.path.expandvars(command)
