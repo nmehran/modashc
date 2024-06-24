@@ -99,9 +99,10 @@ def get_valid_path(command):
 
 
 def resolve_variable_references(command, context):
+    command_len = len(command)
 
     search_start = 0
-    while True:
+    while search_start < command_len:
         variable_reference = VARIABLE_REFERENCE_PATTERN.search(command, search_start)
         if not variable_reference:
             break
@@ -252,7 +253,7 @@ def is_within_subtree(paths, directory):
 
 
 def resolve_path(source_path: str, context: dict):
-    stripped_path = strip_quotes(source_path)
+    stripped_path = strip_quotes(source_path.strip())
     resolved_command, is_valid_path = resolve_command(stripped_path, context)
     resolved_path = strip_quotes(resolved_command)
     if is_valid_path:
