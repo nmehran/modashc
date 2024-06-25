@@ -9,16 +9,21 @@ COMMAND_TEMPLATE_PATTERN = (r'''
             \#              # A literal hash symbol
             [^\n'"`]        # Any characters except newline, quotes, or backticks
         )
-        (
-            (?:
-                (?<![`'"])          # Not preceded by a backtick, single or double quote
-                ^|\n|&&|\|\||;)\s*  # Start of string, after command separator
-                |                   # Or
-                (?<!['`])\$\(       # Not preceded by a backtick or single quote and inside command block '$()'
+        (?:                 # Start the match following a command separator or command block
+            (                 
+                (?:
+                    (?<![`'"])      # Not preceded by a backtick, single or double quote
+                    ^|\n|&&|\|\||;  # And after command separator
+                )\s*
+            ) 
+            |                       # Or
+                (?<!['`])           # Not preceded by a backtick or single quote
+                \$\(\s*             # And inside command block '$()'
+                
         )        
         \b({command})\b             # Match formatted placeholder `command`
         (
-            \s+                     # Require at least one whitespace after 'cd'
+            \s+                     # Require at least one whitespace after 'command'
             (?:
                 (?<!\\)(?:"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|`(?:\\.|[^`])*`)
                 |
