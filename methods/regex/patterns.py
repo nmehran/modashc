@@ -3,19 +3,46 @@ import re
 
 # A regex pattern with a 'command' placeholder to be formatted dynamically at runtime.
 # Matches a $() command substitution block, including nested parentheses
-COMMAND_TEMPLATE_PATTERN = (
-    r'''\\"|"(?:\\"|[^"$])*"|\'(?:\\\'|[^\'])*\''''  # Search unquoted commands and command separators
-    r'|(^|[|;&()\n{{}}]*?\s*)'  # Captures the start of the input or delimiters followed by optional whitespace
-    r'(\b{command}\b)'  # Captures the 'command' specified
-    r'((?:\s+'  # Matches leading whitespace before arguments
-    r'(?:'  # Starts grouping for different argument types
-    r'"(?:\\.|[^"\\])*"'  # Matches double-quoted strings with escaped characters
-    r"|'(?:\\.|[^'\\])*'"  # Matches single-quoted strings with escaped characters
-    r"|\$\((?:[^()]*|\((?:[^()]*|\([^()]*\))*\))*\)"  # Accurately matches complex nested command substitutions
-    r'|[^"\'\s;|&|(?:\)\")]+?'  # Matches unquoted arguments excluding specific characters
-    r')+)*'  # Repeats to capture multiple arguments
-    r')'  # Captures all following arguments as a group
-)
+COMMAND_TEMPLATE_PATTERN = (r'''
+        (?<!                # Start of negative lookbehind
+            (?<!['"`])      # Negative lookbehind for quotes or backticks
+            \#              # A literal hash symbol
+            [^\n'"`]        # Any characters except newline, quotes, or backticks
+        )
+        (
+            (?:
+                (?<![`'"])          # Not preceded by a backtick, single or double quote
+                ^|\n|&&|\|\||;)\s*  # Start of string, after command separator
+                |                   # Or
+                (?<!['`])\$\(       # Not preceded by a backtick or single quote and inside command block '$()'
+        )        
+        \b({command})\b             # Match formatted placeholder `command`
+        (
+            \s+                     # Require at least one whitespace after 'cd'
+            (?:
+                (?<!\\)(?:"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|`(?:\\.|[^`])*`)
+                |
+                \$\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\)
+                |
+                <\([^)]+\)
+                |
+                [^"'`\s\n&|;\#()]+
+                |
+                \s+
+                |
+                >[>&]?
+                |
+                [12]?>&[12]?
+            )*                      # Zero or more arguments, spaces, or redirections
+        )?                          # Make the entire argument part optional
+        \s*                         # Optional whitespace
+        (?:                         # Non-capturing group for end conditions
+            (?=\#)                  # Stop at unquoted #
+            |
+            (?=\s*(?:&&|\|\||;|\n|$|\)|\)\s*\)))  # Or at next separator, end of line, or closing parenthesis
+        )
+''')
+
 
 PATH_COMMAND_TEMPLATE_PATTERN = (
     r'\$\(\s*\b{command}\b\s+(".*?"|\'.*?\'|[^)]+)\s*\)'
@@ -31,7 +58,7 @@ def create_command_pattern(command, template=None):
 
     # Create a regex pattern dynamically based on the command
     pattern = re.compile(
-        template.format(command=escaped_command)
+        template.format(command=escaped_command), re.VERBOSE
     )
 
     return pattern
@@ -39,41 +66,7 @@ def create_command_pattern(command, template=None):
 
 # Regular expression to match source statements and global variable definitions
 # Example: source /path/to/file or . /path/to/file
-SOURCE_PATTERN = re.compile(r'''
-    (?<!                # Start of negative lookbehind
-        (?<!['"`])      # Negative lookbehind for quotes or backticks
-        \#              # A literal hash symbol
-        [^\n'"`]        # Any characters except newline, quotes, or backticks
-    )
-    (
-        (?:^|\n|&&|\|\||;)\s*       # Start of string or after command separator
-    )      
-    \b(source)\b                    # Match 'source' command
-    (
-            \s+                     # Require at least one whitespace after 'source'
-            (?:
-                (?<!\\)(?:"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|`(?:\\.|[^`])*`)
-                |
-                \$\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\)
-                |
-                <\([^)]+\)
-                |
-                [^"'`\s\n&|;\#]+
-                |
-                \s+
-                |
-                >[>&]?
-                |
-                [12]?>&[12]?
-            )*                      # Zero or more arguments, spaces, or redirections
-    )?                              # Make the entire argument part optional
-    \s*                             # Optional whitespace
-    (?:                             # Non-capturing group for end conditions
-        (?=\#)                      # Stop at unquoted #
-        |
-        (?=\s*(?:&&|\|\||;|\n|$))   # Or at next separator or end of line
-    )
-''', re.VERBOSE)
+SOURCE_PATTERN = create_command_pattern(command='source')
 
 # Regex to match dirname command usage, handling nested and mismatched quotes
 # Example: $(dirname "/path/to/dir")

@@ -5,7 +5,7 @@ from methods.regex.patterns import (
 )
 
 
-def extract_bash_commands(command, input_string, pattern=None, search_comments=False):
+def extract_bash_commands(command, input_string, pattern=None, search_comments=False, include_separator=False, strip=False):
     matches = []
 
     if not re.search(rf'\b{command}\b', input_string):
@@ -23,8 +23,14 @@ def extract_bash_commands(command, input_string, pattern=None, search_comments=F
         # Extract the full command with its arguments
         groups: tuple = match.groups()
         if groups and groups[1]:
+            if strip:
+                groups = tuple(map(lambda s: s.strip() if s else '', groups))
+
             separator, command, argument = groups
-            matches.append((command, argument.strip()))
+            if include_separator:
+                matches.append((separator or '', command or '', argument or ''))
+            else:
+                matches.append((command or '', argument or ''))
 
     return matches
 

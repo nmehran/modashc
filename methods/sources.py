@@ -294,9 +294,9 @@ def extract_sources_and_variables(script_path, context, sources, seen_sources: d
 
                 resolved_command = resolve_command(command, context)[0]
 
-                cd_match = extract_bash_commands('cd', resolved_command, CD_PATTERN)
+                cd_match = extract_bash_commands('cd', resolved_command, CD_PATTERN, strip=False)
                 if cd_match:
-                    cd_path = resolve_cd_path(cd_match)
+                    cd_path = resolve_cd_path(cd_match).strip()
                     current_directory = change_directory(cd_path, context)
                     context['path_declarations'][script_path][num].append(('cd', current_directory, cd_match, current_directory))
 

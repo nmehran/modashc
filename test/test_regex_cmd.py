@@ -6,7 +6,7 @@ from methods.regex.utilities import extract_bash_commands
 class TestCDCommandRegex(unittest.TestCase):
     def setUp(self):
         # Updated regex with proper escapes
-        self.regex = CD_PATTERN
+        self.pattern = CD_PATTERN
         self.command = 'cd'
 
     def test_cd_command_extraction(self):
@@ -31,7 +31,7 @@ class TestCDCommandRegex(unittest.TestCase):
             "# cd /home": None,
             "\"cd /not/a/command\"": None,
             "echo \"cd /not/a/command\"": None,
-            # "echo cd /no/command/separator": None,
+            "echo cd /no/command/separator": None,
             'echo "something" && cd "./dir1/script6.sh"': 'cd "./dir1/script6.sh"',
             "cd /home || echo 'failed'": "cd /home",
             "cd /etc && ls": "cd /etc",
@@ -51,16 +51,18 @@ class TestCDCommandRegex(unittest.TestCase):
 
         for case, expected in test_cases.items():
             with self.subTest(case=case):
-                matches = extract_bash_commands(self.command, case)
+                matches = extract_bash_commands(command=self.command, input_string=case,
+                                                pattern=self.pattern, include_separator=False, strip=False)
                 result = None
                 if matches:
-                    result = f"{matches[0][0]} {matches[0][1]}"  # First match command and argument
+                    result = ''.join(matches[0]).strip()
                 self.assertEqual(result, expected)
 
 
 class TestSourceRegex(unittest.TestCase):
     def setUp(self):
         self.pattern = SOURCE_PATTERN
+        self.command = 'source'
 
     def test_source_command(self):
         test_cases = {
@@ -99,10 +101,14 @@ class TestSourceRegex(unittest.TestCase):
             ]
         }
 
-        for input_string, expected_matches in test_cases.items():
-            with self.subTest(input=input_string):
-                matches = [''.join(m).strip() for m in self.pattern.findall(input_string)]
-                self.assertEqual(matches, expected_matches)
+        for case, expected_matches in test_cases.items():
+            with self.subTest(input=case):
+                matches = extract_bash_commands(command=self.command, input_string=case,
+                                                pattern=self.pattern, include_separator=True, strip=False)
+                result = []
+                if matches:
+                    result = [''.join(m).strip() for m in matches]
+                self.assertEqual(result, expected_matches)
 
 
 if __name__ == '__main__':
