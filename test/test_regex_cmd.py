@@ -62,7 +62,7 @@ class TestCDCommandRegex(unittest.TestCase):
 class TestSourceRegex(unittest.TestCase):
     def setUp(self):
         self.pattern = SOURCE_PATTERN
-        self.command = 'source'
+        self.command = r'source|\.'
 
     def test_source_command(self):
         test_cases = {
@@ -79,6 +79,7 @@ class TestSourceRegex(unittest.TestCase):
             'source "file with spaces.sh"': ['source "file with spaces.sh"'],
             'source $HOME/.bashrc': ['source $HOME/.bashrc'],
             'source ~/my_script.sh': ['source ~/my_script.sh'],
+            '. ~/my_script.sh': ['. ~/my_script.sh'],
             'source file.sh > /dev/null 2>&1': ['source file.sh > /dev/null 2>&1'],
             '  source   file.sh   ': ['source   file.sh'],
             'source # comment': ['source'],

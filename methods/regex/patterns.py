@@ -54,12 +54,17 @@ PATH_COMMAND_TEMPLATE_PATTERN = (
 )
 
 
-def create_command_pattern(command, template=None):
+def create_command_pattern(command, template=None, regex=False):
     if template is None:
         template = COMMAND_TEMPLATE_PATTERN
 
-    # Escape the command to handle any special characters it might contain
-    escaped_command = re.escape(command)
+    if regex:
+        # If the command is passed as a regular expression, it may have a different pattern
+        template = template.replace(r'\b({command})\b', '({command})')
+        escaped_command = command
+    else:
+        # Escape the command to handle any special characters it might contain
+        escaped_command = re.escape(command)
 
     # Create a regex pattern dynamically based on the command
     pattern = re.compile(
@@ -71,7 +76,7 @@ def create_command_pattern(command, template=None):
 
 # Regular expression to match source statements and global variable definitions
 # Example: source /path/to/file or . /path/to/file
-SOURCE_PATTERN = create_command_pattern(command='source')
+SOURCE_PATTERN = create_command_pattern(command=r'source|\.', regex=True)
 
 # Regex to match dirname command usage, handling nested and mismatched quotes
 # Example: $(dirname "/path/to/dir")
