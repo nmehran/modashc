@@ -76,7 +76,7 @@ def create_command_pattern(command, template=None, regex=False):
 
 # Regular expression to match source statements and global variable definitions
 # Example: source /path/to/file or . /path/to/file
-SOURCE_PATTERN = create_command_pattern(command=r'source|\.', regex=True)
+SOURCE_PATTERN = create_command_pattern(command=r'\bsource\b|\.', regex=True)
 
 # Regex to match dirname command usage, handling nested and mismatched quotes
 # Example: $(dirname "/path/to/dir")

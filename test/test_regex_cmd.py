@@ -62,7 +62,7 @@ class TestCDCommandRegex(unittest.TestCase):
 class TestSourceRegex(unittest.TestCase):
     def setUp(self):
         self.pattern = SOURCE_PATTERN
-        self.command = r'source|\.'
+        self.command = r'\bsource\b|\.'
 
     def test_source_command(self):
         test_cases = {
