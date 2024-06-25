@@ -59,7 +59,7 @@ class TestCDCommandRegex(unittest.TestCase):
                 self.assertEqual(result, expected)
 
 
-class TestSourceRegex(unittest.TestCase):
+class TestSourceCommandRegex(unittest.TestCase):
     def setUp(self):
         self.pattern = SOURCE_PATTERN
         self.command = r'\bsource\b|\.'
