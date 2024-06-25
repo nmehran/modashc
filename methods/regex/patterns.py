@@ -31,7 +31,7 @@ def create_command_pattern(command, template=None):
 
     # Create a regex pattern dynamically based on the command
     pattern = re.compile(
-        template.format(command=escaped_command), re.DOTALL
+        template.format(command=escaped_command)
     )
 
     return pattern
@@ -39,8 +39,41 @@ def create_command_pattern(command, template=None):
 
 # Regular expression to match source statements and global variable definitions
 # Example: source /path/to/file or . /path/to/file
-SOURCE_PATTERN = re.compile(r'(^|;\s*|\s*&{2}\s*|\$\(\s*)(source|\.)\s+([^\n#;]*)')
-# SOURCE_PATTERN = create_command_pattern(command='source')
+SOURCE_PATTERN = re.compile(r'''
+    (?<!                # Start of negative lookbehind
+        (?<!['"`])      # Negative lookbehind for quotes or backticks
+        \#              # A literal hash symbol
+        [^\n'"`]        # Any characters except newline, quotes, or backticks
+    )
+    (
+        (?:^|\n|&&|\|\||;)\s*       # Start of string or after command separator
+    )      
+    \b(source)\b                    # Match 'source' command
+    (
+            \s+                     # Require at least one whitespace after 'source'
+            (?:
+                (?<!\\)(?:"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|`(?:\\.|[^`])*`)
+                |
+                \$\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\)
+                |
+                <\([^)]+\)
+                |
+                [^"'`\s\n&|;\#]+
+                |
+                \s+
+                |
+                >[>&]?
+                |
+                [12]?>&[12]?
+            )*                      # Zero or more arguments, spaces, or redirections
+    )?                              # Make the entire argument part optional
+    \s*                             # Optional whitespace
+    (?:                             # Non-capturing group for end conditions
+        (?=\#)                      # Stop at unquoted #
+        |
+        (?=\s*(?:&&|\|\||;|\n|$))   # Or at next separator or end of line
+    )
+''', re.VERBOSE)
 
 # Regex to match dirname command usage, handling nested and mismatched quotes
 # Example: $(dirname "/path/to/dir")
@@ -56,8 +89,7 @@ REALPATH_PATTERN = create_command_pattern(command='realpath', template=PATH_COMM
 
 # Regex to capture set commands, ensuring they're not part of a comment or a string
 # Example: set -e or set +x
-SET_PATTERN = re.compile(r'^\s*set\s+([-\w\s]+)', re.MULTILINE)
-# SET_PATTERN = create_command_pattern(command='set')
+SET_PATTERN = create_command_pattern(command='set')
 
 # Regex for cd commands, accommodating paths with optional quotes and surrounding whitespace
 # Example: cd /path/to/dir or cd "/path with spaces"

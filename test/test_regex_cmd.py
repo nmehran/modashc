@@ -1,5 +1,5 @@
 import unittest
-from methods.regex.patterns import CD_PATTERN
+from methods.regex.patterns import CD_PATTERN, SOURCE_PATTERN
 from methods.regex.utilities import extract_bash_commands
 
 
@@ -27,9 +27,12 @@ class TestCDCommandRegex(unittest.TestCase):
             "cd ${HOME}/dir": "cd ${HOME}/dir",
             "cd ~/Documents": "cd ~/Documents",
             "echo 'random text cd /home'": None,
+            '" cd "': None,
             "# cd /home": None,
             "\"cd /not/a/command\"": None,
             "echo \"cd /not/a/command\"": None,
+            # "echo cd /no/command/separator": None,
+            'echo "something" && cd "./dir1/script6.sh"': 'cd "./dir1/script6.sh"',
             "cd /home || echo 'failed'": "cd /home",
             "cd /etc && ls": "cd /etc",
             'echo "done" && cd /tmp && echo "changed"': 'cd /tmp',
@@ -53,6 +56,53 @@ class TestCDCommandRegex(unittest.TestCase):
                 if matches:
                     result = f"{matches[0][0]} {matches[0][1]}"  # First match command and argument
                 self.assertEqual(result, expected)
+
+
+class TestSourceRegex(unittest.TestCase):
+    def setUp(self):
+        self.pattern = SOURCE_PATTERN
+
+    def test_source_command(self):
+        test_cases = {
+            'source': ['source'],
+            'source   ': ['source'],
+            'source file.sh': ['source file.sh'],
+            'source /path/to/file.sh': ['source /path/to/file.sh'],
+            'source "quoted file.sh"': ['source "quoted file.sh"'],
+            'source file.sh # comment': ['source file.sh'],
+            'echo "Hello" && source file.sh': ['&& source file.sh'],
+            'ls -l || source file.sh ; echo "Done"': ['|| source file.sh'],
+            'source file1.sh && source file2.sh': ['source file1.sh', '&& source file2.sh'],
+            'source file.sh arg1 arg2': ['source file.sh arg1 arg2'],
+            'source "file with spaces.sh"': ['source "file with spaces.sh"'],
+            'source $HOME/.bashrc': ['source $HOME/.bashrc'],
+            'source ~/my_script.sh': ['source ~/my_script.sh'],
+            'source file.sh > /dev/null 2>&1': ['source file.sh > /dev/null 2>&1'],
+            '  source   file.sh   ': ['source   file.sh'],
+            'source # comment': ['source'],
+            'source && echo "test"': ['source'],
+            'notsource file.sh': [],
+            'echo source': [],
+            '"source" file.sh': [],
+            'echo "test && source file.sh"': [],
+            '# && source file.sh': [],
+            'echo "source file.sh"': [],
+            'source "file.sh" # comment with "quotes"': ['source "file.sh"'],
+            'source `which my_script.sh`': ['source `which my_script.sh`'],
+            'source <(echo "echo Hello")': ['source <(echo "echo Hello")'],
+            'echo "This is the main script" && source "./dir1/script6.sh"': ['&& source "./dir1/script6.sh"'],
+            'source file.sh && source "quoted.sh" || source unquoted.sh': [
+                'source file.sh', '&& source "quoted.sh"', '|| source unquoted.sh'
+            ],
+            'source "unusual/file&&name#" && source $(ls bin/bash | xargs | awk\'\' \'{print $1}\')': [
+                'source "unusual/file&&name#"', '&& source $(ls bin/bash | xargs | awk\'\' \'{print $1}\')'
+            ]
+        }
+
+        for input_string, expected_matches in test_cases.items():
+            with self.subTest(input=input_string):
+                matches = [''.join(m).strip() for m in self.pattern.findall(input_string)]
+                self.assertEqual(matches, expected_matches)
 
 
 if __name__ == '__main__':
