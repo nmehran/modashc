@@ -78,6 +78,23 @@ class SourceRegressionTestCase(unittest.TestCase):
 
         self.assertEqual(after, before)
 
+    def test_relative_source_resolution_does_not_fall_back_to_process_cwd(self):
+        before = os.getcwd()
+        with ScriptProject() as project:
+            project.write("caller/dep.sh", 'echo "wrong cwd dependency"\n')
+            project.write("script/main.sh", 'source ./dep.sh\n')
+
+            try:
+                os.chdir(project.path("caller"))
+                actual = [
+                    path.relative_to(project.root).as_posix()
+                    for path in project.sources("script/main.sh")
+                ]
+            finally:
+                os.chdir(before)
+
+        self.assertEqual(actual, ["script/main.sh"])
+
     def test_sample_dir_discovery_graph_stays_explicit(self):
         before = os.getcwd()
         try:

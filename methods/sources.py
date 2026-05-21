@@ -97,9 +97,9 @@ def get_valid_path(command, base_dir=None):
         candidates = []
         if os.path.isabs(expanded_command):
             candidates.append(expanded_command)
+        elif base_dir:
+            candidates.append(os.path.join(base_dir, expanded_command))
         else:
-            if base_dir:
-                candidates.append(os.path.join(base_dir, expanded_command))
             candidates.append(expanded_command)
 
         for candidate in candidates:
