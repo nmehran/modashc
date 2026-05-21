@@ -15,7 +15,7 @@ class CompileRegressionTestCase(unittest.TestCase):
         with ScriptProject() as project:
             output_file = project.path("merged_script.sh")
 
-            project.compile("test/sample_dir/script_main.sh", output=output_file, cwd=REPO_ROOT)
+            project.compile("test/sample_dir/script_main.sh", output=output_file, cwd=REPO_ROOT, mode="executable")
             result = project.run(output_file, cwd=REPO_ROOT)
 
         self.assertEqual(result.returncode, 0, result.stdout)

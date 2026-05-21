@@ -4,7 +4,8 @@
 
 ## Features
 
-- **Merge Multiple Scripts**: Combines multiple Bash scripts into one, maintaining the order of dependencies.
+- **Context Output**: Produces a readable, dependency-first single file for human and LLM review.
+- **Executable Output**: Produces a runnable script that inlines sourced files at their source sites.
 - **Resolve Shell Functions**: Handles shell functions like `$(dirname ...)`, `$(basename ...)`, and `$(realpath ...)`.
 - **Variable Substitution**: Substitutes variables using a provided context and environment variables.
 - **Error Handling**: Validates paths and provides warnings for potential issues like unresolved variables.
@@ -23,7 +24,6 @@
 - **Variable Resolution**: `modashc` resolves variables based on the provided context and environment. Unresolved or dynamically generated variables at runtime may not be accurately substituted.
 - **Error Reporting**: The tool provides basic warnings and error messages. However, detailed debugging information for complex scripts might require manual inspection.
 - **Function Definitions**: The extraction of function definitions assumes standard Bash syntax. Non-standard or malformed function definitions may not be correctly identified and extracted.
-- **Comment Handling**: By default, the tool strips comments. This might result in the loss of important inline documentation unless explicitly managed.
 - **File System Changes**: `modashc` tracks the working directory during script processing using heuristics.  However, it may not accurately resolve `cd` commands called using unconventional or complex patterns.
 ## Installation
 
@@ -35,21 +35,23 @@
 
 ## Usage
 
-To use `modashc`, run the `main.py` script with the entry-point Bash script and the desired output file:
+To use `modashc`, run the CLI with the entry-point Bash script and the desired output file:
 
 ```sh
-python modashc.py <entrypoint> <output>
+python modashc.py <entrypoint> <output> [--mode context|executable]
 ```
 
 ### Arguments
 
 - `<entrypoint>`: The entry-point Bash script that initiates the merging process.
 - `<output>`: The output file where the merged script will be saved.
+- `--mode`: Output mode. `context` is the default readable mode; `executable` preserves Bash source execution behavior.
 
 ### Example
 
 ```sh
 python modashc.py scripts/main.sh merged_output.sh
+python modashc.py scripts/main.sh runnable_output.sh --mode executable
 ```
 
 ## How It Works

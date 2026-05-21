@@ -24,7 +24,7 @@ class TestCompile(unittest.TestCase):
 
     def test_compile(self):
         # Compile the scripts using modashc.py
-        compile_command = ['python', COMPILE_SCRIPT, self.entry_point, self.output_file]
+        compile_command = ['python', COMPILE_SCRIPT, self.entry_point, self.output_file, '--mode', 'executable']
         compile_result = subprocess.run(compile_command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 
         # Assert that compilation was successful

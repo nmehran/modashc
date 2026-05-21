@@ -330,6 +330,35 @@ def construct_file_separator(filepath, entry_point, delimiter="-", length=120):
     return separator
 
 
+def unique_paths(paths: list[str]):
+    unique = []
+    seen = set()
+    for path in paths:
+        resolved = os.path.abspath(path)
+        if resolved not in seen:
+            unique.append(resolved)
+            seen.add(resolved)
+    return unique
+
+
+def format_context_path(filepath: str, entry_point: str):
+    entry_directory = os.path.abspath(os.path.dirname(entry_point))
+    filepath = os.path.abspath(filepath)
+
+    try:
+        relative_path = os.path.relpath(filepath, start=entry_directory)
+    except ValueError:
+        return filepath
+
+    if relative_path == os.pardir or relative_path.startswith(os.pardir + os.sep):
+        return filepath
+    return relative_path
+
+
+def construct_context_source_comment(source_expression: str, resolved_path: str, entry_point: str):
+    return f"# modashc: source {source_expression.strip()} -> {format_context_path(resolved_path, entry_point)}"
+
+
 def read_file(filepath):
     with open(filepath, 'r') as file:
         return file.read()
@@ -384,7 +413,34 @@ def merge_files(_ordered_dependencies: list[str], entry_point, context):
     return output
 
 
-def compile_sources(entry_point: str, output_file: str):
+def render_context_files(ordered_dependencies: list[str], entry_point: str, context: dict):
+    output = [
+        "# modashc context",
+        f"# entrypoint: {format_context_path(entry_point, entry_point)}",
+        "# mode: context",
+        "",
+    ]
+
+    source_declarations = context.get('source_declarations', {})
+
+    for filepath in unique_paths(ordered_dependencies):
+        source_context = source_declarations.get(filepath, {})
+        output.append(construct_file_separator(filepath, entry_point))
+
+        for num, line in enumerate(read_file(filepath).splitlines()):
+            for resolved_path, source_expression in source_context.get(num, []):
+                output.append(construct_context_source_comment(source_expression, resolved_path, entry_point))
+            output.append(line)
+
+        output.append('')
+
+    return output
+
+
+def compile_sources(entry_point: str, output_file: str, mode: str = "context"):
+    if mode not in {"context", "executable"}:
+        raise ValueError(f"Unsupported compile mode: {mode}")
+
     if not validate_path(entry_point):
         raise FileNotFoundError(f"Error: Could not resolve the path to the entry point - {entry_point}")
 
@@ -392,6 +448,9 @@ def compile_sources(entry_point: str, output_file: str):
         raise OSError(f"Error: entry point must be a file - {entry_point}")
 
     sources, context = get_sources(os.path.abspath(entry_point))
-    output = merge_files(sources, entry_point, context)
+    if mode == "executable":
+        output = merge_files(sources, entry_point, context)
+    else:
+        output = render_context_files(sources, entry_point, context)
     content = '\n'.join(output)
     write_output(output_file, content)
