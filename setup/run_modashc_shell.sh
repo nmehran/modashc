@@ -13,6 +13,7 @@ if [ "$#" -ne 1 ]; then
 fi
 
 SCRIPT_PATH="$1"
+MODASHC_SHELL_PATH="${MODASHC_SHELL_PATH:-/opt/modashc/scripts/modashc_shell.sh}"
 
 # Check if the provided script file exists
 if [ ! -f "$SCRIPT_PATH" ]; then
@@ -20,10 +21,16 @@ if [ ! -f "$SCRIPT_PATH" ]; then
     exit 1
 fi
 
+if [ ! -x "$MODASHC_SHELL_PATH" ]; then
+    echo "Error: The modashc shell is not executable at '$MODASHC_SHELL_PATH'."
+    exit 1
+fi
+
 # Store original permissions and define a function to revert permissions
 ORIGINAL_SCRIPT_PERMS=$(stat -c "%a" "$SCRIPT_PATH")
 ORIGINAL_DIR_PERMS=$(stat -c "%a" "$(dirname "$SCRIPT_PATH")")
 
+# shellcheck disable=SC2317
 revert_permissions() {
     chmod "$ORIGINAL_SCRIPT_PERMS" "$SCRIPT_PATH"
     chmod "$ORIGINAL_DIR_PERMS" "$(dirname "$SCRIPT_PATH")"
@@ -38,7 +45,7 @@ chmod +x "$(dirname "$SCRIPT_PATH")"
 
 # Execute the script as 'modashc' using the restricted shell environment
 echo "Executing script as 'modashc': $SCRIPT_PATH"
-if sudo -u modashc /bin/bash "$SCRIPT_PATH"; then
+if sudo -u modashc "$MODASHC_SHELL_PATH" "$SCRIPT_PATH"; then
   echo "Script executed successfully."
   exit 0
 else
