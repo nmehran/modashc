@@ -60,6 +60,12 @@ python modashc.py scripts/main.sh merged_output.sh
 - `methods/compile.py`: Contains functions to extract script components, merge files, and write the final output.
 - `modashc.py`: Entry point for the CLI tool.
 
+### Optional Setup Helper
+
+The scripts under `setup/` configure and run an optional restricted `modashc`
+user for operational script execution. They are not part of the compiler
+pipeline and are not used for dependency discovery or source merging.
+
 ## Contributing
 
 Contributions are welcome! Please submit a pull request or open an issue to contribute features or report bugs. Feel free to discuss ideas and ask questions in [GitHub Discussions](https://github.com/nmehran/modashc/discussions).

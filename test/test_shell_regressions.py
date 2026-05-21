@@ -10,19 +10,22 @@ if str(REPO_ROOT) not in sys.path:
 from test.support import ScriptProject
 
 
-class ShellRegressionTestCase(unittest.TestCase):
+class SetupShellHelperRegressionTestCase(unittest.TestCase):
+    def run_helper(self, target):
+        return subprocess.run(
+            ["bash", str(REPO_ROOT / "setup" / "modashc_shell.sh"), str(target)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=2,
+        )
+
     def test_modashc_shell_executes_script_argument_non_interactively(self):
         with ScriptProject() as project:
             marker = project.path("marker")
             target = project.write("target.sh", f'#!/bin/bash\necho "ran" > "{marker}"\n', executable=True)
 
-            result = subprocess.run(
-                ["bash", str(REPO_ROOT / "setup" / "modashc_shell.sh"), str(target)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                timeout=2,
-            )
+            result = self.run_helper(target)
 
             self.assertEqual(result.returncode, 0, result.stdout)
             self.assertTrue(marker.exists(), result.stdout)
@@ -37,13 +40,7 @@ class ShellRegressionTestCase(unittest.TestCase):
                 executable=True,
             )
 
-            result = subprocess.run(
-                ["bash", str(REPO_ROOT / "setup" / "modashc_shell.sh"), str(target)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                timeout=2,
-            )
+            result = self.run_helper(target)
 
             self.assertEqual(result.returncode, 126, result.stdout)
             self.assertIn("Command not allowed: uname", result.stdout)
@@ -58,13 +55,7 @@ class ShellRegressionTestCase(unittest.TestCase):
                 executable=True,
             )
 
-            result = subprocess.run(
-                ["bash", str(REPO_ROOT / "setup" / "modashc_shell.sh"), str(target)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                timeout=2,
-            )
+            result = self.run_helper(target)
 
             self.assertEqual(result.returncode, 126, result.stdout)
             self.assertIn("Command not allowed: uname", result.stdout)
@@ -78,13 +69,7 @@ class ShellRegressionTestCase(unittest.TestCase):
                 executable=True,
             )
 
-            result = subprocess.run(
-                ["bash", str(REPO_ROOT / "setup" / "modashc_shell.sh"), str(target)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                timeout=2,
-            )
+            result = self.run_helper(target)
 
             self.assertEqual(result.returncode, 0, result.stdout)
             self.assertEqual(result.stdout, "a b\nzero two\n")
@@ -97,16 +82,28 @@ class ShellRegressionTestCase(unittest.TestCase):
                 executable=True,
             )
 
-            result = subprocess.run(
-                ["bash", str(REPO_ROOT / "setup" / "modashc_shell.sh"), str(target)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                timeout=2,
-            )
+            result = self.run_helper(target)
 
             self.assertEqual(result.returncode, 0, result.stdout)
             self.assertEqual(result.stdout, "one\ntwo\ncase\n")
+
+    def test_modashc_shell_rejects_command_spawning_helper_tools(self):
+        cases = {
+            "env": "env /usr/bin/uname\n",
+            "find": "find . -exec /usr/bin/uname \\;\n",
+            "awk": "awk 'BEGIN { system(\"/usr/bin/uname\") }'\n",
+            "xargs": 'printf "%s\\n" /usr/bin/uname | xargs\n',
+        }
+
+        for name, content in cases.items():
+            with self.subTest(name=name), ScriptProject() as project:
+                target = project.write("target.sh", f"#!/bin/bash\n{content}echo after\n", executable=True)
+
+                result = self.run_helper(target)
+
+                self.assertEqual(result.returncode, 126, result.stdout)
+                self.assertIn(f"Command not allowed: {name}", result.stdout)
+                self.assertNotIn("after", result.stdout)
 
     def test_runner_invokes_modashc_shell_instead_of_bash(self):
         runner = (REPO_ROOT / "setup" / "run_modashc_shell.sh").read_text()
