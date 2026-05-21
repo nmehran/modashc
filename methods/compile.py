@@ -16,6 +16,63 @@ SET_SHEBANG = "#!/bin/bash"
 SET_DECLARATIVE = "set -eEuo pipefail"
 
 
+def shell_quote(value: str):
+    return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
+def replace_runtime_source_references(line: str, filepath: str, entry_point: str):
+    bash_source = shell_quote(os.path.abspath(filepath))
+    entry_source = shell_quote(os.path.abspath(entry_point))
+
+    replacements = {
+        '"${BASH_SOURCE[0]}"': bash_source,
+        '"${BASH_SOURCE}"': bash_source,
+        '"$BASH_SOURCE"': bash_source,
+        '${BASH_SOURCE[0]}': bash_source,
+        '${BASH_SOURCE}': bash_source,
+        '$BASH_SOURCE': bash_source,
+        '"${0}"': entry_source,
+        '"$0"': entry_source,
+        '${0}': entry_source,
+    }
+
+    for old, new in replacements.items():
+        line = line.replace(old, new)
+
+    return re.sub(r'\$0(?![0-9])', entry_source, line)
+
+
+def indent_block(content: str, prefix: str):
+    lines = content.splitlines()
+    return '\n'.join(f"{prefix}{line}" if line else line for line in lines)
+
+
+def replace_source_sites(line: str, source_paths: list[str], render_source):
+    if not source_paths:
+        return line
+
+    updated_parts = []
+    last_end = 0
+    source_index = 0
+
+    for match in SOURCE_PATTERN.finditer(line):
+        if source_index >= len(source_paths):
+            break
+
+        separator = match.group(1) or ''
+        indent = re.match(r'\s*', separator).group(0) if separator else ''
+        rendered_source = indent_block(render_source(source_paths[source_index]), indent)
+        replacement = f"{separator}{{\n{rendered_source}\n{indent}}}"
+
+        updated_parts.append(line[last_end:match.start()])
+        updated_parts.append(replacement)
+        last_end = match.end()
+        source_index += 1
+
+    updated_parts.append(line[last_end:])
+    return ''.join(updated_parts)
+
+
 def extract_desired_content_including_functions(filepath, content, context, entry_directory: str, strip_comments=True):
     output = []
     bracket_depth = 0  # Track the depth of curly braces to handle nested function blocks
@@ -283,31 +340,46 @@ def write_output(filename, content):
         file.write(content)
 
 
-def merge_files(ordered_dependencies: list[str], entry_point, context):
-    all_sets = []
+def merge_files(_ordered_dependencies: list[str], entry_point, context):
     file_contents = {}
-    entry_directory = os.path.dirname(entry_point)
+    render_stack = []
 
-    for filepath in ordered_dependencies:
-        if filepath.endswith('.sh'):
+    def get_content(filepath):
+        if filepath not in file_contents:
             content = read_file(filepath)
             file_contents[filepath] = content
+        return file_contents[filepath]
 
-            # Extract components
-            all_sets.append(extract_set_declarations(content))
+    def render_file(filepath):
+        filepath = os.path.abspath(filepath)
+        if filepath in render_stack:
+            chain = " -> ".join([*render_stack, filepath])
+            raise RecursionError(f"Circular source dependency while rendering: {chain}")
 
-    # Combine everything
-    output = [SET_SHEBANG, '', SET_DECLARATIVE, '']
+        render_stack.append(filepath)
+        try:
+            source_context = context.get('source_declarations', {}).get(filepath, {})
+            output = []
 
-    for filepath in ordered_dependencies:
-        separator = construct_file_separator(filepath, entry_point)
-        output.append('')
-        output.append(separator)
+            for num, line in enumerate(get_content(filepath).splitlines()):
+                stripped_line = line.strip()
+                if not stripped_line or stripped_line.startswith("#"):
+                    continue
 
-        contents = file_contents[filepath]
-        definitions = extract_desired_content_including_functions(filepath, contents, context, entry_directory)
-        output.append(definitions)
-        output.append('')
+                line = replace_runtime_source_references(line, filepath, entry_point)
+                source_paths = [source_path for source_path, _ in source_context.get(num, [])]
+                line = replace_source_sites(line, source_paths, render_file)
+                output.append(line)
+
+            return '\n'.join(output)
+        finally:
+            render_stack.pop()
+
+    # Build from the entry point so sourced files execute at their source sites.
+    output = [SET_SHEBANG, '']
+    output.append(construct_file_separator(entry_point, entry_point))
+    output.append(render_file(os.path.abspath(entry_point)))
+    output.append('')
 
     return output
 
@@ -321,5 +393,5 @@ def compile_sources(entry_point: str, output_file: str):
 
     sources, context = get_sources(os.path.abspath(entry_point))
     output = merge_files(sources, entry_point, context)
-    content = sanitize_sources(content='\n'.join(output))
+    content = '\n'.join(output)
     write_output(output_file, content)

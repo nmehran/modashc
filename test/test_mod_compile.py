@@ -45,6 +45,8 @@ class TestCompile(unittest.TestCase):
         expected_output = (
             "This is the last dependency: script6.sh in dir1\n"
             "This directory contains the compiled outputs used by the `modashc` test suite.\n"
+            "This is the last dependency: script6.sh in dir1\n"
+            "This directory contains the compiled outputs used by the `modashc` test suite.\n"
             "This is script5.sh in the root directory\n"
             "This is script4.sh in the root directory\n"
             "This is script3.sh in 'dir with spaces'\n"

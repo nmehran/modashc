@@ -52,13 +52,19 @@ def define_variable(var_match, context):
     return var_name, strip_matching_quotes(var_value)
 
 
-def resolve_shell_path_commands(path_command: str):
+def resolve_shell_path_commands(path_command: str, base_dir=None):
     """Resolve shell functions like $(dirname ...) and $(basename ...)"""
+
+    def resolve_realpath(path):
+        path = strip_quotes(path)
+        if base_dir and not os.path.isabs(path):
+            path = os.path.join(base_dir, path)
+        return os.path.abspath(path)
 
     commands = {
         'dirname': (os.path.dirname, DIRNAME_PATTERN),
         'basename': (os.path.basename, BASENAME_PATTERN),
-        'realpath': (os.path.abspath, REALPATH_PATTERN)
+        'realpath': (resolve_realpath, REALPATH_PATTERN)
     }
 
     while True:
@@ -148,7 +154,7 @@ def resolve_command(command, context):
     command = os.path.expandvars(command)
 
     # Handle shell functions like $(dirname ...) and $(basename ...)
-    command = resolve_shell_path_commands(command)
+    command = resolve_shell_path_commands(command, context.get('current_directory'))
 
     # If path, normalize and convert to absolute path
     is_valid_path = False
@@ -313,6 +319,22 @@ def resolve_path(source_path: str, context: dict):
     return None
 
 
+def is_unsupported_dynamic_source(command: str, source_path: str | None = None):
+    stripped_command = command.strip()
+    source_path = source_path or ""
+
+    if "`" in source_path:
+        return True
+
+    if re.search(r'\$\(\s*(?!dirname\b|basename\b|realpath\b)', source_path):
+        return True
+
+    if re.match(r'^(eval|bash\s+-c)\b', stripped_command) and re.search(r'\bsource\b|\.\s+', stripped_command):
+        return True
+
+    return False
+
+
 def extract_sources_and_variables(script_path, context, sources, seen_sources: dict, references=None):
     """Extract source statements and global variables from a shell script."""
 
@@ -321,6 +343,9 @@ def extract_sources_and_variables(script_path, context, sources, seen_sources: d
 
     if script_path not in context['path_declarations']:
         context['path_declarations'][script_path] = defaultdict(list)
+
+    if script_path not in context['source_declarations']:
+        context['source_declarations'][script_path] = defaultdict(list)
 
     if script_path not in seen_sources:
         seen_sources[script_path] = defaultdict(int)
@@ -362,13 +387,19 @@ def extract_sources_and_variables(script_path, context, sources, seen_sources: d
 
                     # Match source statements
                     source_matches = SOURCE_PATTERN.findall(command)
+                    if not source_matches and is_unsupported_dynamic_source(command):
+                        raise NotImplementedError(f"unsupported dynamic source command: {command.strip()}")
+
                     for _, _, source_path in source_matches:
                         resolved_path = resolve_path(source_path, context)
                         if resolved_path:
+                            context['source_declarations'][script_path][num].append((resolved_path, source_path))
                             extract_sources_and_variables(resolved_path, context, sources, seen_sources, references)
                             context['vars']['BASH_SOURCE'] = os.path.abspath(script_path)
                             if seen_sources[resolved_path][script_path] == 1:
                                 sources.append(resolved_path)
+                        elif is_unsupported_dynamic_source(command, source_path):
+                            raise NotImplementedError(f"unsupported dynamic source command: {command.strip()}")
     finally:
         if previous_bash_source is None:
             context['vars'].pop('BASH_SOURCE', None)
@@ -386,7 +417,8 @@ def get_sources(entrypoint):
     context = {
         'vars': {'0': os.path.abspath(entrypoint)},
         'current_directory': current_directory,
-        'path_declarations': {}}
+        'path_declarations': {},
+        'source_declarations': {}}
     change_directory(current_directory, context)
 
     extract_sources_and_variables(entrypoint, context, sources, seen_sources={})
