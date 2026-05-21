@@ -1,5 +1,12 @@
 import os
+import sys
 import unittest
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+TEST_DIR = Path(__file__).resolve().parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from methods.sources import get_sources
 
@@ -19,7 +26,7 @@ class TestGetSources(unittest.TestCase):
         ]
 
         # Example usage
-        entry_point = os.path.abspath("./sample_dir/script_main.sh")
+        entry_point = os.path.abspath(TEST_DIR / "sample_dir" / "script_main.sh")
         entry_directory = os.path.dirname(entry_point)
         actual_sources = [os.path.relpath(path, entry_directory) for path in get_sources(entry_point)[0]]
 

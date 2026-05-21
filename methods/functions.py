@@ -56,7 +56,12 @@ def find_function_calls(bash_file):
     return function_calls
 
 
-# Usage example
-bash_file_path = '/home/delta/PythonProjects/ansible-k3s-cilium-ha/scripts/K3S-HA-Deploy/wireguard/wiresync/src/main.sh'
-functions = find_function_calls(bash_file_path)
-print("Function calls found:", functions)
+if __name__ == "__main__":
+    import sys
+
+    if len(sys.argv) != 2:
+        print(f"Usage: {sys.argv[0]} /path/to/script.sh", file=sys.stderr)
+        sys.exit(2)
+
+    functions = find_function_calls(sys.argv[1])
+    print("Function calls found:", functions)

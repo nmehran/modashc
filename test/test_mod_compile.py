@@ -1,15 +1,20 @@
 import os
+import sys
 import subprocess
 import unittest
+from pathlib import Path
 
-PWD = os.getcwd()
+REPO_ROOT = Path(__file__).resolve().parents[1]
+TEST_DIR = Path(__file__).resolve().parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
-# Path to `compile.py`
-COMPILE_SCRIPT = os.path.abspath(f"{PWD}/../modashc.py")
+# Path to `modashc.py`
+COMPILE_SCRIPT = str(REPO_ROOT / "modashc.py")
 
 # Global variables for entry point and output file
-ENTRY_POINT = os.path.abspath(f'{PWD}/sample_dir/script_main.sh')
-OUTPUT_FILE = os.path.abspath(f'{PWD}/outputs/merged_script.sh')
+ENTRY_POINT = str(TEST_DIR / "sample_dir" / "script_main.sh")
+OUTPUT_FILE = str(TEST_DIR / "outputs" / "merged_script.sh")
 
 
 class TestCompile(unittest.TestCase):
@@ -34,6 +39,7 @@ class TestCompile(unittest.TestCase):
         execution_result = subprocess.run(execution_command,
                                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                           text=True)
+        self.assertEqual(execution_result.returncode, 0, execution_result.stdout)
 
         # Define the expected output
         expected_output = (
