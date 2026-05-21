@@ -167,25 +167,6 @@ def resolve_command(command, context):
     return command, is_valid_path
 
 
-def sort_sources_depth_first(sources, entry_point):
-    ordered_sources = []
-    visited = set()
-
-    def dfs(file_path):
-        if file_path in visited:
-            return
-        visited.add(file_path)
-        # First recurse for each source file listed under the current file
-        for src in sources.get(file_path, []):
-            dfs(src)
-        # Append the current file to the ordered list after processing all its dependencies
-        ordered_sources.append(file_path)
-
-    # Start DFS from the entry point
-    dfs(entry_point)
-    return ordered_sources
-
-
 def get_commands(line: str):
     commands = []
     current = []
@@ -275,35 +256,10 @@ def enforce_recursion_limit(seen_sources, script_path, references):
     return
 
 
-def is_absolute_path(path):
-    # Strip matching single and double quotes from the start and end of the path
-    stripped_path = strip_matching_quotes(path)
-    # Use os.path.isabs to check if the path is absolute
-    return os.path.isabs(stripped_path)
-
-
 def is_relative_path(path: str):
     # Strip matching single and double quotes from the start and end of the path
     stripped_path = strip_matching_quotes(path)
     return bool(stripped_path) and not os.path.isabs(stripped_path)
-
-
-def is_within_subtree(paths, directory):
-    if isinstance(paths, str):
-        paths = [paths]
-
-    # Resolve all paths to their absolute forms
-    resolved_paths = [os.path.abspath(path) for path in paths]
-    resolved_directory = os.path.abspath(directory)
-
-    try:
-        # Get the common path of the resolved paths and the directory
-        common_path = os.path.commonpath(resolved_paths + [resolved_directory])
-        # Compare the common path with the resolved directory
-        return common_path == resolved_directory
-    except ValueError:
-        # Happens when paths is empty or contains non-existent paths
-        return False
 
 
 def resolve_path(source_path: str, context: dict):
@@ -341,9 +297,6 @@ def extract_sources_and_variables(script_path, context, sources, seen_sources: d
     if not validate_path(script_path):
         raise FileNotFoundError(f"Error: File does not exist - {script_path}")
 
-    if script_path not in context['path_declarations']:
-        context['path_declarations'][script_path] = defaultdict(list)
-
     if script_path not in context['source_declarations']:
         context['source_declarations'][script_path] = defaultdict(list)
 
@@ -373,17 +326,14 @@ def extract_sources_and_variables(script_path, context, sources, seen_sources: d
                     cd_match = extract_bash_commands('cd', resolved_command, CD_PATTERN, strip=False)
                     if cd_match:
                         cd_path = resolve_cd_path(cd_match).strip()
-                        current_directory = change_directory(cd_path, context)
-                        context['path_declarations'][script_path][num].append(('cd', current_directory, cd_match, current_directory))
+                        change_directory(cd_path, context)
 
                     # Match variable definitions
                     var_match = VARIABLE_ASSIGNMENT_PATTERN.match(command)
                     if var_match:
                         var_name, var_value = define_variable(var_match, context)
-                        resolved_command, is_valid_path = resolve_command(var_value, context)
+                        resolved_command, _ = resolve_command(var_value, context)
                         context['vars'][var_name] = resolved_command
-                        if is_valid_path:
-                            context['path_declarations'][script_path][num].append(('var', resolved_command, var_match.groups(), context['current_directory']))
 
                     # Match source statements
                     source_matches = SOURCE_PATTERN.findall(command)
@@ -417,7 +367,6 @@ def get_sources(entrypoint):
     context = {
         'vars': {'0': os.path.abspath(entrypoint)},
         'current_directory': current_directory,
-        'path_declarations': {},
         'source_declarations': {}}
     change_directory(current_directory, context)
 

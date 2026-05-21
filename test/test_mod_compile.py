@@ -1,6 +1,6 @@
-import os
-import sys
 import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -12,36 +12,28 @@ if str(REPO_ROOT) not in sys.path:
 # Path to `modashc.py`
 COMPILE_SCRIPT = str(REPO_ROOT / "modashc.py")
 
-# Global variables for entry point and output file
 ENTRY_POINT = str(TEST_DIR / "sample_dir" / "script_main.sh")
-OUTPUT_FILE = str(TEST_DIR / "outputs" / "merged_script.sh")
 
 
 class TestCompile(unittest.TestCase):
-    def setUp(self):
-        self.entry_point = ENTRY_POINT
-        self.output_file = OUTPUT_FILE
-
     def test_compile(self):
-        # Compile the scripts using modashc.py
-        compile_command = ['python', COMPILE_SCRIPT, self.entry_point, self.output_file, '--mode', 'executable']
-        compile_result = subprocess.run(compile_command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            output_file = Path(tmp_dir) / "merged_script.sh"
+            compile_command = [sys.executable, COMPILE_SCRIPT, ENTRY_POINT, str(output_file), '--mode', 'executable']
+            compile_result = subprocess.run(compile_command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 
-        # Assert that compilation was successful
-        self.assertEqual(first=compile_result.returncode,
-                         second=0,
-                         msg=f"Error compiling output to '{self.output_file}' using `modashc.py`\n"
-                             f"Error: {compile_result.stdout}")
-        self.assertTrue(os.path.exists(self.output_file), "Output file was not created")
+            self.assertEqual(first=compile_result.returncode,
+                             second=0,
+                             msg=f"Error compiling output to '{output_file}' using `modashc.py`\n"
+                                 f"Error: {compile_result.stdout}")
+            self.assertTrue(output_file.exists(), "Output file was not created")
 
-        # Execute the compiled output script
-        execution_command = ['bash', self.output_file]
-        execution_result = subprocess.run(execution_command,
-                                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                          text=True)
-        self.assertEqual(execution_result.returncode, 0, execution_result.stdout)
+            execution_command = ['bash', str(output_file)]
+            execution_result = subprocess.run(execution_command,
+                                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                              text=True)
+            self.assertEqual(execution_result.returncode, 0, execution_result.stdout)
 
-        # Define the expected output
         expected_output = (
             "This is the last dependency: script6.sh in dir1\n"
             "This directory contains the compiled outputs used by the `modashc` test suite.\n"
@@ -55,17 +47,9 @@ class TestCompile(unittest.TestCase):
             "This is the main script\n"
         )
 
-        # Check if the actual output from executing the compiled script matches the expected output
         self.assertEqual(execution_result.stdout, expected_output,
                          "The execution output did not match the expected result")
-
-        # Inform about test success
-        print("Success: `TestCompile` passed without errors.")
 
 
 if __name__ == '__main__':
     unittest.main()
-
-    # Uncomment below to test the main method directly:
-    # from modashc import main
-    # main(ENTRY_POINT, OUTPUT_FILE)

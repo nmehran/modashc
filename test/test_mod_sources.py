@@ -32,8 +32,6 @@ class TestGetSources(unittest.TestCase):
 
         self.assertEqual(expected_sources, actual_sources)
 
-        print("Success: `TestGetSources` passed without errors.")
-
 
 if __name__ == '__main__':
     unittest.main()
