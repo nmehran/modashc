@@ -89,12 +89,23 @@ def strip_quotes(path):
     return path
 
 
-def get_valid_path(command):
+def get_valid_path(command, base_dir=None):
     if len(command) >= 1:
-        unquoted_command = strip_matching_quotes(command)
-        command = os.path.abspath(unquoted_command)
-        if os.path.exists(command):
-            return command
+        unquoted_command = strip_quotes(strip_matching_quotes(command.strip()))
+        expanded_command = os.path.expanduser(os.path.expandvars(unquoted_command))
+
+        candidates = []
+        if os.path.isabs(expanded_command):
+            candidates.append(expanded_command)
+        else:
+            if base_dir:
+                candidates.append(os.path.join(base_dir, expanded_command))
+            candidates.append(expanded_command)
+
+        for candidate in candidates:
+            resolved = os.path.abspath(candidate)
+            if os.path.exists(resolved):
+                return resolved
     return ""
 
 
@@ -141,7 +152,7 @@ def resolve_command(command, context):
 
     # If path, normalize and convert to absolute path
     is_valid_path = False
-    if path := get_valid_path(command):
+    if path := get_valid_path(command, context.get('current_directory')):
         is_valid_path = True
         command = path
     elif not command:
@@ -170,8 +181,51 @@ def sort_sources_depth_first(sources, entry_point):
 
 
 def get_commands(line: str):
-    lines = line.split('#')[0].split(';')
-    return map(str.strip, lines)
+    commands = []
+    current = []
+    in_single_quote = False
+    in_double_quote = False
+    escaped = False
+
+    for char in line:
+        if escaped:
+            current.append(char)
+            escaped = False
+            continue
+
+        if char == '\\' and not in_single_quote:
+            current.append(char)
+            escaped = True
+            continue
+
+        if char == "'" and not in_double_quote:
+            in_single_quote = not in_single_quote
+            current.append(char)
+            continue
+
+        if char == '"' and not in_single_quote:
+            in_double_quote = not in_double_quote
+            current.append(char)
+            continue
+
+        if char == '#' and not in_single_quote and not in_double_quote:
+            if not current or current[-1].isspace():
+                break
+
+        if char == ';' and not in_single_quote and not in_double_quote:
+            command = ''.join(current).strip()
+            if command:
+                commands.append(command)
+            current = []
+            continue
+
+        current.append(char)
+
+    command = ''.join(current).strip()
+    if command:
+        commands.append(command)
+
+    return commands
 
 
 def resolve_cd_path(cd_match: tuple[str, str]):
@@ -199,11 +253,6 @@ def change_directory(path: str, context: dict) -> str:
     if not os.path.isdir(new_path):
         raise NotADirectoryError(f"Directory not found: {new_path}")
 
-    try:
-        os.chdir(new_path)
-    except Exception as e:
-        raise OSError(f"Could not change to directory: {new_path}.\nError:\n{e}")
-
     context['current_directory'] = new_path
     return new_path
 
@@ -230,8 +279,7 @@ def is_absolute_path(path):
 def is_relative_path(path: str):
     # Strip matching single and double quotes from the start and end of the path
     stripped_path = strip_matching_quotes(path)
-    # If path is not absolute and exists, it is relative
-    return not os.path.isabs(stripped_path) and os.path.exists(path)
+    return bool(stripped_path) and not os.path.isabs(stripped_path)
 
 
 def is_within_subtree(paths, directory):
@@ -283,41 +331,49 @@ def extract_sources_and_variables(script_path, context, sources, seen_sources: d
         enforce_recursion_limit(seen_sources, script_path, references)
         references = (*references, script_path)
 
+    previous_bash_source = context['vars'].get('BASH_SOURCE')
     context['vars']['BASH_SOURCE'] = os.path.abspath(script_path)
 
-    with open(script_path, 'r') as file:
-        for num, line in enumerate(file):
-            for command in get_commands(line):
-                # Skip lines that are commented or start with a quote
-                if not command or re.match(r'\s*["\']', line):
-                    continue
+    try:
+        with open(script_path, 'r') as file:
+            for num, line in enumerate(file):
+                for command in get_commands(line):
+                    # Skip commands that are quoted strings rather than shell commands.
+                    if not command or re.match(r'\s*["\']', command):
+                        continue
 
-                resolved_command = resolve_command(command, context)[0]
+                    context['vars']['BASH_SOURCE'] = os.path.abspath(script_path)
+                    resolved_command = resolve_command(command, context)[0]
 
-                cd_match = extract_bash_commands('cd', resolved_command, CD_PATTERN, strip=False)
-                if cd_match:
-                    cd_path = resolve_cd_path(cd_match).strip()
-                    current_directory = change_directory(cd_path, context)
-                    context['path_declarations'][script_path][num].append(('cd', current_directory, cd_match, current_directory))
+                    cd_match = extract_bash_commands('cd', resolved_command, CD_PATTERN, strip=False)
+                    if cd_match:
+                        cd_path = resolve_cd_path(cd_match).strip()
+                        current_directory = change_directory(cd_path, context)
+                        context['path_declarations'][script_path][num].append(('cd', current_directory, cd_match, current_directory))
 
-                # Match variable definitions
-                var_match = VARIABLE_ASSIGNMENT_PATTERN.match(line)
-                if var_match:
-                    var_name, var_value = define_variable(var_match, context)
-                    resolved_command, is_valid_path = resolve_command(var_value, context)
-                    context['vars'][var_name] = resolved_command
-                    if is_valid_path:
-                        context['path_declarations'][script_path][num].append(('var', resolved_command, var_match.groups(), context['current_directory']))
+                    # Match variable definitions
+                    var_match = VARIABLE_ASSIGNMENT_PATTERN.match(command)
+                    if var_match:
+                        var_name, var_value = define_variable(var_match, context)
+                        resolved_command, is_valid_path = resolve_command(var_value, context)
+                        context['vars'][var_name] = resolved_command
+                        if is_valid_path:
+                            context['path_declarations'][script_path][num].append(('var', resolved_command, var_match.groups(), context['current_directory']))
 
-                # Match source statements
-                source_matches = SOURCE_PATTERN.findall(line)
-                for _, _, source_path in source_matches:
-                    # Strip quotes which might be used to enclose paths with spaces
-                    resolved_path = resolve_path(source_path, context)
-                    if resolved_path:
-                        extract_sources_and_variables(resolved_path, context, sources, seen_sources, references)
-                        if seen_sources[resolved_path][script_path] == 1:
-                            sources.append(resolved_path)
+                    # Match source statements
+                    source_matches = SOURCE_PATTERN.findall(command)
+                    for _, _, source_path in source_matches:
+                        resolved_path = resolve_path(source_path, context)
+                        if resolved_path:
+                            extract_sources_and_variables(resolved_path, context, sources, seen_sources, references)
+                            context['vars']['BASH_SOURCE'] = os.path.abspath(script_path)
+                            if seen_sources[resolved_path][script_path] == 1:
+                                sources.append(resolved_path)
+    finally:
+        if previous_bash_source is None:
+            context['vars'].pop('BASH_SOURCE', None)
+        else:
+            context['vars']['BASH_SOURCE'] = previous_bash_source
 
     return sources
 

@@ -51,12 +51,11 @@ def extract_desired_content_including_functions(filepath, content, context, entr
                 else:  # else path-type is `var`
                     scope, var_name, sign, var_value = match_groups
                     value = strip_quotes(var_value)
-                    if value.endswith('.sh') and is_within_subtree(value, entry_directory):
-                        if os.path.isfile(value):
+                    if value.endswith('.sh') and is_within_subtree(path, entry_directory):
+                        if os.path.isfile(path):
                             # The current file is included in the compiled script
                             line = VARIABLE_ASSIGNMENT_PATTERN.sub(f'{var_name}{sign}"$BASH_SOURCE"', line, count=1)
                     elif is_relative_path(value):
-                        assert os.path.abspath(value) == path
                         line = VARIABLE_ASSIGNMENT_PATTERN.sub(f'{var_name}{sign}"{path}"', line, count=1)
 
         # Include lines based on current state
