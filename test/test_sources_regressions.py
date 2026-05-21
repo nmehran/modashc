@@ -8,6 +8,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from methods.sources import get_commands, get_sources
+from test.support import ScriptProject
 
 
 class SourceRegressionTestCase(unittest.TestCase):
@@ -35,15 +36,66 @@ class SourceRegressionTestCase(unittest.TestCase):
             ['echo "not # comment"', 'source file.sh'],
         )
 
+    def test_static_source_discovery_matrix(self):
+        with ScriptProject() as project:
+            absolute_dep = project.write("absolute.sh", 'echo "absolute"\n')
+            project.write("dep.sh", 'echo "relative"\n')
+            project.write("dot.sh", 'echo "dot"\n')
+            project.write("dir with spaces/dep.sh", 'echo "spaces"\n')
+            project.write("dir#tag/dep.sh", 'echo "hash"\n')
+            project.write("config", 'echo "config"\n')
+            project.write("main.sh", "\n".join([
+                "source ./dep.sh",
+                ". ./dot.sh",
+                'source "./dir with spaces/dep.sh"',
+                'source "./dir#tag/dep.sh"',
+                "source ./config",
+                f'source "{absolute_dep}"',
+                "",
+            ]))
+
+            project.assert_sources(self, "main.sh", [
+                "dep.sh",
+                "dot.sh",
+                "dir with spaces/dep.sh",
+                "dir#tag/dep.sh",
+                "config",
+                "absolute.sh",
+                "main.sh",
+            ])
+
     def test_get_sources_does_not_mutate_process_cwd(self):
+        with ScriptProject() as project:
+            project.write("dir1/dep.sh", 'echo "dep"\n')
+            entry = project.write("main.sh", 'cd dir1\nsource ./dep.sh\n')
+
+            before = os.getcwd()
+            try:
+                get_sources(str(entry))
+                after = os.getcwd()
+            finally:
+                os.chdir(before)
+
+        self.assertEqual(after, before)
+
+    def test_sample_dir_discovery_graph_stays_explicit(self):
         before = os.getcwd()
         try:
-            get_sources(str(REPO_ROOT / "test" / "sample_dir" / "script_main.sh"))
-            after = os.getcwd()
+            actual_sources, _ = get_sources(str(REPO_ROOT / "test" / "sample_dir" / "script_main.sh"))
+            entry_directory = REPO_ROOT / "test" / "sample_dir"
+            actual = [Path(path).relative_to(entry_directory).as_posix() for path in actual_sources]
         finally:
             os.chdir(before)
 
-        self.assertEqual(after, before)
+        self.assertEqual(actual, [
+            "dir1/script6.sh",
+            "script5.sh",
+            "script4.sh",
+            "dir with spaces/script3.sh",
+            "dir2/script2.sh",
+            "dir1/script1.sh",
+            "script_main.sh",
+        ])
 
 
 if __name__ == "__main__":
