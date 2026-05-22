@@ -18,13 +18,14 @@ keep only in code comments or tests.
 - Context output format
 - Executable output semantics
 
-## Deferred Specs
+## Deferred Source-Resolution Specs
 
-These require more evaluator coverage before executable lowering can be exact.
+These require more evaluator coverage before source discovery and executable
+lowering can both stay exact.
 The intended approach is captured in the
 [Next-Generation Evaluator And IR Plan](evaluator-ir-plan.md):
 
-- Broader conditional predicate support
+- Broader conditional predicate support for source guards
 - Remaining array/list iteration outside exact indexed, associative,
   command-substitution, and file-populated arrays
 - Remaining loop forms outside exact `for`, bounded C-style `for ((...))`,
@@ -32,6 +33,6 @@ The intended approach is captured in the
   exact files and safe producers
 - Remaining glob/source-argument semantics: `extglob`, direct source
   positional and glob arguments, and full `GLOBIGNORE` edge behavior
-- Broader case pattern and fallthrough semantics
-- Runtime-dynamic dispatch, recursive functions, non-equivalent branch-defined
-  functions, and branch-dependent function returns
+- Broader case pattern and fallthrough semantics for source-bearing arms
+- Runtime-dynamic source dispatch, recursive source-bearing functions,
+  non-equivalent branch-defined functions, and branch-dependent function returns

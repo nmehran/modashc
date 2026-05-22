@@ -167,12 +167,17 @@ git diff --check
 
 Design notes live in [docs](docs/README.md).
 
-## Current Roadmap
+## Source Resolution Roadmap
 
-- Remaining function semantics, including recursion, branch-dependent returns,
-  and runtime-dynamic dispatch.
-- Remaining conditional predicates, `extglob` / direct source positional and
-  glob argument semantics, and broader case pattern semantics.
+The compiler already models common function calls, conditionals, loops, arrays,
+and glob-driven dependency discovery for `source` resolution. Remaining work is
+focused on source-discovery cases that still require broader Bash semantics
+before executable lowering can stay exact:
+
+- Source effects behind harder function paths, including recursion,
+  branch-dependent returns, and runtime-dynamic dispatch.
+- Source guards and paths involving broader conditional predicates, `extglob`,
+  direct `source` positional/glob arguments, and richer case pattern semantics.
 
 ## Installation
 
