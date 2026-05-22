@@ -59,16 +59,20 @@ safe to lower, compilation fails before writing or overwriting the output file.
 - safe `cat` path-file sources, such as `source "$(cat dep-path.txt)"`
 - safe deterministic `find` sources with one matching file
 - safe `eval` payloads that resolve to exactly one source command
+- exact indexed array source paths, such as `source "${deps[0]}"`
 - `bash -c "source ..."` classification in context mode
 
 Unsupported or ambiguous dynamic forms fail closed in executable mode. This
-includes loop-driven sources, conditional/case-driven sources, array/list source
-paths, glob iteration, process substitution, user-defined source-path functions,
-nested dynamic substitutions, and multi-result `cat` or `find` output.
+includes loop-driven sources, conditional/case-driven sources, array-list
+iteration, glob iteration, process substitution, user-defined source-path
+functions, nested dynamic substitutions, and multi-result `cat` or `find`
+output.
 
-Next-generation control-flow evaluation is intentionally deferred. See
+Control-flow evaluation beyond exact source-site state is intentionally
+fail-closed until branch and loop lowering are modeled. See
 [Dynamic Source Resolution](docs/dynamic-source-resolution.md) for the current
-resolver contract and the deferred pattern families.
+resolver contract and [Evaluator And IR Plan](docs/evaluator-ir-plan.md) for
+the remaining pattern families.
 
 ## Usage
 
@@ -94,10 +98,13 @@ python modashc.py test/sample_dir/script_main.sh sample-runnable.sh --mode execu
 
 - `modashc.py`: CLI entrypoint.
 - `methods/compile.py`: context and executable renderers.
-- `methods/sources.py`: source graph traversal, cwd tracking, variable state,
-  and path resolution context.
+- `methods/source_frontend.py`: parser frontend that emits source-effect IR.
+- `methods/source_evaluator.py`: abstract evaluator for cwd, variables, arrays,
+  shell options, source events, and structured unsupported diagnostics.
 - `methods/source_resolver.py`: source command detection, heredoc guards, safe
   dynamic source resolvers, and unsupported-source classification.
+- `methods/sources.py`: legacy path-resolution helpers still used by the
+  evaluator while traversal moves onto IR.
 - `methods/functions.py`: function-call extraction utility.
 - `test/support.py`: real temporary shell-project harness used by regression
   tests.
@@ -122,10 +129,10 @@ Design notes live in [docs](docs/README.md).
 
 ## Current Roadmap
 
-- Structured diagnostics instead of plain unsupported-source message strings.
-- Parser boundary documentation for the current line splitter and regex helpers.
-- Deferred [next-generation evaluator/IR](docs/evaluator-ir-plan.md) for loops,
-  arrays, globs, conditionals, case statements, and runtime dispatch.
+- Exact finite loop and word-list lowering.
+- Deterministic glob expansion under modeled shell options.
+- Provable conditionals and case statements.
+- Modeled function calls whose source effects are bounded and exact.
 
 ## Installation
 

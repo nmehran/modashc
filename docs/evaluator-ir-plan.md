@@ -2,10 +2,11 @@
 
 ## Status
 
-Deferred design. The current compiler remains resolver-driven and fail-closed
-for loops, conditionals, arrays, globs, case statements, and runtime dispatch.
-This document captures the intended next architecture so future work can be
-planned without losing the reasoning.
+Partially implemented. The compiler now has a source-effect IR frontend,
+structured unsupported-source diagnostics, and an abstract evaluator that drives
+both executable and context rendering for the supported subset. It remains
+fail-closed for loop lowering, conditionals, globs, case statements, and
+runtime dispatch.
 
 ## Problem
 
@@ -18,9 +19,6 @@ for file in ./plugins/*.sh; do
   source "$file"
 done
 
-deps=(./base.sh ./feature.sh)
-source "${deps[0]}"
-
 if [[ -f ./local.sh ]]; then
   source ./local.sh
 fi
@@ -31,9 +29,9 @@ case "$ENV" in
 esac
 ```
 
-Supporting those safely requires a compiler model, not more ad hoc source
-regexes. The next step should be a small Bash-oriented IR plus an abstract
-evaluator that can prove source behavior over a supported subset.
+Supporting those safely requires continuing the compiler model, not adding more
+ad hoc source regexes. The next steps are exact finite word-list/loop lowering,
+then branch-aware conditional and case evaluation.
 
 ## Goals
 
@@ -361,6 +359,10 @@ Already complete:
 
 ### Phase 1: Parser Frontend Contract And Feasibility
 
+Implemented for the current line frontend. The parser boundary is replaceable
+and returns `ScriptIR` nodes with stable locations. A real Bash parser remains a
+future adapter option when nested syntax coverage justifies the dependency.
+
 Introduce a parser frontend interface and fixture matrix before committing to a
 specific parser implementation. Evaluate candidates against real shell-project
 fixtures:
@@ -375,15 +377,24 @@ should keep a replaceable parser boundary even if a real parser is adopted.
 
 ### Phase 2: Structured Diagnostics
 
+Implemented for unsupported source failures. Raised errors carry diagnostic
+objects with stable code, severity, file, line, fragment, message, and hint.
+
 Introduce diagnostic types without changing behavior. Keep message strings as a
 compatibility layer. Update tests to assert codes for unsupported source forms.
 
 ### Phase 3: IR Skeleton
 
+Implemented for the supported subset: raw commands, source sites, assignments,
+exact array assignments, `cd`, and `set`.
+
 Introduce `ScriptIR`, node classes, and source locations. Build IR for currently
 supported constructs only. Render behavior should remain unchanged.
 
 ### Phase 4: Evaluator For Existing Behavior
+
+Implemented. Executable and context modes now consume source events produced by
+the evaluator. Existing regression tests remain green.
 
 Move current traversal behavior onto the evaluator. Existing regression tests
 must stay green. This phase proves the IR can replace traversal without adding
@@ -391,7 +402,14 @@ new surface area.
 
 ### Phase 5: Exact Arrays And Word Lists
 
-Support exact arrays and word-list expansion:
+Partially implemented. Direct exact indexed array source paths are supported:
+
+```bash
+deps=(./a.sh ./b.sh)
+source "${deps[1]}"
+```
+
+Remaining work is word-list expansion in loops:
 
 ```bash
 deps=(./a.sh ./b.sh)

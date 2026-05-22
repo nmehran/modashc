@@ -9,24 +9,23 @@ keep only in code comments or tests.
   resolution of common runtime-looking `source` idioms without executing shell
   code.
 - [Next-Generation Evaluator And IR Plan](evaluator-ir-plan.md): Deferred
-  architecture plan for loops, arrays, globs, conditionals, cases, and
-  function-aware source discovery.
+  architecture plan and current implementation status for the source-effect IR,
+  evaluator, and remaining loop, glob, conditional, case, and function work.
 
 ## Planned Specs
 
-- Structured source diagnostics and unsupported-case reporting
-- Parser boundaries and Bash grammar coverage
+- Parser boundaries and Bash grammar coverage beyond the current line frontend
 - Context output format
 - Executable output semantics
 
 ## Deferred Specs
 
-These require the next-generation evaluator or IR and are intentionally outside
-the current resolver-driven compiler. The intended approach is captured in the
+These require more evaluator coverage before executable lowering can be exact.
+The intended approach is captured in the
 [Next-Generation Evaluator And IR Plan](evaluator-ir-plan.md):
 
 - Loop-driven source discovery
 - Conditional and case-driven source discovery
-- Array/list source paths
+- Array/list iteration
 - Glob iteration semantics
 - Runtime dispatch and user-defined source-path functions
