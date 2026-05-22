@@ -3,7 +3,7 @@ import os
 import re
 import shlex
 from dataclasses import dataclass
-from fnmatch import fnmatch
+from fnmatch import fnmatch, fnmatchcase
 
 from methods.regex.patterns import SOURCE_PATTERN, create_command_pattern
 from methods.regex.utilities import extract_bash_commands, strip_matching_quotes
@@ -12,12 +12,7 @@ from methods.shell_line import get_commands
 ASSIGNMENT_WORD_PATTERN = re.compile(r'^[a-zA-Z_]\w*(?:\+)?=.*$')
 BASH_COMMAND_PATTERN = create_command_pattern(r'bash|/bin/bash|/usr/bin/bash', regex=True)
 UNSUPPORTED_GLOB_OPTIONS = frozenset({
-    'dotglob',
     'extglob',
-    'failglob',
-    'globstar',
-    'nocaseglob',
-    'nullglob',
 })
 COMMAND_LEVEL_SOURCE_PATTERNS = (
     ('eval', None),
@@ -281,18 +276,174 @@ def has_unquoted_glob(text: str):
     return False
 
 
-def _glob_matches(pattern: str, current_directory: str):
+def has_unquoted_extglob(text: str):
+    return any(contains_unquoted_token(text, token) for token in {"@(", "?(", "*(", "+(", "!("})
+
+
+def has_unquoted_brace_expansion(text: str):
+    return contains_unquoted_token(text, "{") and contains_unquoted_token(text, "}")
+
+
+def _brace_expand(pattern: str, raw_pattern: str, source_site: str):
+    if not has_unquoted_brace_expansion(raw_pattern):
+        return [pattern]
+    return _brace_expand_pattern(pattern, source_site)
+
+
+def _brace_expand_pattern(pattern: str, source_site: str):
+    start = pattern.find("{")
+    if start < 0:
+        return [pattern]
+
+    depth = 0
+    end = -1
+    for index in range(start, len(pattern)):
+        char = pattern[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                end = index
+                break
+
+    if end < 0:
+        raise UnsupportedSourceError(f"unsupported brace source pattern: {source_site.strip()}")
+
+    body = pattern[start + 1:end]
+    if "{" in body or "}" in body:
+        raise UnsupportedSourceError(f"unsupported nested brace source pattern: {source_site.strip()}")
+    if "," not in body:
+        return [pattern]
+
+    expanded = []
+    for option in body.split(","):
+        expanded.extend(_brace_expand_pattern(f"{pattern[:start]}{option}{pattern[end + 1:]}", source_site))
+    return expanded
+
+
+def _glob_matches(pattern: str, current_directory: str, glob_options: set[str], include_hidden: bool):
+    if 'nocaseglob' in glob_options:
+        return _manual_glob_matches(pattern, current_directory, glob_options, include_hidden)
+
+    recursive = 'globstar' in glob_options
     if os.path.isabs(pattern):
-        return sorted(glob.glob(pattern))
-    return sorted(glob.glob(pattern, root_dir=current_directory))
+        return sorted(glob.glob(pattern, recursive=recursive, include_hidden=include_hidden))
+    return sorted(glob.glob(
+        pattern,
+        root_dir=current_directory,
+        recursive=recursive,
+        include_hidden=include_hidden,
+    ))
+
+
+def _manual_glob_matches(pattern: str, current_directory: str, glob_options: set[str], include_hidden: bool):
+    absolute_pattern = pattern if os.path.isabs(pattern) else os.path.join(current_directory, pattern)
+    absolute_pattern = os.path.normpath(absolute_pattern)
+    root, pattern_parts = _glob_static_root(absolute_pattern)
+    if not os.path.isdir(root):
+        return []
+
+    recursive = 'globstar' in glob_options and '**' in pattern_parts
+    max_depth = None if recursive else len(pattern_parts)
+    matches = []
+
+    for directory, dirnames, filenames in os.walk(root):
+        dirnames.sort()
+        filenames.sort()
+        relative_directory = os.path.relpath(directory, root)
+        directory_parts = [] if relative_directory == os.curdir else relative_directory.split(os.sep)
+
+        if max_depth is not None and len(directory_parts) >= max_depth:
+            dirnames[:] = []
+
+        for name in [*dirnames, *filenames]:
+            candidate_parts = [*directory_parts, name]
+            if max_depth is not None and len(candidate_parts) > max_depth:
+                continue
+            if not _glob_parts_match(pattern_parts, candidate_parts, glob_options, include_hidden):
+                continue
+            candidate = os.path.join(root, *candidate_parts)
+            matches.append(candidate if os.path.isabs(pattern) else _relative_glob_word(candidate, current_directory, pattern))
+
+    return sorted(matches)
+
+
+def _glob_static_root(absolute_pattern: str):
+    drive, tail = os.path.splitdrive(absolute_pattern)
+    parts = [part for part in tail.split(os.sep) if part]
+    root_parts = []
+    while parts and not _glob_segment_has_magic(parts[0]):
+        root_parts.append(parts.pop(0))
+
+    root = drive + os.sep + os.path.join(*root_parts) if root_parts else drive + os.sep
+    return os.path.normpath(root), parts
+
+
+def _glob_segment_has_magic(segment: str):
+    return any(char in segment for char in "*?[")
+
+
+def _glob_parts_match(pattern_parts: list[str], candidate_parts: list[str], glob_options: set[str],
+                      include_hidden: bool):
+    if not pattern_parts:
+        return not candidate_parts
+
+    pattern = pattern_parts[0]
+    if pattern == "**" and "globstar" in glob_options:
+        if _glob_parts_match(pattern_parts[1:], candidate_parts, glob_options, include_hidden):
+            return True
+        if not candidate_parts:
+            return False
+        if _hidden_glob_segment_blocked(pattern, candidate_parts[0], include_hidden):
+            return False
+        return _glob_parts_match(pattern_parts, candidate_parts[1:], glob_options, include_hidden)
+
+    if not candidate_parts:
+        return False
+    if _hidden_glob_segment_blocked(pattern, candidate_parts[0], include_hidden):
+        return False
+    if not _glob_segment_matches(pattern, candidate_parts[0], glob_options):
+        return False
+    return _glob_parts_match(pattern_parts[1:], candidate_parts[1:], glob_options, include_hidden)
+
+
+def _hidden_glob_segment_blocked(pattern: str, candidate: str, include_hidden: bool):
+    return candidate.startswith(".") and not include_hidden and not pattern.startswith(".")
+
+
+def _glob_segment_matches(pattern: str, candidate: str, glob_options: set[str]):
+    if 'nocaseglob' in glob_options:
+        return fnmatchcase(candidate.lower(), pattern.lower())
+    return fnmatchcase(candidate, pattern)
+
+
+def _relative_glob_word(path: str, current_directory: str, pattern: str):
+    relative = os.path.relpath(path, current_directory)
+    if pattern.startswith("./") and not relative.startswith(os.pardir):
+        return f"./{relative}"
+    return relative
+
+
+def _globignore_patterns(context: dict):
+    globignore = context.get('runtime_vars', context.get('vars', {})).get('GLOBIGNORE', '')
+    if not globignore:
+        return []
+    return [pattern for pattern in globignore.split(":") if pattern]
+
+
+def _apply_globignore(matches: list[str], patterns: list[str]):
+    if not patterns:
+        return matches
+    return [
+        match
+        for match in matches
+        if not any(fnmatchcase(match, pattern) for pattern in patterns)
+    ]
 
 
 def expand_glob_word(pattern: str, context: dict, source_site: str, raw_pattern: str | None = None):
     raw_pattern = raw_pattern if raw_pattern is not None else pattern
-    if contains_unquoted_token(raw_pattern, '**'):
-        raise UnsupportedSourceError(f"unsupported globstar source pattern: {source_site.strip()}")
-    if contains_unquoted_token(raw_pattern, '{') or contains_unquoted_token(raw_pattern, '}'):
-        raise UnsupportedSourceError(f"unsupported brace source pattern: {source_site.strip()}")
 
     glob_options = set(context.get('glob_options', set()))
     enabled_unsupported_options = sorted(glob_options & UNSUPPORTED_GLOB_OPTIONS)
@@ -303,12 +454,20 @@ def expand_glob_word(pattern: str, context: dict, source_site: str, raw_pattern:
     if 'noglob' in context.get('shell_options', set()):
         raise UnsupportedSourceError(f"unsupported noglob source pattern: {source_site.strip()}")
 
-    if context.get('vars', {}).get('GLOBIGNORE'):
-        raise UnsupportedSourceError(f"unsupported GLOBIGNORE source pattern: {source_site.strip()}")
-
     current_directory = context['current_directory']
-    matches = _glob_matches(pattern, current_directory)
+    globignore_patterns = _globignore_patterns(context)
+    include_hidden = 'dotglob' in glob_options or bool(globignore_patterns)
+    matches = []
+    for expanded_pattern in _brace_expand(pattern, raw_pattern, source_site):
+        pattern_matches = _glob_matches(expanded_pattern, current_directory, glob_options, include_hidden)
+        filtered_matches = _apply_globignore(pattern_matches, globignore_patterns)
+        if not filtered_matches and pattern_matches and 'nullglob' not in glob_options:
+            raise UnsupportedSourceError(f"unsupported GLOBIGNORE source pattern: {source_site.strip()}")
+        matches.extend(filtered_matches)
+
     if not matches:
+        if 'nullglob' in glob_options:
+            return ()
         raise UnsupportedSourceError(f"unsupported unmatched source glob: {source_site.strip()}")
 
     glob_matches = []

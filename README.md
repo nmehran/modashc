@@ -64,6 +64,8 @@ safe to lower, compilation fails before writing or overwriting the output file.
   default-IFS scalar word lists, or `${array[@]}` expansions
 - deterministic finite `for` loops over ordinary file globs, such as
   `for dep in ./plugins/*.sh; do source "$dep"; done`
+- option-aware finite loop globs for `nullglob`, `dotglob`, `globstar`,
+  `nocaseglob`, practical `GLOBIGNORE` filtering, and brace expansion
 - direct source globs only when the glob resolves to exactly one file
 - branch-aware `if` / `elif` / `else` blocks with side-effect-free file,
   non-empty, empty, exact string, pattern, compound logical, arithmetic,
@@ -74,17 +76,19 @@ safe to lower, compilation fails before writing or overwriting the output file.
 - bounded local function calls when the function definition is known, arguments
   are exact, and source-relevant body effects are modeled, including positional
   source arguments, exact assignment prefixes, `local` scalar assignments, cwd
-  changes, and functions defined by sourced files
+  changes, exact `return` / `shift`, exact dynamic dispatch, nested modeled
+  control flow, same-line post-definition calls, and functions defined by
+  sourced files
 - `bash -c "source ..."` classification in context mode
 
 Unsupported or ambiguous dynamic forms fail closed in executable mode. This
 includes direct source globs with multiple matches, unmatched or quoted globs,
-globstar/brace/extglob-style patterns, glob-affecting shell options,
-custom-IFS word splitting, unsupported command or glob-bearing file/bracket
-conditional predicates, unsupported case subjects or arm patterns, process
-substitution, unknown or recursive function dispatch, function `return` /
-`shift` control flow, nested dynamic substitutions, and multi-result `cat` or
-`find` output.
+`extglob` patterns, `set -f` / `noglob`, `failglob` unmatched globs,
+`GLOBIGNORE` patterns that remove every source match, custom-IFS word
+splitting, unsupported command or glob-bearing file/bracket conditional
+predicates, unsupported case subjects or arm patterns, process substitution,
+unknown or recursive function dispatch, branch-dependent function returns,
+nested dynamic substitutions, and multi-result `cat` or `find` output.
 
 Control-flow evaluation beyond exact finite loops, modeled `if` blocks, and
 exact `case` blocks is intentionally fail-closed until broader glob,
@@ -148,10 +152,10 @@ Design notes live in [docs](docs/README.md).
 
 ## Current Roadmap
 
-- Broader function semantics, including `return`, `shift`, dynamic dispatch,
-  and nested modeled control flow inside function bodies.
-- Remaining conditional predicates, broader glob semantics, and case pattern
-  semantics.
+- Remaining function semantics, including recursion, branch-dependent returns,
+  and runtime-dynamic dispatch.
+- Remaining conditional predicates, `extglob` / direct source glob argument
+  semantics, and broader case pattern semantics.
 
 ## Installation
 

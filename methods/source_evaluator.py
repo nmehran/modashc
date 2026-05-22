@@ -34,6 +34,8 @@ from methods.source_resolver import (
     contains_source_command,
     contains_nested_source_command,
     expand_glob_word,
+    has_unquoted_brace_expansion,
+    has_unquoted_extglob,
     contains_unquoted_token,
     has_unquoted_glob,
     parse_shell_words_preserving_quotes,
@@ -106,6 +108,7 @@ class EvaluationState:
     def resolver_context(self):
         return {
             'vars': self.variables,
+            'runtime_vars': self.runtime_variables,
             'current_directory': str(self.cwd),
             'shell_options': self.shell_options,
             'glob_options': self.glob_options,
@@ -437,7 +440,11 @@ class SourceEvaluator:
                 raise self._unsupported_loop_words(node, f"loop word list references unknown array: {array_name}")
             return list(values)
 
-        if has_unquoted_glob(raw_word):
+        if (
+            has_unquoted_glob(raw_word)
+            or has_unquoted_brace_expansion(raw_word)
+            or has_unquoted_extglob(raw_word)
+        ):
             try:
                 return [
                     match.word
@@ -445,9 +452,6 @@ class SourceEvaluator:
                 ]
             except UnsupportedSourceError as exc:
                 raise self._unsupported_loop_words(node, str(exc)) from exc
-
-        if contains_unquoted_token(raw_word, '{') or contains_unquoted_token(raw_word, '}'):
-            raise self._unsupported_loop_words(node, "unsupported brace loop word list")
 
         if has_unquoted_glob(word):
             raise self._unsupported_loop_words(node, "unsupported quoted loop glob")

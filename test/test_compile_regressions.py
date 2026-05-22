@@ -323,6 +323,97 @@ class CompileRegressionTestCase(unittest.TestCase):
 
             project.assert_compiled_matches(self, "main.sh", env={"LC_ALL": "C"})
 
+    def test_glob_option_for_loop_sources_match_bash(self):
+        with ScriptProject() as project:
+            project.write("plugins/.hidden.sh", 'echo "dotglob:hidden:$dep"\n')
+            project.write("plugins/a.sh", 'echo "dotglob:a:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                shopt -s dotglob
+                for dep in ./plugins/*.sh; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh", env={"LC_ALL": "C"})
+
+        with ScriptProject() as project:
+            project.write("plugins/a.sh", 'echo "globstar:a:$dep"\n')
+            project.write("plugins/nested/b.sh", 'echo "globstar:b:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                shopt -s globstar
+                for dep in ./plugins/**/*.sh; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh", env={"LC_ALL": "C"})
+
+        with ScriptProject() as project:
+            project.write("plugins/one/a.sh", 'echo "no globstar one-level:$dep"\n')
+            project.write("plugins/one/deep/b.sh", 'echo "no globstar deep:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in ./plugins/**/*.sh; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh", env={"LC_ALL": "C"})
+
+        with ScriptProject() as project:
+            project.write("plugins/a.sh", 'echo "nocase:a:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                shopt -s nocaseglob
+                for dep in ./plugins/*.SH; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh", env={"LC_ALL": "C"})
+
+    def test_brace_and_nullglob_for_loop_sources_match_bash(self):
+        with ScriptProject() as project:
+            project.write("plugins/a.sh", 'echo "brace:a:$dep"\n')
+            project.write("plugins/b.sh", 'echo "brace:b:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in ./plugins/{a,b}.sh; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh", env={"LC_ALL": "C"})
+
+        with ScriptProject() as project:
+            project.write("main.sh", textwrap.dedent("""\
+                shopt -s nullglob
+                for dep in ./missing/*.sh; do
+                  source "$dep"
+                done
+                echo done
+                """))
+
+            output = project.compile("main.sh", mode="executable")
+            expected = project.run("main.sh")
+            actual = project.run(output)
+            compiled_content = output.read_text()
+
+        self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
+        self.assertEqual(actual.stdout, expected.stdout)
+        self.assertNotIn('source "$dep"', compiled_content)
+
+    def test_globignore_for_loop_sources_match_bash(self):
+        with ScriptProject() as project:
+            project.write("plugins/.hidden.sh", 'echo "globignore:hidden:$dep"\n')
+            project.write("plugins/a.sh", 'echo "globignore:a:$dep"\n')
+            project.write("plugins/b.sh", 'echo "globignore:b:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                GLOBIGNORE=./plugins/b.sh
+                for dep in ./plugins/*.sh; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh", env={"LC_ALL": "C"})
+
     def test_direct_source_glob_with_single_match_matches_bash(self):
         with ScriptProject() as project:
             project.write("plugins/only.sh", 'echo "single glob"\n')
@@ -1128,24 +1219,20 @@ class CompileRegressionTestCase(unittest.TestCase):
                 'for file in "./plugins/*.sh"; do source "$file"; done\n',
                 'for file in "./plugins/*.sh"; do source "$file"; done',
             ),
-            "globstar loop": (
-                'for file in ./plugins/**/*.sh; do source "$file"; done\n',
-                'for file in ./plugins/**/*.sh; do source "$file"; done',
+            "failglob unmatched loop": (
+                'shopt -s failglob\nfor file in ./missing/*.sh; do source "$file"; done\n',
+                'for file in ./missing/*.sh; do source "$file"; done',
             ),
-            "brace loop": (
-                'for file in ./plugins/{a,b}.sh; do source "$file"; done\n',
-                'for file in ./plugins/{a,b}.sh; do source "$file"; done',
-            ),
-            "nullglob loop": (
-                'shopt -s nullglob\nfor file in ./plugins/*.sh; do source "$file"; done\n',
-                'for file in ./plugins/*.sh; do source "$file"; done',
+            "extglob loop": (
+                'shopt -s extglob\nfor file in ./plugins/@(a|b).sh; do source "$file"; done\n',
+                'for file in ./plugins/@(a|b).sh; do source "$file"; done',
             ),
             "noglob loop": (
                 'set -f\nfor file in ./plugins/*.sh; do source "$file"; done\n',
                 'for file in ./plugins/*.sh; do source "$file"; done',
             ),
-            "globignore loop": (
-                'GLOBIGNORE="*"\nfor file in ./plugins/*.sh; do source "$file"; done\n',
+            "globignore removes all loop matches": (
+                'GLOBIGNORE=./plugins/a.sh:./plugins/b.sh\nfor file in ./plugins/*.sh; do source "$file"; done\n',
                 'for file in ./plugins/*.sh; do source "$file"; done',
             ),
             "direct source glob multiple matches": (

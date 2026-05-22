@@ -253,9 +253,10 @@ Function calls that mutate cwd or variables must update parent state, matching
 Bash function semantics. The current subset supports exact positional
 arguments such as `$1`, source-relevant scalar `local` assignments, cwd and
 variable mutation in parent state, exact assignment prefixes, and functions
-defined by sourced files. Recursive calls, dynamic dispatch, `return`, `shift`,
-and nested control flow inside function bodies remain fail-closed until
-explicitly modeled.
+defined by sourced files, exact dynamic dispatch, exact `return` / `shift`,
+same-line post-definition calls, and nested modeled control flow. Recursive
+calls, branch-dependent returns, and runtime-dynamic dispatch remain
+fail-closed until explicitly modeled.
 
 ## Control-Flow Semantics
 
@@ -377,13 +378,16 @@ source-relevant behavior cannot be modeled.
 ### Globs
 
 Ordinary file-glob expansion is implemented for finite loop word lists and for
-direct source expressions with exactly one match. Broader glob expansion should
-remain deterministic and cwd-aware:
+direct source expressions with exactly one match. Option-aware loop glob
+expansion is implemented for `nullglob`, `dotglob`, `globstar`, `nocaseglob`,
+deterministic brace expansion, and practical `GLOBIGNORE` filtering. Broader
+glob expansion should remain deterministic and cwd-aware:
 
 - sort matches lexically
 - support direct source glob multi-match semantics only when Bash source
   argument behavior is modeled
-- reject nullglob/failglob/extglob unless option state is fully modeled
+- reject `extglob`, `set -f`, and all-ignored `GLOBIGNORE` matches unless their
+  semantics are fully modeled
 - reject ambiguous directory state
 
 ## Diagnostics
@@ -504,25 +508,25 @@ done
 The supported loop forms include `for ...; do ... done` and newline-`do`
 variants. Word lists may contain literal words, known scalar path variables,
 default-IFS scalar word lists, exact `${array[@]}` expansion, or deterministic
-ordinary file globs. Custom-IFS splitting and broader glob semantics remain
+ordinary file globs. Custom-IFS splitting and `extglob` semantics remain
 unsupported until their semantics are modeled explicitly.
 
 ### Phase 6: Deterministic Globs
 
-Implemented for ordinary file globs in finite loop word lists. Direct source
-globs are supported only when the glob resolves to exactly one regular file.
-Multiple direct source matches reject because Bash would source the first match
-and pass the rest as positional arguments, which is not equivalent to sourcing
-every match.
+Implemented for ordinary and option-aware file globs in finite loop word lists,
+including `nullglob`, `dotglob`, `globstar`, `nocaseglob`, deterministic brace
+expansion, and practical `GLOBIGNORE` filtering. Direct source globs are
+supported only when the glob resolves to exactly one regular file. Multiple
+direct source matches reject because Bash would source the first match and pass
+the rest as positional arguments, which is not equivalent to sourcing every
+match.
 
 Remaining glob work:
 
 - explicit iteration limits
-- glob-affecting option semantics such as `nullglob`, `failglob`, `dotglob`,
-  `globstar`, `extglob`, and `nocaseglob`
-- `GLOBIGNORE`
-- recursive `**`
-- brace expansion
+- `extglob`
+- direct source glob multi-match argument semantics
+- full `GLOBIGNORE` edge semantics beyond practical path filtering
 
 ### Phase 7: Branch-Aware Conditionals
 
@@ -547,8 +551,10 @@ non-matching arms are replaced with no-ops in executable output.
 
 Implemented for the first bounded subset. Known local functions are evaluated
 when arguments are exact and the body contains modeled source-relevant
-constructs. Recursive calls, runtime-dynamic dispatch, `return`, `shift`, and
-broader nested function-body control flow remain unsupported until bounded.
+constructs. Exact `return`, `shift`, dynamic dispatch, same-line
+post-definition calls, and nested function-body control flow are modeled.
+Recursive calls, branch-dependent returns, and runtime-dynamic dispatch remain
+unsupported until bounded.
 
 ### Phase 10: Child-Shell Lowering
 

@@ -26,6 +26,7 @@ The intended approach is captured in the
 
 - Broader conditional predicate support
 - Complex array/list iteration
-- Broader glob semantics
+- Remaining glob semantics: `extglob`, direct source glob arguments, and full
+  `GLOBIGNORE` edge behavior
 - Broader case pattern and fallthrough semantics
-- Runtime dispatch and broader user-defined function semantics
+- Runtime dispatch, recursive functions, and branch-dependent function returns

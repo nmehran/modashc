@@ -298,10 +298,12 @@ source ./single-plugin/*.sh
 Accept loop globs only when:
 
 - The glob metacharacters are unquoted.
-- The pattern is an ordinary file glob using `*`, `?`, or `[]`.
+- The pattern is an ordinary file glob using `*`, `?`, `[]`, deterministic
+  brace expansion, or modeled `globstar` recursion.
 - Expansion is cwd-aware and deterministic.
 - Every match is a regular file.
-- No modeled shell state changes the meaning of the glob.
+- Modeled shell state is limited to `nullglob`, `dotglob`, `globstar`,
+  `nocaseglob`, `failglob`, and practical `GLOBIGNORE` filtering.
 
 Accept direct source globs only when the glob resolves to exactly one regular
 file. Multiple direct-source matches are rejected because Bash would source the
@@ -313,15 +315,17 @@ Reject examples:
 ```bash
 source ./plugins/*.sh          # multiple matches
 for dep in "./plugins/*.sh"; do source "$dep"; done
-for dep in ./plugins/**/*.sh; do source "$dep"; done
-for dep in ./plugins/{a,b}.sh; do source "$dep"; done
-shopt -s nullglob
+set -f
+for dep in ./plugins/*.sh; do source "$dep"; done
+shopt -s extglob
+for dep in ./plugins/@(a|b).sh; do source "$dep"; done
+GLOBIGNORE=./plugins/a.sh:./plugins/b.sh
 for dep in ./plugins/*.sh; do source "$dep"; done
 ```
 
-Currently rejected glob-affecting state includes `set -f`, non-empty
-`GLOBIGNORE`, and enabled `shopt` options such as `nullglob`, `failglob`,
-`dotglob`, `globstar`, `extglob`, and `nocaseglob`.
+Currently rejected glob-affecting state includes `set -f`, `extglob`, direct
+source globs with multiple matches, and cases where `GLOBIGNORE` removes every
+matched source path.
 
 ### `bash -c "source ..."`
 
@@ -414,15 +418,19 @@ scope:
   `bash -c source` classification are implemented.
 - Exact finite `for` loop lowering is implemented for literal words, known
   scalar path variables, and exact `${array[@]}` expansion.
-- Deterministic ordinary file-glob loop lowering is implemented, and direct
-  source globs are implemented for one-match cases only.
+- Deterministic file-glob loop lowering is implemented, including `nullglob`,
+  `dotglob`, `globstar`, `nocaseglob`, deterministic brace expansion, and
+  practical `GLOBIGNORE` filtering. Direct source globs are implemented for
+  one-match cases only.
 - Branch-aware `if` / `elif` / `else` source lowering is implemented for the
   side-effect-free predicate subset and fail-closed branch-state merge.
 - Exact `case` source lowering is implemented for known scalar subjects,
   mutually exclusive arms, and no-op unreachable source sites.
 - Bounded local function source lowering is implemented for known definitions,
-  exact arguments, positional source expressions, parent-state mutations, and
-  exact assignment prefixes and scalar `local` assignments.
+  exact arguments, positional source expressions, parent-state mutations,
+  exact assignment prefixes, scalar `local` assignments, exact `return` /
+  `shift`, exact dynamic dispatch, same-line post-definition calls, and nested
+  modeled control flow.
 - Executable mode fails before output when unsupported source forms would leave
   live runtime `source` commands.
 
@@ -431,6 +439,7 @@ Current diagnostics are raised as explicit `UnsupportedSourceError` instances
 with stable codes, source locations, rejected fragments, messages, and hints.
 
 Future resolver increments should stay small, tested, and fail-closed. Case,
-complex array, broader conditional, broader glob, broader function control
-flow, and runtime-dispatch support should not be added as one-off resolver
-patches; those belong in the evaluator/IR design.
+complex array, broader conditional, `extglob`, direct source glob argument
+semantics, recursive functions, branch-dependent function returns, and
+runtime-dispatch support should not be added as one-off resolver patches; those
+belong in the evaluator/IR design.

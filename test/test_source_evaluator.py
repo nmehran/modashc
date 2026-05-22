@@ -733,6 +733,104 @@ class SourceEvaluatorTestCase(unittest.TestCase):
         self.assertEqual([event.path for event in result.events], [first, second])
         self.assertEqual([event.source_value for event in result.events], ["./plugins/a.sh", "./plugins/b.sh"])
 
+    def test_glob_options_for_loop_sources_are_evaluated(self):
+        with ScriptProject() as project:
+            hidden = project.write("plugins/.hidden.sh", 'echo "hidden"\n')
+            visible = project.write("plugins/a.sh", 'echo "a"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                shopt -s dotglob
+                for dep in ./plugins/*.sh; do
+                  source "$dep"
+                done
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [hidden, visible])
+
+        with ScriptProject() as project:
+            top = project.write("plugins/a.sh", 'echo "a"\n')
+            nested = project.write("plugins/nested/b.sh", 'echo "b"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                shopt -s globstar
+                for dep in ./plugins/**/*.sh; do
+                  source "$dep"
+                done
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [top, nested])
+
+        with ScriptProject() as project:
+            lower = project.write("plugins/a.sh", 'echo "a"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                shopt -s nocaseglob
+                for dep in ./plugins/*.SH; do
+                  source "$dep"
+                done
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [lower])
+
+        with ScriptProject() as project:
+            one_level = project.write("plugins/one/a.sh", 'echo "a"\n')
+            project.write("plugins/one/deep/b.sh", 'echo "b"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                for dep in ./plugins/**/*.sh; do
+                  source "$dep"
+                done
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [one_level])
+
+    def test_brace_for_loop_sources_are_evaluated(self):
+        with ScriptProject() as project:
+            first = project.write("plugins/a.sh", 'echo "a"\n')
+            second = project.write("plugins/b.sh", 'echo "b"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                for dep in ./plugins/{a,b}.sh; do
+                  source "$dep"
+                done
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [first, second])
+
+    def test_nullglob_and_globignore_for_loop_sources_are_evaluated(self):
+        with ScriptProject() as project:
+            entry = project.write("main.sh", textwrap.dedent("""\
+                shopt -s nullglob
+                for dep in ./missing/*.sh; do
+                  source "$dep"
+                done
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual(result.events, ())
+        self.assertEqual([disabled.source_site for disabled in result.disabled_sources], ['source "$dep"'])
+
+        with ScriptProject() as project:
+            hidden = project.write("plugins/.hidden.sh", 'echo "hidden"\n')
+            kept = project.write("plugins/a.sh", 'echo "a"\n')
+            project.write("plugins/b.sh", 'echo "b"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                GLOBIGNORE=./plugins/b.sh
+                for dep in ./plugins/*.sh; do
+                  source "$dep"
+                done
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [hidden, kept])
+
     def test_direct_glob_source_event_uses_matched_runtime_word(self):
         with ScriptProject() as project:
             dep = project.write("plugins/only.sh", 'echo "only"\n')
@@ -751,9 +849,12 @@ class SourceEvaluatorTestCase(unittest.TestCase):
             "unknown array": 'for dep in "${deps[@]}"; do source "$dep"; done\n',
             "unmatched glob": 'for dep in ./plugins/*.sh; do source "$dep"; done\n',
             "quoted glob": 'for dep in "./plugins/*.sh"; do source "$dep"; done\n',
-            "globstar": 'for dep in ./plugins/**/*.sh; do source "$dep"; done\n',
-            "brace": 'for dep in ./plugins/{a,b}.sh; do source "$dep"; done\n',
-            "nullglob": 'shopt -s nullglob\nfor dep in ./plugins/*.sh; do source "$dep"; done\n',
+            "failglob": 'shopt -s failglob\nfor dep in ./plugins/*.sh; do source "$dep"; done\n',
+            "extglob": 'shopt -s extglob\nfor dep in ./plugins/@(a|b).sh; do source "$dep"; done\n',
+            "globignore removes all matches": (
+                'GLOBIGNORE=./plugins/a.sh:./plugins/b.sh\n'
+                'for dep in ./plugins/*.sh; do source "$dep"; done\n'
+            ),
         }
 
         for name, content in cases.items():
@@ -764,7 +865,11 @@ class SourceEvaluatorTestCase(unittest.TestCase):
                     SourceEvaluator().evaluate(entry)
 
             self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.loop-word-list")
-            expected_line = 3 if name == "nondefault ifs scalar word list" else 2 if name == "nullglob" else 1
+            expected_line = (
+                3 if name == "nondefault ifs scalar word list"
+                else 2 if name in {"failglob", "extglob", "globignore removes all matches"}
+                else 1
+            )
             self.assertEqual(cm.exception.diagnostic.location.line, expected_line)
 
     def test_circular_source_raises_recursion_error(self):
