@@ -13,6 +13,7 @@ from methods.regex.patterns import (
     VARIABLE_NAME_PATTERN,
     VARIABLE_REFERENCE_PATTERN,
 )
+from methods.source_diagnostics import unsupported_source_error, with_source_diagnostic
 from methods.source_resolver import (
     SourceResolver,
     UnsupportedSourceError,
@@ -303,23 +304,75 @@ def extract_sources_and_variables(script_path, context, sources, seen_sources: d
                         command,
                         command_control_depth,
                     ):
-                        raise UnsupportedSourceError(f"unsupported source in control flow: {command.strip()}")
+                        raise unsupported_source_error(
+                            script_path,
+                            num,
+                            line,
+                            command,
+                            "unsupported.source.control-flow",
+                            "unsupported source in control flow",
+                            "Move source resolution outside unsupported control flow or wait for IR evaluation support.",
+                        )
 
                     for _, source_command, source_path in source_matches:
                         source_site = f"{source_command} {source_path.strip()}"
-                        resolved_source = SOURCE_RESOLVER.resolve_source_expression(source_path, source_site, context)
+                        try:
+                            resolved_source = SOURCE_RESOLVER.resolve_source_expression(source_path, source_site, context)
+                        except UnsupportedSourceError as exc:
+                            raise with_source_diagnostic(
+                                exc,
+                                script_path,
+                                num,
+                                line,
+                                source_site,
+                                "unsupported.source.resolution",
+                            ) from exc
                         if resolved_source:
                             resolved_sources.append(resolved_source)
                         elif mode == "executable":
-                            raise UnsupportedSourceError(f"unsupported unresolved source: {source_site}")
+                            raise unsupported_source_error(
+                                script_path,
+                                num,
+                                line,
+                                source_site,
+                                "unsupported.source.unresolved",
+                                "unsupported unresolved source",
+                                "Use a statically resolvable source path or context mode.",
+                            )
 
-                    resolved_sources.extend(SOURCE_RESOLVER.resolve_command_level_sources(command, context, mode))
+                    try:
+                        resolved_sources.extend(SOURCE_RESOLVER.resolve_command_level_sources(command, context, mode))
+                    except UnsupportedSourceError as exc:
+                        raise with_source_diagnostic(
+                            exc,
+                            script_path,
+                            num,
+                            line,
+                            command,
+                            "unsupported.source.command-resolution",
+                        ) from exc
 
                     if command_contains_source and not source_matches and not resolved_sources and mode == "executable":
-                        raise UnsupportedSourceError(f"unsupported unresolved source command: {command.strip()}")
+                        raise unsupported_source_error(
+                            script_path,
+                            num,
+                            line,
+                            command,
+                            "unsupported.source.command-unresolved",
+                            "unsupported unresolved source command",
+                            "Use a direct source command or a supported dynamic source expression.",
+                        )
 
                     if not resolved_sources and not source_matches and is_unsupported_dynamic_source(command):
-                        raise UnsupportedSourceError(f"unsupported dynamic source command: {command.strip()}")
+                        raise unsupported_source_error(
+                            script_path,
+                            num,
+                            line,
+                            command,
+                            "unsupported.source.dynamic",
+                            "unsupported dynamic source command",
+                            "Keep dynamic source discovery inside the documented safe subset.",
+                        )
 
                     for resolved_source in resolved_sources:
                         context['source_declarations'][script_path][num].append(resolved_source)

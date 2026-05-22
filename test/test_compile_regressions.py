@@ -7,6 +7,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from methods.source_effects import DiagnosticSeverity
 from test.support import ScriptProject
 
 
@@ -329,6 +330,12 @@ class CompileRegressionTestCase(unittest.TestCase):
                     project.compile("main.sh", output=output, mode="executable")
 
                 self.assertIn(expected_fragment, str(cm.exception))
+                self.assertIsNotNone(cm.exception.diagnostic)
+                self.assertEqual(cm.exception.diagnostic.severity, DiagnosticSeverity.ERROR)
+                self.assertEqual(cm.exception.diagnostic.location.path, project.path("main.sh"))
+                self.assertGreater(cm.exception.diagnostic.location.line, 0)
+                self.assertIn(expected_fragment, cm.exception.diagnostic.fragment)
+                self.assertTrue(cm.exception.diagnostic.code.startswith("unsupported.source."))
                 self.assertEqual(output.read_text(), "existing output\n")
 
     def test_runtime_dynamic_sources_raise_clear_diagnostic(self):
@@ -404,6 +411,12 @@ class CompileRegressionTestCase(unittest.TestCase):
                     project.compile("main.sh", output=output, mode="executable")
 
                 self.assertIn(expected_fragment, str(cm.exception))
+                self.assertIsNotNone(cm.exception.diagnostic)
+                self.assertEqual(cm.exception.diagnostic.severity, DiagnosticSeverity.ERROR)
+                self.assertEqual(cm.exception.diagnostic.location.path, project.path("main.sh"))
+                self.assertGreater(cm.exception.diagnostic.location.line, 0)
+                self.assertIn(expected_fragment, cm.exception.diagnostic.fragment)
+                self.assertTrue(cm.exception.diagnostic.code.startswith("unsupported.source."))
                 self.assertFalse(output.exists())
 
     def test_bash_c_source_is_rejected_for_executable_mode(self):
@@ -411,8 +424,12 @@ class CompileRegressionTestCase(unittest.TestCase):
             project.write("dep.sh", 'echo "dep"\n')
             project.write("main.sh", 'bash -c "source ./dep.sh"\n')
 
-            with self.assertRaisesRegex(NotImplementedError, "child-shell|unsupported"):
+            with self.assertRaisesRegex(NotImplementedError, "child-shell|unsupported") as cm:
                 project.compile("main.sh", mode="executable")
+
+        self.assertIsNotNone(cm.exception.diagnostic)
+        self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.command-resolution")
+        self.assertEqual(cm.exception.diagnostic.fragment, 'bash -c "source ./dep.sh"')
 
 
 if __name__ == "__main__":
