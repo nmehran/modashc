@@ -5,21 +5,21 @@
 Partially implemented. The compiler now has a source-effect IR frontend,
 structured unsupported-source diagnostics, and an abstract evaluator that drives
 both executable and context rendering for the supported subset. Exact finite
-`for` loops over literal words, known scalar path variables, default-IFS scalar
-word lists, exact `${array[@]}` expansions, safe command-substitution word
-lists, and deterministic file globs are implemented. Exact indexed,
+`for` loops over literal words, known scalar path variables, exact custom-IFS
+scalar word lists, exact `${array[@]}` expansions, safe command-substitution
+word lists, and deterministic file globs are implemented. Exact indexed,
 associative, appended, command-substitution, and file-populated arrays are
-modeled. Bounded `while` / `until` and `while read` file enumeration are also
-implemented. Branch-aware `if` / `elif` / `else` lowering is implemented for
-the current side-effect-free predicate subset, including compound logical
-predicates, arithmetic predicates, regex and pattern matching, and safe
-`grep -q` file checks. Exact `case` blocks are implemented for known subjects
-and the modeled pattern subset. Bounded local function calls are implemented
-when the definition is known, arguments are exact, and source-relevant body
-effects are modeled. It remains fail-closed for broader glob semantics,
-custom-IFS word splitting outside read loops, unsupported command predicates,
-broader case pattern semantics, recursive functions, runtime-dynamic function
-dispatch, and child-shell runtime dispatch.
+modeled. Bounded `while` / `until`, C-style `for ((...))`, and `while read`
+file enumeration are also implemented. Branch-aware `if` / `elif` / `else`
+lowering is implemented for the current side-effect-free predicate subset,
+including compound logical predicates, arithmetic predicates, regex and pattern
+matching, and safe `grep -q` file checks. Exact `case` blocks are implemented
+for known subjects and the modeled pattern subset. Bounded local function calls
+are implemented when the definition is known, arguments are exact, and
+source-relevant body effects are modeled. It remains fail-closed for broader
+glob semantics,
+unsupported command predicates, broader case pattern semantics, recursive
+functions, runtime-dynamic function dispatch, and child-shell runtime dispatch.
 
 ## Problem
 
@@ -314,7 +314,6 @@ Deferred word inputs are:
 
 - broader glob semantics under shell options such as `extglob` and full
   `GLOBIGNORE`
-- scalar values that require custom `IFS` splitting outside modeled read loops
 - command-substitution word lists outside the safe producer subset
 - loops whose conditions or mutations cannot be proven exact
 
@@ -534,12 +533,11 @@ done
 
 The supported `for` forms include `for ...; do ... done` and newline-`do`
 variants. Word lists may contain literal words, known scalar path variables,
-default-IFS scalar word lists, exact `${array[@]}` expansion, safe
+exact custom-IFS scalar word lists, exact `${array[@]}` expansion, safe
 `cat` / `find` / `printf` command-substitution word lists, or deterministic
 ordinary file globs. Array population supports exact append/index assignment,
 command-substitution array assignment, and `mapfile` / `readarray -t` from
-exact files. Custom-IFS splitting outside modeled `read` loops and `extglob`
-semantics remain unsupported until their semantics are modeled explicitly.
+exact files. `extglob` semantics remain unsupported until modeled explicitly.
 
 ### Phase 6: Deterministic Globs
 
@@ -592,7 +590,9 @@ definitions, and runtime-dynamic dispatch remain unsupported until bounded.
 Implemented for exact source-aware loops. The evaluator models `while` /
 `until` loops when conditions resolve through the existing predicate evaluator
 and loop mutations are exact arithmetic commands or assignments. It also models
-`while read` file enumeration, including `IFS= read -r` paths with spaces.
+`while read` file enumeration, including `IFS= read -r` paths with spaces and
+non-empty guards for files without a final newline. C-style `for ((...))` loops
+are modeled when init, condition, and update clauses are exact arithmetic.
 Loops have an explicit modeled iteration limit and fail closed when the
 condition, read redirection, loop control, or mutation cannot be proven exact.
 

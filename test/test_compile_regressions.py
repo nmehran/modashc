@@ -1033,6 +1033,118 @@ class CompileRegressionTestCase(unittest.TestCase):
             self.assertNotIn("deps.txt", compiled)
             self.assertIn("for dep in './inline.sh'; do", compiled)
 
+        with ScriptProject() as project:
+            project.write("a.sh", 'echo "a guarded read dep"\n')
+            project.write("b.sh", 'echo "b guarded read dep"\n')
+            project.write("deps.txt", "./a.sh\n./b.sh")
+            project.write("main.sh", textwrap.dedent("""\
+                while read -r dep || [[ -n "$dep" ]]; do
+                  echo "$dep"
+                  source "$dep"
+                done < deps.txt
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            compiled = project.path("compiled.sh").read_text()
+            self.assertNotIn("deps.txt", compiled)
+            self.assertIn("for dep in './a.sh' './b.sh'", compiled)
+
+        with ScriptProject() as project:
+            project.write("a.sh", 'echo "plain read dep should not run"\n')
+            project.write("deps.txt", "./a.sh")
+            project.write("main.sh", textwrap.dedent("""\
+                while read -r dep; do
+                  echo "$dep"
+                  source "$dep"
+                done < deps.txt
+                echo done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            self.assertNotIn("deps.txt", project.path("compiled.sh").read_text())
+
+    def test_c_style_for_loops_match_bash(self):
+        with ScriptProject() as project:
+            project.write("deps/0.sh", 'echo "zero:$i"\n')
+            project.write("deps/1.sh", 'echo "one:$i"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for (( i=0; i<2; i++ )); do
+                  echo "i=$i"
+                  source "./deps/$i.sh"
+                done
+                echo "final:$i"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("deps/1.sh", 'echo "one:$j:$i"\n')
+            project.write("deps/2.sh", 'echo "two:$j:$i"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for (( i=0, j=1; j<3; i++, j++ )); do
+                  source "./deps/$j.sh"
+                done
+                echo "final:$i:$j"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_custom_ifs_loop_word_splitting_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("a.sh", 'echo "a:$dep"\n')
+            project.write("b.sh", 'echo "b:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                IFS=:
+                DEPS="./a.sh:./b.sh"
+                for dep in $DEPS; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("a.sh", 'echo "a:$dep"\n')
+            project.write("b.sh", 'echo "b:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                IFS=$'\\n'
+                DEPS=$'./a.sh\\n./b.sh'
+                for dep in $DEPS; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("a.sh", 'echo "a:$dep"\n')
+            project.write("b.sh", 'echo "b:$dep"\n')
+            project.write("deps.txt", "./a.sh:./b.sh\n")
+            project.write("main.sh", textwrap.dedent("""\
+                IFS=:
+                for dep in $(cat deps.txt); do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            self.assertNotIn("$(cat deps.txt)", project.path("compiled.sh").read_text())
+
+        with ScriptProject() as project:
+            project.write("a.sh", 'echo "a:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                IFS=:
+                DEPS=":./a.sh"
+                for dep in $DEPS; do
+                  echo "<$dep>"
+                  if [[ -n "$dep" ]]; then
+                    source "$dep"
+                  fi
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
     def test_richer_array_sources_match_bash(self):
         with ScriptProject() as project:
             project.write("a.sh", 'echo "a"\n')
@@ -1507,10 +1619,6 @@ class CompileRegressionTestCase(unittest.TestCase):
     def test_unsupported_source_families_fail_without_writing_output(self):
         cases = {
             "unknown scalar": ('source "$DEP"\n', 'source "$DEP"'),
-            "nondefault ifs scalar word-list loop": (
-                'IFS=:\nDEPS="./plugins/a.sh:./plugins/b.sh"\nfor file in $DEPS; do source "$file"; done\n',
-                'for file in $DEPS; do source "$file"; done',
-            ),
             "unsupported command substitution loop pipeline": (
                 'for file in $(cat deps.txt | sort); do source "$file"; done\n',
                 'for file in $(cat deps.txt | sort); do source "$file"; done',

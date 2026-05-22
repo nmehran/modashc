@@ -940,6 +940,97 @@ class SourceEvaluatorTestCase(unittest.TestCase):
 
         self.assertEqual([event.path for event in result.events], [special, regular])
 
+    def test_c_style_for_loop_sources_are_evaluated(self):
+        with ScriptProject() as project:
+            first = project.write("deps/0.sh", 'echo "zero"\n')
+            second = project.write("deps/1.sh", 'echo "one"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                for (( i=0; i<2; i++ )); do
+                  source "./deps/$i.sh"
+                done
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [first, second])
+        self.assertEqual(result.final_state.variables["i"], "2")
+
+        with ScriptProject() as project:
+            first = project.write("deps/1.sh", 'echo "one"\n')
+            second = project.write("deps/2.sh", 'echo "two"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                for (( i=0, j=1; j<3; i++, j++ )); do
+                  source "./deps/$j.sh"
+                done
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [first, second])
+        self.assertEqual(result.final_state.variables["i"], "2")
+        self.assertEqual(result.final_state.variables["j"], "3")
+
+    def test_custom_ifs_loop_word_splitting_is_evaluated(self):
+        with ScriptProject() as project:
+            first = project.write("a.sh", 'echo "a"\n')
+            second = project.write("b.sh", 'echo "b"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                IFS=:
+                DEPS="./a.sh:./b.sh"
+                for dep in $DEPS; do
+                  source "$dep"
+                done
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [first, second])
+
+        with ScriptProject() as project:
+            first = project.write("a.sh", 'echo "a"\n')
+            second = project.write("b.sh", 'echo "b"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                IFS=$'\\n'
+                DEPS=$'./a.sh\\n./b.sh'
+                for dep in $DEPS; do
+                  source "$dep"
+                done
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [first, second])
+
+        with ScriptProject() as project:
+            first = project.write("a.sh", 'echo "a"\n')
+            second = project.write("b.sh", 'echo "b"\n')
+            project.write("deps.txt", "./a.sh:./b.sh\n")
+            entry = project.write("main.sh", textwrap.dedent("""\
+                IFS=:
+                for dep in $(cat deps.txt); do
+                  source "$dep"
+                done
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [first, second])
+
+    def test_read_loop_nonempty_guard_sources_are_evaluated(self):
+        with ScriptProject() as project:
+            first = project.write("a.sh", 'echo "a"\n')
+            second = project.write("b.sh", 'echo "b"\n')
+            project.write("deps.txt", "./a.sh\n./b.sh")
+            entry = project.write("main.sh", textwrap.dedent("""\
+                while read -r dep || [[ -n "$dep" ]]; do
+                  source "$dep"
+                done < deps.txt
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [first, second])
+
     def test_richer_array_sources_are_evaluated(self):
         with ScriptProject() as project:
             first = project.write("a.sh", 'echo "a"\n')
@@ -1159,7 +1250,6 @@ class SourceEvaluatorTestCase(unittest.TestCase):
         cases = {
             "command substitution": 'for dep in $(cat deps.txt); do source "$dep"; done\n',
             "unknown scalar": 'for dep in "$DEP"; do source "$dep"; done\n',
-            "nondefault ifs scalar word list": 'IFS=:\nDEPS="./a.sh:./b.sh"\nfor dep in $DEPS; do source "$dep"; done\n',
             "unknown array": 'for dep in "${deps[@]}"; do source "$dep"; done\n',
             "unmatched glob": 'for dep in ./plugins/*.sh; do source "$dep"; done\n',
             "quoted glob": 'for dep in "./plugins/*.sh"; do source "$dep"; done\n',
@@ -1179,11 +1269,7 @@ class SourceEvaluatorTestCase(unittest.TestCase):
                     SourceEvaluator().evaluate(entry)
 
             self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.loop-word-list")
-            expected_line = (
-                3 if name == "nondefault ifs scalar word list"
-                else 2 if name in {"failglob", "extglob", "globignore removes all matches"}
-                else 1
-            )
+            expected_line = 2 if name in {"failglob", "extglob", "globignore removes all matches"} else 1
             self.assertEqual(cm.exception.diagnostic.location.line, expected_line)
 
     def test_circular_source_raises_recursion_error(self):

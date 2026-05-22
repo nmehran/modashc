@@ -7,6 +7,7 @@ from methods.source_effects import (
     Assignment,
     CaseBlock,
     CdCommand,
+    CStyleForLoop,
     FunctionDef,
     ForLoop,
     IfBlock,
@@ -326,6 +327,24 @@ class LineParserFrontendTestCase(unittest.TestCase):
             '"./deps/$i.sh"',
             "./once.sh",
             '"$dep"',
+        ])
+
+    def test_parses_c_style_for_loop_nodes(self):
+        ir = self.parse("""\
+            for (( i=0; i<2; i++ )); do
+              source "./deps/$i.sh"
+            done
+            for ((j=0; j<1; j++)); do source "./deps/$j.sh"; done
+            """)
+
+        self.assertEqual([type(node) for node in ir.nodes], [CStyleForLoop, CStyleForLoop])
+        self.assertEqual([(node.init, node.condition, node.update) for node in ir.nodes], [
+            ("i=0", "i<2", "i++"),
+            ("j=0", "j<1", "j++"),
+        ])
+        self.assertEqual([site.source_expression for site in ir.source_sites], [
+            '"./deps/$i.sh"',
+            '"./deps/$j.sh"',
         ])
 
     def test_marks_unparseable_for_loop_words_as_not_exact(self):

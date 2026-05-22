@@ -7,12 +7,12 @@ variable/env-expanded paths, path command substitutions such as `dirname`,
 `basename`, and `realpath`, plus the first Python-only dynamic resolver subset:
 safe `cat`, safe `find`, safe `eval source`, and context-only `bash -c source`
 classification. The source-effect evaluator also supports exact finite `for`
-loops over literal words, known scalar path variables, default-IFS scalar word
-lists, exact `${array[@]}` expansions, safe command-substitution word lists,
-and deterministic ordinary file globs in finite loop word lists. Exact indexed,
-associative, appended, command-substitution, and file-populated arrays are
-modeled, as are bounded `while` / `until` loops and `while read` file
-enumeration.
+loops over literal words, known scalar path variables, exact custom-IFS scalar
+word lists, exact `${array[@]}` expansions, safe command-substitution word
+lists, and deterministic ordinary file globs in finite loop word lists. Exact
+indexed, associative, appended, command-substitution, and file-populated arrays
+are modeled, as are bounded `while` / `until`, C-style `for ((...))`, and
+`while read` file enumeration.
 Direct source globs are accepted only when they resolve to exactly one file.
 Modeled `if` / `elif` / `else` blocks can lower source sites inside branches
 when branch predicates are side-effect-free and branch state is exact enough for
@@ -355,10 +355,10 @@ Accept only when the command substitution is a single safe producer:
 - deterministic `find` with the existing safe predicate subset
 - `printf '%s\n' ...` with exact arguments
 
-Unquoted command-substitution output is split with default IFS. Quoted command
-substitution is accepted only when it produces exactly one non-empty line.
-Pipes, command separators, nested substitutions, backticks, and nondefault IFS
-word splitting remain fail-closed.
+Unquoted command-substitution output is split with the exact current `IFS`,
+including custom scalar `IFS` values. Quoted command substitution is accepted
+only when it produces exactly one non-empty line. Pipes, command separators,
+nested substitutions, and backticks remain fail-closed.
 
 ### Bounded `while` / `until` And Read Loops
 
@@ -374,16 +374,27 @@ done
 while IFS= read -r dep; do
   source "$dep"
 done < deps.txt
+
+while read -r dep || [[ -n "$dep" ]]; do
+  source "$dep"
+done < deps.txt
+
+for (( i=0; i<2; i++ )); do
+  source "./deps/$i.sh"
+done
 ```
 
 The evaluator models exact `while` / `until` conditions, exact arithmetic
 assignment and increment/decrement mutations, local `break` / `continue`, and a
 bounded iteration limit. It also models `while read` file enumeration, including
-the common `IFS= read -r` form for paths containing spaces.
+the common `IFS= read -r` form for paths containing spaces and the
+`read ... || [[ -n "$var" ]]` guard for files without a final newline. C-style
+`for ((...))` loops are modeled when init, condition, and update clauses are
+exact arithmetic expressions.
 
-Unknown loop conditions, unsupported read options, multi-level loop control,
-and loops exceeding the modeled iteration limit fail before executable output is
-written.
+Unknown loop conditions, unsupported C-style arithmetic, unsupported read
+options, multi-level loop control, and loops exceeding the modeled iteration
+limit fail before executable output is written.
 
 ### `bash -c "source ..."`
 
@@ -482,6 +493,8 @@ scope:
   `dotglob`, `globstar`, `nocaseglob`, deterministic brace expansion, and
   practical `GLOBIGNORE` filtering. Direct source globs are implemented for
   one-match cases only.
+- Exact custom-IFS scalar and command-substitution loop word splitting is
+  implemented.
 - Branch-aware `if` / `elif` / `else` source lowering is implemented for the
   side-effect-free predicate subset and fail-closed branch-state merge.
 - Exact `case` source lowering is implemented for known scalar subjects,

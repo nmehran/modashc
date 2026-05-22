@@ -15,6 +15,7 @@ from methods.source_effects import (
     Assignment,
     CaseBlock,
     CdCommand,
+    CStyleForLoop,
     DisabledSourceSite,
     EvaluationResult,
     ExecutionModel,
@@ -216,6 +217,12 @@ class LoopContinueSignal(Exception):
 
 
 @dataclass
+class ReadLoopWords:
+    variable: str
+    values: tuple[str, ...]
+
+
+@dataclass
 class EvaluationOutcome:
     state: EvaluationState
     return_signal: FunctionReturnSignal | None = None
@@ -295,6 +302,8 @@ class SourceEvaluator:
                     self._apply_function_def(node, state)
                 elif isinstance(node, ForLoop):
                     self._apply_for_loop(node, state, stack)
+                elif isinstance(node, CStyleForLoop):
+                    self._apply_c_style_for_loop(node, state, stack)
                 elif isinstance(node, WhileLoop):
                     self._apply_while_loop(node, state, stack)
                 elif isinstance(node, IfBlock):
@@ -325,15 +334,25 @@ class SourceEvaluator:
         runtime_value = resolve_variable_references(node.value, runtime_context)
         runtime_value = os.path.expandvars(runtime_value)
         runtime_value = resolve_shell_path_commands(runtime_value, str(state.cwd))
-        runtime_value = strip_matching_quotes(runtime_value)
+        runtime_value = self._decode_ansi_c_quoted_word(strip_matching_quotes(runtime_value))
 
         context = state.resolver_context()
-        value = strip_matching_quotes(resolve_variable_references(node.value, context))
+        value = self._decode_ansi_c_quoted_word(strip_matching_quotes(resolve_variable_references(node.value, context)))
         resolved_value, _ = resolve_command(value, context)
         state.variables[node.name] = resolved_value
         state.runtime_variables[node.name] = runtime_value
         state.ambiguous_variables.discard(node.name)
         state.last_status = 0
+
+    @staticmethod
+    def _decode_ansi_c_quoted_word(value: str):
+        if len(value) >= 3 and value.startswith("$'") and value.endswith("'"):
+            body = value[2:-1]
+            try:
+                return bytes(body, "utf-8").decode("unicode_escape")
+            except UnicodeDecodeError as exc:
+                raise UnsupportedSourceError(f"unsupported ANSI-C quoted value: {value}") from exc
+        return value
 
     def _assignment_arithmetic_value(self, node: Assignment, state: EvaluationState):
         value = node.value.strip()
@@ -487,9 +506,8 @@ class SourceEvaluator:
         return strip_matching_quotes(resolved)
 
     def _split_array_scalar_word(self, resolved_word: str, node: ArrayAssignment, state: EvaluationState):
-        self._ensure_default_ifs_for_node(node, state)
         words = []
-        for field in resolved_word.split():
+        for field in self._split_ifs_fields_for_node(resolved_word, node, state):
             if has_unquoted_glob(field):
                 try:
                     words.extend(
@@ -625,18 +643,121 @@ class SourceEvaluator:
             finally:
                 state.loop_depth -= 1
 
+    def _apply_c_style_for_loop(self, node: CStyleForLoop, state: EvaluationState, stack: tuple[Path, ...]):
+        self._apply_c_style_arithmetic_list(node.init, node, state)
+
+        for iteration in range(MAX_MODELED_LOOP_ITERATIONS):
+            try:
+                condition_status = (
+                    "true"
+                    if not node.condition
+                    else self._evaluate_arithmetic_condition(node.condition, state, node.text)
+                )
+            except UnsupportedSourceError as exc:
+                if self.mode == "context":
+                    if self._node_list_may_source(node.body):
+                        loop_state = state.conditional_copy()
+                        self._evaluate_nodes(node.body, loop_state, stack)
+                    return
+                raise with_source_diagnostic(
+                    exc,
+                    str(node.location.path),
+                    node.location.line - 1,
+                    node.text,
+                    node.text,
+                    "unsupported.source.loop-condition",
+                ) from exc
+
+            if condition_status == "unknown":
+                if not self._node_list_may_source(node.body):
+                    return
+                raise unsupported_source_error(
+                    str(node.location.path),
+                    node.location.line - 1,
+                    node.text,
+                    node.text,
+                    "unsupported.source.loop-condition",
+                    "unsupported unknown C-style for condition",
+                    "C-style for conditions must resolve exactly before source-aware lowering.",
+                )
+            if condition_status == "false":
+                if iteration == 0:
+                    self._disable_unreachable_sources(node.body, f"for (( {node.condition} ))")
+                return
+
+            state.loop_depth += 1
+            try:
+                self._evaluate_nodes(node.body, state, stack)
+            except LoopContinueSignal:
+                pass
+            except LoopBreakSignal:
+                return
+            finally:
+                state.loop_depth -= 1
+
+            self._apply_c_style_arithmetic_list(node.update, node, state)
+
+        raise unsupported_source_error(
+            str(node.location.path),
+            node.location.line - 1,
+            node.text,
+            node.text,
+            "unsupported.source.loop-iteration",
+            "unsupported C-style for loop exceeds modeled iteration limit",
+            "Use finite loops whose source effects resolve within the modeled iteration limit.",
+        )
+
+    def _apply_c_style_arithmetic_list(self, expression_list: str, node: CStyleForLoop, state: EvaluationState):
+        for expression in self._split_c_style_arithmetic_list(expression_list):
+            if self._apply_arithmetic_mutation(expression, node, state):
+                continue
+            value = self._evaluate_arithmetic_expression(expression, state, node.text)
+            if value is None:
+                raise unsupported_source_error(
+                    str(node.location.path),
+                    node.location.line - 1,
+                    node.text,
+                    node.text,
+                    "unsupported.source.arithmetic",
+                    "unsupported C-style for arithmetic expression",
+                    "C-style for arithmetic clauses must resolve exactly.",
+                )
+            state.last_status = 0 if value else 1
+
+    @staticmethod
+    def _split_c_style_arithmetic_list(expression_list: str):
+        expressions = []
+        current = []
+        depth = 0
+        for char in expression_list:
+            if char == "(":
+                depth += 1
+            elif char == ")" and depth > 0:
+                depth -= 1
+            elif char == "," and depth == 0:
+                expression = ''.join(current).strip()
+                if expression:
+                    expressions.append(expression)
+                current = []
+                continue
+            current.append(char)
+        expression = ''.join(current).strip()
+        if expression:
+            expressions.append(expression)
+        return expressions
+
     def _apply_while_loop(self, node: WhileLoop, state: EvaluationState, stack: tuple[Path, ...]):
         read_words = self._read_loop_words(node, state)
         if read_words is not None:
-            if not read_words:
-                self._disable_unreachable_sources(node.body, f"{node.keyword} {node.condition}")
-                return
             if self.mode == "executable":
                 self._record_read_loop_replacements(node, read_words)
-            for variable, value in read_words:
-                state.variables[variable] = value
-                state.runtime_variables[variable] = value
-                state.ambiguous_variables.discard(variable)
+            if not read_words.values:
+                self._disable_unreachable_sources(node.body, f"{node.keyword} {node.condition}")
+                return
+            for value in read_words.values:
+                state.variables[read_words.variable] = value
+                state.runtime_variables[read_words.variable] = value
+                state.ambiguous_variables.discard(read_words.variable)
                 state.loop_depth += 1
                 try:
                     self._evaluate_nodes(node.body, state, stack)
@@ -710,14 +831,15 @@ class SourceEvaluator:
         if not node.trailing.startswith("<"):
             return None
 
-        condition_words = parse_shell_words_preserving_quotes(node.condition)
+        read_condition, include_incomplete, nonempty_word = self._split_read_loop_nonempty_tail(node.condition)
+        condition_words = parse_shell_words_preserving_quotes(read_condition)
         if not condition_words:
             return None
 
-        preserve_line = False
+        read_ifs = DEFAULT_IFS
         index = 0
         if condition_words[index].startswith("IFS="):
-            preserve_line = condition_words[index] == "IFS="
+            read_ifs = self._read_loop_ifs_value(condition_words[index])
             index += 1
         if index >= len(condition_words) or strip_shell_word_quotes(condition_words[index]) != "read":
             return None
@@ -736,6 +858,8 @@ class SourceEvaluator:
         variable = strip_shell_word_quotes(condition_words[index])
         if not re.fullmatch(r'[a-zA-Z_]\w*', variable):
             raise self._unsupported_loop_condition(node, "unsupported read loop variable")
+        if nonempty_word is not None and self._read_loop_nonempty_variable(nonempty_word) != variable:
+            raise self._unsupported_loop_condition(node, "unsupported read loop nonempty guard")
 
         trailing_words = parse_shell_words_preserving_quotes(node.trailing)
         if len(trailing_words) != 2 or trailing_words[0] != "<":
@@ -746,10 +870,46 @@ class SourceEvaluator:
             raise self._unsupported_loop_condition(node, "unsupported read loop input path")
 
         values = []
-        for line in input_path.read_text().splitlines():
-            value = line if preserve_line else line.strip()
-            values.append((variable, value))
-        return values
+        for line in self._read_loop_lines(input_path, include_incomplete):
+            value = self._read_loop_value(line, read_ifs)
+            values.append(value)
+        return ReadLoopWords(variable, tuple(values))
+
+    @staticmethod
+    def _split_read_loop_nonempty_tail(condition: str):
+        match = re.match(
+            r'^(.*?)\s*\|\|\s*(?:(?:\[\[\s+-n\s+(.+?)\s*\]\])|(?:\[\s+-n\s+(.+?)\s*\]))\s*$',
+            condition,
+        )
+        if not match:
+            return condition, False, None
+        return match.group(1).strip(), True, (match.group(2) or match.group(3)).strip()
+
+    @staticmethod
+    def _read_loop_nonempty_variable(word: str):
+        stripped = strip_shell_word_quotes(word.strip())
+        match = re.fullmatch(r'\$(?:\{([a-zA-Z_]\w*)\}|([a-zA-Z_]\w*))', stripped)
+        return (match.group(1) or match.group(2)) if match else None
+
+    def _read_loop_ifs_value(self, word: str):
+        _, value = word.split("=", 1)
+        decoded = self._decode_ansi_c_quoted_word(value)
+        return decoded if decoded != value else strip_shell_word_quotes(value)
+
+    @staticmethod
+    def _read_loop_lines(path: Path, include_incomplete: bool):
+        content = path.read_text()
+        lines = content.splitlines()
+        if content and not content.endswith("\n") and not include_incomplete:
+            return lines[:-1]
+        return lines
+
+    @staticmethod
+    def _read_loop_value(line: str, read_ifs: str):
+        if read_ifs == "":
+            return line
+        ifs_whitespace = ''.join(char for char in read_ifs if char in " \t\n")
+        return line.strip(ifs_whitespace) if ifs_whitespace else line
 
     def _resolve_loop_words(self, node: ForLoop, state: EvaluationState):
         if not node.is_exact:
@@ -864,12 +1024,11 @@ class SourceEvaluator:
                 raise self._unsupported_loop_words(node, "quoted command substitution produced multiple lines")
             return [stripped_output]
 
-        return self._split_word_list_output(output, node, state)
+        return self._split_word_list_output(output.rstrip('\n'), node, state)
 
     def _split_word_list_output(self, output: str, node, state: EvaluationState):
-        self._ensure_default_ifs_for_node(node, state)
         words = []
-        for field in output.split():
+        for field in self._split_ifs_fields_for_node(output, node, state):
             if has_unquoted_glob(field):
                 try:
                     words.extend(
@@ -1026,9 +1185,8 @@ class SourceEvaluator:
         return strip_shell_word_quotes(resolved)
 
     def _split_scalar_loop_word(self, resolved_word: str, node: ForLoop, state: EvaluationState):
-        self._ensure_default_ifs(node, state)
         words = []
-        for field in resolved_word.split():
+        for field in self._split_ifs_fields_for_node(resolved_word, node, state):
             if has_unquoted_glob(field):
                 try:
                     words.extend(
@@ -1041,20 +1199,45 @@ class SourceEvaluator:
                 words.append(field)
         return words
 
-    @staticmethod
-    def _ensure_default_ifs(node: ForLoop, state: EvaluationState):
-        SourceEvaluator._ensure_default_ifs_for_node(node, state)
+    def _split_ifs_fields_for_node(self, text: str, node, state: EvaluationState):
+        if "IFS" in state.ambiguous_variables:
+            if isinstance(node, ArrayAssignment):
+                raise self._unsupported_array_assignment(
+                    node,
+                    "array word splitting references branch-dependent IFS",
+                )
+            raise self._unsupported_loop_words(node, "loop word splitting references branch-dependent IFS")
+        return self._split_ifs_fields(text, state.runtime_variables.get("IFS", DEFAULT_IFS))
 
     @staticmethod
-    def _ensure_default_ifs_for_node(node, state: EvaluationState):
-        if 'IFS' not in state.runtime_variables:
-            return
-        if state.runtime_variables['IFS'] == DEFAULT_IFS:
-            return
-        raise SourceEvaluator._unsupported_loop_words(
-            node,
-            "unsupported scalar loop word splitting with nondefault IFS",
-        )
+    def _split_ifs_fields(text: str, ifs: str):
+        if ifs == "":
+            return [text] if text else []
+
+        ifs_whitespace = ''.join(char for char in ifs if char in " \t\n")
+        ifs_other = ''.join(dict.fromkeys(char for char in ifs if char not in " \t\n"))
+
+        if not ifs_other:
+            stripped = text.strip(ifs_whitespace)
+            if not stripped:
+                return []
+            return [
+                field
+                for field in re.split(f"[{re.escape(ifs_whitespace)}]+", stripped)
+                if field
+            ]
+
+        delimiter_pattern_parts = [f"[{re.escape(ifs_other)}]"]
+        if ifs_whitespace:
+            delimiter_pattern_parts = [
+                f"[{re.escape(ifs_whitespace)}]*[{re.escape(ifs_other)}][{re.escape(ifs_whitespace)}]*",
+                f"[{re.escape(ifs_whitespace)}]+",
+            ]
+            text = text.strip(ifs_whitespace)
+        fields = re.split("|".join(delimiter_pattern_parts), text)
+        while fields and fields[-1] == "":
+            fields.pop()
+        return fields
 
     @staticmethod
     def _raw_word_is_unquoted_scalar(raw_word: str):
@@ -1737,6 +1920,14 @@ class SourceEvaluator:
                 node.words,
                 node.words_text,
                 node.is_exact,
+                tuple(SourceEvaluator._node_signature(child) for child in node.body),
+            )
+        if isinstance(node, CStyleForLoop):
+            return (
+                "c-for",
+                node.init,
+                node.condition,
+                node.update,
                 tuple(SourceEvaluator._node_signature(child) for child in node.body),
             )
         if isinstance(node, WhileLoop):
@@ -3012,11 +3203,11 @@ class SourceEvaluator:
             condition=state.condition_context,
         ))
 
-    def _record_read_loop_replacements(self, node: WhileLoop, read_words: list[tuple[str, str]]):
+    def _record_read_loop_replacements(self, node: WhileLoop, read_words: ReadLoopWords):
         if node.end_location is None:
             return
-        variable = read_words[0][0]
-        values = tuple(value for _, value in read_words)
+        variable = read_words.variable
+        values = read_words.values
         header_match = re.match(r'^(.*?;\s*do)\b', node.text)
         header_text = header_match.group(1) if header_match else node.text
         inline_do = bool(header_match)
@@ -3070,6 +3261,8 @@ class SourceEvaluator:
                 self._disable_unreachable_sources(node.body, condition)
             elif isinstance(node, ForLoop):
                 self._disable_unreachable_sources(node.body, condition)
+            elif isinstance(node, CStyleForLoop):
+                self._disable_unreachable_sources(node.body, condition)
             elif isinstance(node, WhileLoop):
                 self._disable_unreachable_sources(node.body, condition)
             elif isinstance(node, IfBlock):
@@ -3094,6 +3287,8 @@ class SourceEvaluator:
             if isinstance(node, FunctionDef) and self._node_list_may_source(node.body):
                 return True
             if isinstance(node, ForLoop) and self._node_list_may_source(node.body):
+                return True
+            if isinstance(node, CStyleForLoop) and self._node_list_may_source(node.body):
                 return True
             if isinstance(node, WhileLoop) and self._node_list_may_source(node.body):
                 return True

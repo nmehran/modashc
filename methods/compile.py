@@ -145,7 +145,11 @@ def render_source_dispatch(source_expression: str, source_declarations, render_s
         if pattern in seen_patterns:
             continue
         seen_patterns.add(pattern)
-        rendered_source = indent_block(render_source(source_declaration.path), f"{indent}    ")
+        rendered_source = (
+            f"{indent}    :"
+            if source_declaration.replacement_kind == "noop-source"
+            else indent_block(render_source(source_declaration.path), f"{indent}    ")
+        )
         output.extend([
             f"{indent}  {shell_quote(pattern)})",
             f"{indent}    {{",

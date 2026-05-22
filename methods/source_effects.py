@@ -147,6 +147,14 @@ class ForLoop(IRNode):
 
 
 @dataclass(frozen=True)
+class CStyleForLoop(IRNode):
+    init: str
+    condition: str
+    update: str
+    body: tuple[IRNode, ...]
+
+
+@dataclass(frozen=True)
 class WhileLoop(IRNode):
     keyword: str
     condition: str
@@ -204,6 +212,8 @@ class ScriptIR:
                 elif isinstance(node, FunctionDef):
                     sites.extend(collect(node.body))
                 elif isinstance(node, ForLoop):
+                    sites.extend(collect(node.body))
+                elif isinstance(node, CStyleForLoop):
                     sites.extend(collect(node.body))
                 elif isinstance(node, WhileLoop):
                     sites.extend(collect(node.body))

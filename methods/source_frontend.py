@@ -12,6 +12,7 @@ from methods.source_effects import (
     CaseArm,
     CaseBlock,
     CdCommand,
+    CStyleForLoop,
     FunctionDef,
     ForLoop,
     IfBlock,
@@ -49,6 +50,8 @@ FUNCTION_SIGNATURE_PATTERN = re.compile(
 FUNCTION_OPEN_PATTERN = re.compile(r'^\s*\{\s*(.*)$')
 FOR_LOOP_PATTERN = re.compile(r'^\s*for\s+([a-zA-Z_]\w*)\s+in\s+(.+?)\s*;\s*do(?:\s*(.*))?$')
 FOR_HEADER_PATTERN = re.compile(r'^\s*for\s+([a-zA-Z_]\w*)\s+in\s+(.+?)\s*$')
+C_FOR_LOOP_PATTERN = re.compile(r'^\s*for\s*\(\(\s*(.*?)\s*;\s*(.*?)\s*;\s*(.*?)\s*\)\)\s*;\s*do(?:\s*(.*))?$')
+C_FOR_HEADER_PATTERN = re.compile(r'^\s*for\s*\(\(\s*(.*?)\s*;\s*(.*?)\s*;\s*(.*?)\s*\)\)\s*$')
 WHILE_LOOP_PATTERN = re.compile(r'^\s*(while|until)\s+(.+?)\s*;\s*do(?:\s*(.*))?$')
 WHILE_HEADER_PATTERN = re.compile(r'^\s*(while|until)\s+(.+?)\s*$')
 DO_LINE_PATTERN = re.compile(r'^\s*do\s*$')
@@ -129,6 +132,18 @@ class LineParserFrontend:
             case_block, next_line_index = self._parse_case_block(script_path, line_number, code_line, lines, line_index)
             if case_block:
                 nodes.append(case_block)
+                line_index = next_line_index
+                continue
+
+            c_for_loop, next_line_index = self._parse_c_style_for_loop(
+                script_path,
+                line_number,
+                code_line,
+                lines,
+                line_index,
+            )
+            if c_for_loop:
+                nodes.append(c_for_loop)
                 line_index = next_line_index
                 continue
 
@@ -795,6 +810,94 @@ class LineParserFrontend:
                 return index
 
         return -1
+
+    def _parse_c_style_for_loop(self, script_path: Path, line_number: int, code_line: str, lines: list[str],
+                                line_index: int):
+        match = C_FOR_LOOP_PATTERN.match(code_line)
+        do_line_index = line_index
+        if match:
+            init, condition, update, inline_body = match.groups()
+        else:
+            match = C_FOR_HEADER_PATTERN.match(code_line)
+            if not match or line_index + 1 >= len(lines):
+                return None, line_index + 1
+
+            do_line_index = line_index + 1
+            do_code_line = remove_comments(
+                lines[do_line_index],
+                ['#'],
+                exclusion_patterns=[r'\#\!.*'],
+                escape_exclusions=False,
+            )
+            do_match = DO_LINE_PATTERN.match(do_code_line)
+            if not do_match:
+                return None, line_index + 1
+
+            init, condition, update = match.groups()
+            inline_body = ""
+
+        if inline_body is None:
+            inline_body = ""
+
+        if inline_body.strip() == "":
+            body_start_index = do_line_index + 1
+        else:
+            body_start_index = do_line_index
+
+        if body_start_index <= line_index:
+            body_start_index = line_index + 1
+
+        body_lines = []
+        next_line_index = body_start_index
+
+        if inline_body.strip():
+            done_match = INLINE_DONE_PATTERN.match(inline_body.strip())
+            if not done_match:
+                return None, line_index + 1
+            body_lines.append((do_line_index + 1, done_match.group(1).strip()))
+            next_line_index = do_line_index + 1
+        else:
+            body_index = body_start_index
+            active_heredocs = []
+            control_depth = 0
+            while body_index < len(lines):
+                body_line_number = body_index + 1
+                body_line = lines[body_index]
+
+                if active_heredocs:
+                    body_lines.append((body_line_number, body_line))
+                    if is_heredoc_end(body_line, active_heredocs[0]):
+                        active_heredocs.pop(0)
+                    body_index += 1
+                    continue
+
+                body_code_line = remove_comments(
+                    body_line,
+                    ['#'],
+                    exclusion_patterns=[r'\#\!.*'],
+                    escape_exclusions=False,
+                )
+                stripped_body_line = body_code_line.strip()
+                if stripped_body_line == "done" and control_depth == 0:
+                    next_line_index = body_index + 1
+                    break
+
+                body_lines.append((body_line_number, body_code_line))
+                active_heredocs.extend(extract_heredoc_delimiters(body_line))
+                control_depth = self._next_control_depth(body_code_line, control_depth)
+                body_index += 1
+            else:
+                return None, line_index + 1
+
+        column = self._command_column(code_line, "for")
+        return CStyleForLoop(
+            location=SourceLocation(script_path, line_number, column),
+            text=code_line.strip(),
+            init=init.strip(),
+            condition=condition.strip(),
+            update=update.strip(),
+            body=self._parse_loop_body(script_path, body_lines),
+        ), next_line_index
 
     def _parse_for_loop(self, script_path: Path, line_number: int, code_line: str, lines: list[str], line_index: int):
         match = FOR_LOOP_PATTERN.match(code_line)
