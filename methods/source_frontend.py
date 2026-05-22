@@ -1,18 +1,32 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Protocol
 
-from methods.regex.patterns import SOURCE_PATTERN
+from methods.regex.patterns import SOURCE_PATTERN, VARIABLE_ASSIGNMENT_PATTERN
 from methods.regex.utilities import remove_comments
-from methods.source_effects import RawCommand, ScriptIR, SourceLocation, SourceSite
+from methods.source_effects import (
+    ArrayAssignment,
+    Assignment,
+    CdCommand,
+    RawCommand,
+    ScriptIR,
+    SetCommand,
+    SourceLocation,
+    SourceSite,
+)
 from methods.source_resolver import (
     contains_source_command,
     extract_heredoc_delimiters,
     is_heredoc_end,
+    parse_shell_words,
     source_command_index,
+    UnsupportedSourceError,
 )
 from methods.shell_line import get_commands
+
+ARRAY_ASSIGNMENT_PATTERN = re.compile(r'^(?:declare\s+-a\s+)?([a-zA-Z_]\w*)=\((.*)\)$')
 
 
 class ParserFrontend(Protocol):
@@ -77,13 +91,98 @@ class LineParserFrontend:
             if contains_source_command(command):
                 nodes.append(self._fallback_source_site(script_path, line_number, line, command))
                 continue
-            column = line.find(command) + 1
-            nodes.append(RawCommand(
-                location=SourceLocation(script_path, line_number, max(column, 1)),
-                text=command,
-            ))
+            nodes.append(self._command_node(script_path, line_number, line, command))
 
         return sorted(nodes, key=lambda node: node.location.column)
+
+    def _command_node(self, script_path: Path, line_number: int, line: str, command: str):
+        location = SourceLocation(script_path, line_number, self._command_column(line, command))
+
+        if array_assignment := self._array_assignment_node(location, command):
+            return array_assignment
+
+        if assignment := self._assignment_node(location, command):
+            return assignment
+
+        if cd_command := self._cd_node(location, command):
+            return cd_command
+
+        if set_command := self._set_node(location, command):
+            return set_command
+
+        return RawCommand(location=location, text=command)
+
+    @staticmethod
+    def _command_column(line: str, command: str):
+        column = line.find(command)
+        return 1 if column < 0 else column + 1
+
+    @staticmethod
+    def _array_assignment_node(location: SourceLocation, command: str):
+        match = ARRAY_ASSIGNMENT_PATTERN.match(command)
+        if not match:
+            return None
+
+        name, values_text = match.groups()
+        is_exact = True
+        try:
+            values = tuple(parse_shell_words(values_text))
+        except UnsupportedSourceError:
+            values = ()
+            is_exact = False
+
+        return ArrayAssignment(
+            location=location,
+            text=command,
+            name=name,
+            values=values,
+            is_exact=is_exact,
+        )
+
+    @staticmethod
+    def _assignment_node(location: SourceLocation, command: str):
+        match = VARIABLE_ASSIGNMENT_PATTERN.match(command)
+        if not match:
+            return None
+
+        prefix, name, operator, value = match.groups()
+        if '(' in operator or command.strip().startswith(f"{name}=("):
+            return None
+
+        return Assignment(
+            location=location,
+            text=command,
+            name=name,
+            value=value.strip(),
+            prefix=prefix.strip(),
+        )
+
+    @staticmethod
+    def _cd_node(location: SourceLocation, command: str):
+        if not re.match(r'^cd(?:\s|$)', command):
+            return None
+
+        return CdCommand(
+            location=location,
+            text=command,
+            path_expression=command[2:].strip(),
+        )
+
+    @staticmethod
+    def _set_node(location: SourceLocation, command: str):
+        if not re.match(r'^set(?:\s|$)', command):
+            return None
+
+        try:
+            words = parse_shell_words(command)
+        except UnsupportedSourceError:
+            words = command.split()
+
+        return SetCommand(
+            location=location,
+            text=command,
+            arguments=tuple(words[1:]),
+        )
 
     @staticmethod
     def _fallback_source_site(script_path: Path, line_number: int, line: str, command: str):

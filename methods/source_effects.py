@@ -82,6 +82,30 @@ class RawCommand(IRNode):
 
 
 @dataclass(frozen=True)
+class Assignment(IRNode):
+    name: str
+    value: str
+    prefix: str = ""
+
+
+@dataclass(frozen=True)
+class ArrayAssignment(IRNode):
+    name: str
+    values: tuple[str, ...]
+    is_exact: bool = True
+
+
+@dataclass(frozen=True)
+class CdCommand(IRNode):
+    path_expression: str
+
+
+@dataclass(frozen=True)
+class SetCommand(IRNode):
+    arguments: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class SourceSite(IRNode):
     command_name: str
     source_expression: str

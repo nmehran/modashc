@@ -2,7 +2,7 @@ import textwrap
 import unittest
 from pathlib import Path
 
-from methods.source_effects import RawCommand, SourceSite
+from methods.source_effects import ArrayAssignment, Assignment, CdCommand, RawCommand, SetCommand, SourceSite
 from methods.source_frontend import LineParserFrontend
 
 
@@ -75,11 +75,59 @@ class LineParserFrontendTestCase(unittest.TestCase):
         ir = self.parse('cd subdir && echo ready && source ./dep.sh\n')
 
         raw_commands = [node for node in ir.nodes if isinstance(node, RawCommand)]
+        cd_commands = [node for node in ir.nodes if isinstance(node, CdCommand)]
         source_sites = [node for node in ir.nodes if isinstance(node, SourceSite)]
 
-        self.assertEqual([node.text for node in raw_commands], ["cd subdir", "echo ready"])
+        self.assertEqual([node.path_expression for node in cd_commands], ["subdir"])
+        self.assertEqual([node.text for node in raw_commands], ["echo ready"])
         self.assertEqual([node.source_expression for node in source_sites], ["./dep.sh"])
-        self.assertEqual([type(node) for node in ir.nodes], [RawCommand, RawCommand, SourceSite])
+        self.assertEqual([type(node) for node in ir.nodes], [CdCommand, RawCommand, SourceSite])
+
+    def test_emits_stateful_nodes_for_current_evaluator_inputs(self):
+        ir = self.parse("""\
+            ROOT="./dir with spaces"
+            cd "$ROOT"
+            set +u -e
+            export DEP=./dep.sh
+            deps=(./base.sh "./feature path.sh")
+            echo done
+            """)
+
+        self.assertEqual([type(node) for node in ir.nodes], [
+            Assignment,
+            CdCommand,
+            SetCommand,
+            Assignment,
+            ArrayAssignment,
+            RawCommand,
+        ])
+
+        first_assignment = ir.nodes[0]
+        self.assertEqual(first_assignment.name, "ROOT")
+        self.assertEqual(first_assignment.value, '"./dir with spaces"')
+
+        set_command = ir.nodes[2]
+        self.assertEqual(set_command.arguments, ("+u", "-e"))
+
+        export_assignment = ir.nodes[3]
+        self.assertEqual(export_assignment.prefix, "export")
+        self.assertEqual(export_assignment.name, "DEP")
+        self.assertEqual(export_assignment.value, "./dep.sh")
+
+        array_assignment = ir.nodes[4]
+        self.assertEqual(array_assignment.name, "deps")
+        self.assertEqual(array_assignment.values, ("./base.sh", "./feature path.sh"))
+        self.assertTrue(array_assignment.is_exact)
+
+    def test_marks_unparseable_array_assignment_as_not_exact(self):
+        ir = self.parse('deps=("./unterminated)\n')
+
+        self.assertEqual(len(ir.nodes), 1)
+        array_assignment = ir.nodes[0]
+        self.assertIsInstance(array_assignment, ArrayAssignment)
+        self.assertEqual(array_assignment.name, "deps")
+        self.assertEqual(array_assignment.values, ())
+        self.assertFalse(array_assignment.is_exact)
 
     def test_finds_source_sites_inside_future_control_flow_fixtures(self):
         ir = self.parse("""\
