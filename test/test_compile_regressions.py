@@ -197,6 +197,24 @@ class CompileRegressionTestCase(unittest.TestCase):
 
             project.assert_compiled_matches(self, "main.sh")
 
+    def test_heredoc_source_text_is_not_treated_as_dependency(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "dep should not run"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                cat <<EOF
+                source ./dep.sh
+                EOF
+                echo "main"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "dep"\n')
+            project.write("main.sh", 'echo "<<EOF"\necho $((1 << 2))\nsource ./dep.sh\n')
+
+            project.assert_compiled_matches(self, "main.sh")
+
     def test_parent_variables_are_available_before_sourced_file_runs(self):
         with ScriptProject() as project:
             project.write("dep.sh", 'echo "dep:${FOO:-missing}"\n')
@@ -268,6 +286,34 @@ class CompileRegressionTestCase(unittest.TestCase):
             "case block": (
                 'case "$ENV" in\n  prod) source ./prod.sh ;;\nesac\n',
                 'prod) source ./prod.sh',
+            ),
+            "command builtin source": (
+                'command source ./dep.sh\n',
+                'command source ./dep.sh',
+            ),
+            "builtin source": (
+                'builtin source ./dep.sh\n',
+                'builtin source ./dep.sh',
+            ),
+            "command path source": (
+                'command -p source ./dep.sh\n',
+                'command -p source ./dep.sh',
+            ),
+            "assignment-prefixed source": (
+                'FOO=bar source ./dep.sh\n',
+                'FOO=bar source ./dep.sh',
+            ),
+            "assignment-prefixed command source": (
+                'FOO=bar command source ./dep.sh\n',
+                'FOO=bar command source ./dep.sh',
+            ),
+            "compact function source": (
+                'helper(){ source ./dep.sh; }\nhelper\n',
+                'helper(){ source ./dep.sh',
+            ),
+            "compact function keyword source": (
+                'function helper { source ./dep.sh; }\nhelper\n',
+                'function helper { source ./dep.sh',
             ),
         }
 

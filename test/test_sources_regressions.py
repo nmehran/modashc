@@ -46,6 +46,31 @@ class SourceRegressionTestCase(unittest.TestCase):
             ['cd subdir', 'source ./dep.sh', 'echo missing'],
         )
 
+    def test_command_wrapped_source_is_detected_as_source_command(self):
+        from methods.sources import contains_source_command
+
+        self.assertTrue(contains_source_command('command source ./dep.sh'))
+        self.assertTrue(contains_source_command('command -p source ./dep.sh'))
+        self.assertTrue(contains_source_command('command -- source ./dep.sh'))
+        self.assertTrue(contains_source_command('builtin source ./dep.sh'))
+        self.assertTrue(contains_source_command('FOO=bar source ./dep.sh'))
+        self.assertTrue(contains_source_command('FOO=bar command source ./dep.sh'))
+        self.assertTrue(contains_source_command('helper(){ source ./dep.sh'))
+        self.assertTrue(contains_source_command('function helper { source ./dep.sh'))
+        self.assertFalse(contains_source_command('command echo source ./dep.sh'))
+        self.assertFalse(contains_source_command('command -v source'))
+        self.assertFalse(contains_source_command('command -V source'))
+        self.assertFalse(contains_source_command('FOO=bar echo source ./dep.sh'))
+
+    def test_heredoc_detection_ignores_quotes_and_arithmetic(self):
+        from methods.sources import extract_heredoc_delimiters
+
+        self.assertEqual([item.value for item in extract_heredoc_delimiters('cat <<EOF')], ['EOF'])
+        self.assertEqual([item.value for item in extract_heredoc_delimiters("cat <<'EOF'")], ['EOF'])
+        self.assertEqual(extract_heredoc_delimiters('echo "<<EOF"'), [])
+        self.assertEqual(extract_heredoc_delimiters('echo $((1 << 2))'), [])
+        self.assertEqual(extract_heredoc_delimiters('(( value << 2 ))'), [])
+
     def test_static_source_discovery_matrix(self):
         with ScriptProject() as project:
             absolute_dep = project.write("absolute.sh", 'echo "absolute"\n')

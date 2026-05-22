@@ -19,6 +19,7 @@ from methods.regex.patterns import (
 )
 
 RECURSION_LIMIT = 2
+ASSIGNMENT_WORD_PATTERN = re.compile(r'^[a-zA-Z_]\w*(?:\+)?=.*$')
 
 
 class UnsupportedSourceError(NotImplementedError):
@@ -33,6 +34,108 @@ class ResolvedSource:
     execution_model: str = "parent-source"
     confidence: str = "exact"
     replacement_kind: str = "source"
+
+
+@dataclass(frozen=True)
+class HeredocDelimiter:
+    value: str
+    strip_tabs: bool = False
+
+
+def extract_heredoc_delimiters(line: str):
+    delimiters = []
+    in_single_quote = False
+    in_double_quote = False
+    escaped = False
+    arithmetic_depth = 0
+    index = 0
+
+    while index < len(line):
+        char = line[index]
+
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+
+        if char == '\\' and not in_single_quote:
+            escaped = True
+            index += 1
+            continue
+
+        if char == "'" and not in_double_quote:
+            in_single_quote = not in_single_quote
+            index += 1
+            continue
+
+        if char == '"' and not in_single_quote:
+            in_double_quote = not in_double_quote
+            index += 1
+            continue
+
+        if in_single_quote or in_double_quote:
+            index += 1
+            continue
+
+        if arithmetic_depth:
+            if line.startswith('))', index):
+                arithmetic_depth -= 1
+                index += 2
+            else:
+                index += 1
+            continue
+
+        if line.startswith('$((', index):
+            arithmetic_depth += 1
+            index += 3
+            continue
+
+        if line.startswith('((', index) and (index == 0 or line[index - 1].isspace() or line[index - 1] in ';|&'):
+            arithmetic_depth += 1
+            index += 2
+            continue
+
+        if line.startswith('<<', index) and not line.startswith('<<<', index):
+            delimiter_start = index + 2
+            strip_tabs = False
+            if delimiter_start < len(line) and line[delimiter_start] == '-':
+                strip_tabs = True
+                delimiter_start += 1
+
+            while delimiter_start < len(line) and line[delimiter_start].isspace():
+                delimiter_start += 1
+
+            if delimiter_start >= len(line):
+                break
+
+            quote = line[delimiter_start] if line[delimiter_start] in {'"', "'"} else ''
+            if quote:
+                delimiter_end = line.find(quote, delimiter_start + 1)
+                if delimiter_end < 0:
+                    break
+                delimiter = line[delimiter_start + 1:delimiter_end]
+                index = delimiter_end + 1
+            else:
+                delimiter_end = delimiter_start
+                while delimiter_end < len(line) and not line[delimiter_end].isspace() and line[delimiter_end] not in ';|&<>':
+                    delimiter_end += 1
+                delimiter = line[delimiter_start:delimiter_end]
+                index = delimiter_end
+
+            if delimiter:
+                delimiters.append(HeredocDelimiter(delimiter, strip_tabs))
+            continue
+
+        index += 1
+
+    return delimiters
+
+
+def is_heredoc_end(line: str, heredoc: HeredocDelimiter):
+    candidate = line.rstrip('\n')
+    if heredoc.strip_tabs:
+        candidate = candidate.lstrip('\t')
+    return candidate == heredoc.value
 
 
 def validate_path(path):
@@ -337,20 +440,44 @@ def source_command_index(command: str):
     except UnsupportedSourceError:
         return 0 if SOURCE_PATTERN.findall(command) else None
 
+    command_start = 0
+    while command_start < len(words) and ASSIGNMENT_WORD_PATTERN.match(words[command_start]):
+        command_start += 1
+
     for index, word in enumerate(words):
         if word not in {'source', '.'}:
             continue
 
-        if index == 0:
+        if index == command_start:
             return index
 
-        first_word = words[0]
+        first_word = words[command_start] if command_start < len(words) else ''
         previous_word = words[index - 1]
-        if first_word in {'if', 'while', 'until', 'then', 'elif', 'else', 'do'} and index == 1:
+        if first_word == 'builtin' and index == command_start + 1:
             return index
-        if previous_word.endswith(')'):
+        if first_word == 'command':
+            command_index = command_start + 1
+            while command_index < len(words) and words[command_index].startswith('-'):
+                option = words[command_index]
+                if option == '--':
+                    command_index += 1
+                    break
+                if 'v' in option[1:] or 'V' in option[1:]:
+                    return None
+                if set(option[1:]) != {'p'}:
+                    return None
+                command_index += 1
+            if index == command_index:
+                return index
+        if first_word in {'if', 'while', 'until', 'then', 'elif', 'else', 'do'}:
+            branch_index = command_start + 1
+            while branch_index < len(words) and ASSIGNMENT_WORD_PATTERN.match(words[branch_index]):
+                branch_index += 1
+            if index == branch_index:
+                return index
+        if previous_word == '{' or previous_word.endswith('{'):
             return index
-        if first_word == 'case' and any(candidate.endswith(')') for candidate in words[:index]):
+        if any(candidate.endswith(')') for candidate in words[command_start:index]):
             return index
 
     return None
@@ -765,8 +892,14 @@ def extract_sources_and_variables(script_path, context, sources, seen_sources: d
 
     try:
         control_depth = 0
+        active_heredocs = []
         with open(script_path, 'r') as file:
             for num, line in enumerate(file):
+                if active_heredocs:
+                    if is_heredoc_end(line, active_heredocs[0]):
+                        active_heredocs.pop(0)
+                    continue
+
                 for command in get_commands(line):
                     # Skip commands that are quoted strings rather than shell commands.
                     if not command or re.match(r'\s*["\']', command):
@@ -828,6 +961,8 @@ def extract_sources_and_variables(script_path, context, sources, seen_sources: d
                         control_depth += 1
                     elif ends_unsupported_control_block(command):
                         control_depth = max(0, control_depth - 1)
+
+                active_heredocs.extend(extract_heredoc_delimiters(line))
     finally:
         if previous_bash_source is None:
             context['vars'].pop('BASH_SOURCE', None)

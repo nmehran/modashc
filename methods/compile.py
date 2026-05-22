@@ -2,7 +2,14 @@ import os
 import re
 
 from methods.regex.patterns import SOURCE_PATTERN
-from methods.sources import UnsupportedSourceError, contains_source_command, get_sources, validate_path
+from methods.sources import (
+    UnsupportedSourceError,
+    contains_source_command,
+    extract_heredoc_delimiters,
+    get_sources,
+    is_heredoc_end,
+    validate_path,
+)
 
 SET_SHEBANG = "#!/bin/bash"
 
@@ -175,12 +182,20 @@ def replace_command_source_sites(line: str, source_declarations, render_source):
 
 
 def assert_no_unresolved_source_sites(content: str):
+    active_heredocs = []
     for line in content.splitlines():
+        if active_heredocs:
+            if is_heredoc_end(line, active_heredocs[0]):
+                active_heredocs.pop(0)
+            continue
+
         stripped_line = line.strip()
         if not stripped_line or stripped_line.startswith("#"):
             continue
         if SOURCE_PATTERN.findall(line) or contains_source_command(line):
             raise UnsupportedSourceError(f"unresolved source remained in executable output: {stripped_line}")
+
+        active_heredocs.extend(extract_heredoc_delimiters(line))
 
 
 def render_executable_script(entry_point: str, context: dict):
