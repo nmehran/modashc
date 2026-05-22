@@ -1,102 +1,141 @@
 # modashc
 
-`modashc` aims to provide a tool for merging multiple Bash scripts into a single script, ensuring all dependencies, variables, and functions are properly resolved and included.
+`modashc` merges Bash script projects into a single output file. It has two
+first-class output modes:
 
-## Features
+- **Context mode**: the default readable output for human and LLM review.
+- **Executable mode**: a runnable output that preserves supported Bash
+  `source` execution semantics.
 
-- **Context Output**: Produces a readable, dependency-first single file for human and LLM review.
-- **Executable Output**: Produces a runnable script that inlines sourced files at their source sites.
-- **Resolve Shell Functions**: Handles shell functions like `$(dirname ...)`, `$(basename ...)`, and `$(realpath ...)`.
-- **Variable Substitution**: Substitutes variables using a provided context and environment variables.
-- **Error Handling**: Validates paths and provides warnings for potential issues like unresolved variables.
-- **Source Graph Rendering**: Discovers source relationships and renders them for either readable context or executable output.
-- **Dependency Detection**: 
-  - **Static Dependencies**: Automatically detects and includes statically defined dependencies.
-  - **Relative Dependencies**: Resolves dependencies specified using relative paths.
-  - **Dynamic Dependencies**: Dynamically includes other scripts, based on the current working directory, references to environment variables, or a limited-subset of shell functions.
-  - **Circular Dependency Detection**: Identifies recursive dependencies (circular imports).
-  
-## Limitations
+The compiler resolves dependencies without executing shell code.
 
-- **Environment Specific**: `modashc` assumes a Unix-like environment for path and shell function handling. It may not work correctly on non-Unix systems.
-- **Dynamic Sources**: The tool may not properly resolve dynamic sources which are resolved at runtime or source directives which use functions that are not directly supported.
-- **Limited Shell Function Support**: While it supports common shell functions like `$(dirname ...)`, `$(basename ...)`, and `$(realpath ...)`, other custom or less common shell functions may not be resolved correctly.
-- **Variable Resolution**: `modashc` resolves variables based on the provided context and environment. Unresolved or dynamically generated variables at runtime may not be accurately substituted.
-- **Error Reporting**: The tool provides basic warnings and error messages. However, detailed debugging information for complex scripts might require manual inspection.
-- **File System Changes**: `modashc` tracks the working directory during script processing using heuristics.  However, it may not accurately resolve `cd` commands called using unconventional or complex patterns.
-## Installation
+## Output Modes
 
-1. Clone the repository:
-   ```sh
-   git clone https://github.com/nmehran/modashc.git
-   cd modashc
-   ```
+### Context Mode
+
+Context mode is the default:
+
+```sh
+python modashc.py scripts/main.sh merged-context.sh
+```
+
+It renders one section per discovered file, dependency-first with the entrypoint
+last. File bodies are deduplicated, original source lines are preserved, and
+resolved relationships are annotated directly above the source site:
+
+```bash
+# modashc: source ./dep.sh -> dep.sh
+source ./dep.sh
+```
+
+Context mode is readable-first. It is intended for review, debugging, and
+feeding complete shell-project context to another tool. It is not a runtime
+parity mode.
+
+### Executable Mode
+
+Executable mode must be requested explicitly:
+
+```sh
+python modashc.py scripts/main.sh merged-runnable.sh --mode executable
+```
+
+It inlines sourced files at their source sites so parent variables, `set` state,
+current directory state, duplicate source execution, and function-scoped sources
+match supported Bash behavior. If executable mode cannot prove a source site is
+safe to lower, compilation fails before writing or overwriting the output file.
+
+## Supported Source Resolution
+
+`modashc` currently resolves these source forms:
+
+- `source ./dep.sh` and `. ./dep.sh`
+- relative, parent-relative, and absolute source paths
+- paths containing spaces or `#`
+- non-`.sh` sourced files, such as `source ./config`
+- variables and environment variables that resolve to paths
+- common path command substitutions: `dirname`, `basename`, and `realpath`
+- cwd-sensitive sources after supported `cd` commands
+- safe `cat` path-file sources, such as `source "$(cat dep-path.txt)"`
+- safe deterministic `find` sources with one matching file
+- safe `eval` payloads that resolve to exactly one source command
+- `bash -c "source ..."` classification in context mode
+
+Unsupported or ambiguous dynamic forms fail closed in executable mode. This
+includes loop-driven sources, conditional/case-driven sources, array/list source
+paths, glob iteration, process substitution, user-defined source-path functions,
+nested dynamic substitutions, and multi-result `cat` or `find` output.
+
+Next-generation control-flow evaluation is intentionally deferred. See
+[Dynamic Source Resolution](docs/dynamic-source-resolution.md) for the current
+resolver contract and the deferred pattern families.
 
 ## Usage
-
-To use `modashc`, run the CLI with the entry-point Bash script and the desired output file:
 
 ```sh
 python modashc.py <entrypoint> <output> [--mode context|executable]
 ```
 
-### Arguments
+Arguments:
 
-- `<entrypoint>`: The entry-point Bash script that initiates the merging process.
-- `<output>`: The output file where the merged script will be saved.
-- `--mode`: Output mode. `context` is the default readable mode; `executable` preserves Bash source execution behavior.
+- `<entrypoint>`: the Bash script that starts the source graph.
+- `<output>`: the file to write.
+- `--mode`: `context` by default, or `executable` for runtime parity over the
+  supported subset.
 
-### Example
+Examples:
 
 ```sh
-python modashc.py scripts/main.sh merged_output.sh
-python modashc.py scripts/main.sh runnable_output.sh --mode executable
+python modashc.py test/sample_dir/script_main.sh sample-context.sh
+python modashc.py test/sample_dir/script_main.sh sample-runnable.sh --mode executable
 ```
 
-## How It Works
+## Architecture
 
-### Design Docs
+- `modashc.py`: CLI entrypoint.
+- `methods/compile.py`: context and executable renderers.
+- `methods/sources.py`: source graph traversal, cwd tracking, variable state,
+  and path resolution context.
+- `methods/source_resolver.py`: source command detection, heredoc guards, safe
+  dynamic source resolvers, and unsupported-source classification.
+- `methods/functions.py`: function-call extraction utility.
+- `test/support.py`: real temporary shell-project harness used by regression
+  tests.
 
-Detailed behavior specs live in [docs](docs/README.md).
+The scripts under `setup/` are optional operational helpers for running commands
+through a restricted `modashc` user. They are not part of dependency discovery
+or compilation.
 
-### File Structure
+## Development
 
-- `methods/sources.py`: Contains functions to resolve paths, variables, and shell functions.
-- `methods/compile.py`: Contains the context and executable renderers.
-- `modashc.py`: Entry point for the CLI tool.
+Run the full local verification suite:
 
-### Optional Setup Helper
+```sh
+python -m unittest discover -s ./ -p 'test_*.py' -v
+python -m py_compile modashc.py methods/*.py methods/regex/*.py test/*.py
+bash -n setup/modashc_shell.sh setup/run_modashc_shell.sh
+shellcheck setup/modashc_shell.sh setup/run_modashc_shell.sh
+git diff --check
+```
 
-The scripts under `setup/` configure and run an optional restricted `modashc`
-user for operational script execution. They are not part of the compiler
-pipeline and are not used for dependency discovery or source merging.
+Design notes live in [docs](docs/README.md).
 
-## Contributing
+## Current Roadmap
 
-Contributions are welcome! Please submit a pull request or open an issue to contribute features or report bugs. Feel free to discuss ideas and ask questions in [GitHub Discussions](https://github.com/nmehran/modashc/discussions).
+- Structured diagnostics instead of plain unsupported-source message strings.
+- Parser boundary documentation for the current line splitter and regex helpers.
+- Deferred next-generation evaluator/IR for loops, arrays, globs,
+  conditionals, case statements, and runtime dispatch.
 
-## Features Roadmap
+## Installation
 
-### Dynamic Source Resolution
-- [ ] Implement a Python-only resolver registry for common dynamic source idioms
-- [ ] Keep unsupported source forms fail-closed with explicit diagnostics
+```sh
+git clone https://github.com/nmehran/modashc.git
+cd modashc
+```
 
-### Performance Optimization
-- [ ] Downstream codebase written in C++
-- [ ] Implement multi-threading where appropriate
-
-### Testing
-- [x] Unit tests
-  - [x] Write unit tests for existing functionality
-  - [ ] Achieve high code coverage
-- [x] Continuous Integration (CI)
-  - [x] Set up CI pipeline to run tests automatically
-  - [x] Ensure tests are run on every commit and pull request
+No external Python package dependencies are required for the current test suite.
 
 ## License
 
-This project is licensed under the Apache 2.0 License. See the [LICENSE](./LICENSE) file for details.
-
----
-
-By using `modashc`, you can efficiently manage and compile your Bash scripting projects into a single, organized script.
+This project is licensed under the Apache 2.0 License. See [LICENSE](LICENSE).

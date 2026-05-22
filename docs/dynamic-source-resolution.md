@@ -301,20 +301,25 @@ Each resolver needs tests for:
 Regression tests should use real temporary shell projects through
 `ScriptProject`, not mocked strings alone.
 
-## Implementation Plan
+## Implementation Status
 
-The initial resolver layer now covers steps 1 through 7. Remaining work should
-keep extending the resolver registry in small, tested increments.
+The initial resolver layer now covers the current resolver-driven compiler
+scope:
 
-1. Introduce a resolver result type and unsupported diagnostic type.
-2. Move current source-expression handling behind a resolver registry.
-3. Port existing literal, variable, env, `dirname`, `basename`, and `realpath`
-   behavior into registry tests without behavior changes.
-4. Add safe `cat`.
-5. Add safe `find`.
-6. Add safe `eval source`.
-7. Add `bash -c source` classification and mode-specific handling.
-8. Continue refining context output execution-model annotations as new
-   non-parent-source dependency classes are added.
+- `ResolvedSource` records describe exact dependency resolution.
+- `methods.source_resolver` owns source command detection, heredoc guards, safe
+  dynamic source resolvers, and unsupported-source classification.
+- `methods.sources` owns traversal, cwd tracking, variable state, and path
+  context.
+- Safe `cat`, safe `find`, safe `eval source`, and context-only
+  `bash -c source` classification are implemented.
+- Executable mode fails before output when unsupported source forms would leave
+  live runtime `source` commands.
 
-Each step should keep the full test suite green and avoid broad parser rewrites.
+Structured diagnostic objects are still deferred. Current diagnostics are raised
+as explicit `UnsupportedSourceError` messages that include the rejected source
+site wherever possible.
+
+Future resolver increments should stay small, tested, and fail-closed. Loop,
+conditional, case, array, glob, and runtime-dispatch support should not be added
+as one-off resolver patches; those belong to a separate evaluator or IR design.
