@@ -98,7 +98,7 @@ class SourceRegressionTestCase(unittest.TestCase):
                 os.chdir(project.path("caller"))
                 actual = [
                     path.relative_to(project.root).as_posix()
-                    for path in project.sources("script/main.sh")
+                    for path in project.sources("script/main.sh", mode="context")
                 ]
             finally:
                 os.chdir(before)

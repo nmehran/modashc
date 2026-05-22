@@ -229,6 +229,38 @@ class CompileRegressionTestCase(unittest.TestCase):
             with self.assertRaises(RecursionError):
                 project.compile("a.sh")
 
+    def test_unsupported_source_families_fail_without_writing_output(self):
+        cases = {
+            "unknown scalar": ('source "$DEP"\n', 'source "$DEP"'),
+            "array reference": ('deps=(./dep.sh)\nsource "${deps[0]}"\n', 'source "${deps[0]}"'),
+            "for loop": (
+                'for file in ./plugins/*.sh; do source "$file"; done\n',
+                'do source "$file"',
+            ),
+            "if block": (
+                'if [[ -f ./dep.sh ]]; then\n  source ./dep.sh\nfi\n',
+                'source ./dep.sh',
+            ),
+            "case block": (
+                'case "$ENV" in\n  prod) source ./prod.sh ;;\nesac\n',
+                'prod) source ./prod.sh',
+            ),
+        }
+
+        for name, (content, expected_fragment) in cases.items():
+            with self.subTest(name=name), ScriptProject() as project:
+                project.write("dep.sh", 'echo "dep"\n')
+                project.write("prod.sh", 'echo "prod"\n')
+                project.write("plugins/a.sh", 'echo "plugin"\n')
+                project.write("main.sh", content)
+                output = project.write("compiled.sh", "existing output\n")
+
+                with self.assertRaisesRegex((ValueError, NotImplementedError), "unsupported|unresolved|control flow") as cm:
+                    project.compile("main.sh", output=output, mode="executable")
+
+                self.assertIn(expected_fragment, str(cm.exception))
+                self.assertEqual(output.read_text(), "existing output\n")
+
     def test_runtime_dynamic_sources_raise_clear_diagnostic(self):
         cases = {
             "cat multiple operands": 'source "$(cat dep-path.txt other.txt)"\n',
@@ -239,6 +271,7 @@ class CompileRegressionTestCase(unittest.TestCase):
             "find quit without print": 'source "$(find ./nested -type f -name dep.sh -quit)"\n',
             "eval extra command": 'eval "source ./dep.sh; echo unsafe"\n',
             "eval nested dynamic": 'eval "source $(cat dep-path.txt)"\n',
+            "eval unresolved payload source": 'COMMAND="source $DEP"\neval "$COMMAND"\n',
             "backticks": "source `cat dep-path.txt`\n",
         }
 

@@ -186,6 +186,10 @@ def resolve_command(command, context):
 
 
 def get_commands(line: str):
+    """Split one physical shell line into top-level command fragments.
+
+    This is a quote-aware splitter for the resolver, not a full Bash parser.
+    """
     commands = []
     current = []
     in_single_quote = False
@@ -325,6 +329,54 @@ def is_unsupported_dynamic_source(command: str, source_path: str | None = None):
         return True
 
     return False
+
+
+def source_command_index(command: str):
+    try:
+        words = parse_shell_words(command)
+    except UnsupportedSourceError:
+        return 0 if SOURCE_PATTERN.findall(command) else None
+
+    for index, word in enumerate(words):
+        if word not in {'source', '.'}:
+            continue
+
+        if index == 0:
+            return index
+
+        first_word = words[0]
+        previous_word = words[index - 1]
+        if first_word in {'if', 'while', 'until', 'then', 'elif', 'else', 'do'} and index == 1:
+            return index
+        if previous_word.endswith(')'):
+            return index
+        if first_word == 'case' and any(candidate.endswith(')') for candidate in words[:index]):
+            return index
+
+    return None
+
+
+def contains_source_command(command: str):
+    return source_command_index(command) is not None
+
+
+def starts_unsupported_control_block(command: str):
+    return bool(re.match(r'^\s*(?:if|for|while|until|case|select)\b', command))
+
+
+def ends_unsupported_control_block(command: str):
+    return bool(re.match(r'^\s*(?:fi|done|esac)\b', command))
+
+
+def is_control_branch_command(command: str):
+    stripped_command = command.strip()
+    if re.match(r'^(?:then|elif|else|do)\b', stripped_command):
+        return True
+    return bool(re.match(r'^[^#\s;]+\)\s+', stripped_command))
+
+
+def is_unsupported_control_flow_source(command: str, control_depth: int):
+    return control_depth > 0 or starts_unsupported_control_block(command) or is_control_branch_command(command)
 
 
 def parse_shell_words(command: str):
@@ -571,13 +623,17 @@ def resolve_single_source_payload(payload: str, source_site: str, context: dict,
         raise UnsupportedSourceError(f"unsupported source payload: {source_site.strip()}")
 
     _, _, nested_source_expression = source_matches[0]
-    return resolve_source_expression(
+    resolved_source = resolve_source_expression(
         nested_source_expression,
         source_site,
         context,
         execution_model=execution_model,
         replacement_kind=replacement_kind,
     )
+    if not resolved_source:
+        raise UnsupportedSourceError(f"unsupported unresolved source payload: {source_site.strip()}")
+
+    return resolved_source
 
 
 def has_source_command(payload: str):
@@ -705,6 +761,7 @@ def extract_sources_and_variables(script_path, context, sources, seen_sources: d
     context['vars']['BASH_SOURCE'] = os.path.abspath(script_path)
 
     try:
+        control_depth = 0
         with open(script_path, 'r') as file:
             for num, line in enumerate(file):
                 for command in get_commands(line):
@@ -712,6 +769,7 @@ def extract_sources_and_variables(script_path, context, sources, seen_sources: d
                     if not command or re.match(r'\s*["\']', command):
                         continue
 
+                    command_control_depth = control_depth
                     context['vars']['BASH_SOURCE'] = os.path.abspath(script_path)
                     resolved_command = resolve_command(command, context)[0]
 
@@ -731,13 +789,25 @@ def extract_sources_and_variables(script_path, context, sources, seen_sources: d
 
                     # Match source statements
                     source_matches = SOURCE_PATTERN.findall(command)
+                    command_contains_source = bool(source_matches) or contains_source_command(command)
+                    if command_contains_source and mode == "executable" and is_unsupported_control_flow_source(
+                        command,
+                        command_control_depth,
+                    ):
+                        raise UnsupportedSourceError(f"unsupported source in control flow: {command.strip()}")
+
                     for _, source_command, source_path in source_matches:
                         source_site = f"{source_command} {source_path.strip()}"
                         resolved_source = resolve_source_expression(source_path, source_site, context)
                         if resolved_source:
                             resolved_sources.append(resolved_source)
+                        elif mode == "executable":
+                            raise UnsupportedSourceError(f"unsupported unresolved source: {source_site}")
 
                     resolved_sources.extend(resolve_command_level_sources(command, context, mode))
+
+                    if command_contains_source and not source_matches and not resolved_sources and mode == "executable":
+                        raise UnsupportedSourceError(f"unsupported unresolved source command: {command.strip()}")
 
                     if not resolved_sources and not source_matches and is_unsupported_dynamic_source(command):
                         raise UnsupportedSourceError(f"unsupported dynamic source command: {command.strip()}")
@@ -750,6 +820,11 @@ def extract_sources_and_variables(script_path, context, sources, seen_sources: d
                         context['vars']['BASH_SOURCE'] = os.path.abspath(script_path)
                         if seen_sources[resolved_source.path][script_path] == 1:
                             sources.append(resolved_source.path)
+
+                    if starts_unsupported_control_block(command):
+                        control_depth += 1
+                    elif ends_unsupported_control_block(command):
+                        control_depth = max(0, control_depth - 1)
     finally:
         if previous_bash_source is None:
             context['vars'].pop('BASH_SOURCE', None)

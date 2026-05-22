@@ -2,7 +2,7 @@ import os
 import re
 
 from methods.regex.patterns import SOURCE_PATTERN
-from methods.sources import get_sources, validate_path
+from methods.sources import UnsupportedSourceError, contains_source_command, get_sources, validate_path
 
 SET_SHEBANG = "#!/bin/bash"
 
@@ -174,6 +174,15 @@ def replace_command_source_sites(line: str, source_declarations, render_source):
     return line
 
 
+def assert_no_unresolved_source_sites(content: str):
+    for line in content.splitlines():
+        stripped_line = line.strip()
+        if not stripped_line or stripped_line.startswith("#"):
+            continue
+        if SOURCE_PATTERN.findall(line) or contains_source_command(line):
+            raise UnsupportedSourceError(f"unresolved source remained in executable output: {stripped_line}")
+
+
 def render_executable_script(entry_point: str, context: dict):
     file_contents = {}
     render_stack = []
@@ -229,7 +238,9 @@ def render_executable_script(entry_point: str, context: dict):
     # Build from the entry point so sourced files execute at their source sites.
     output = [SET_SHEBANG, '']
     output.append(construct_file_separator(entry_point, entry_point))
-    output.append(render_file(os.path.abspath(entry_point)))
+    rendered_entry = render_file(os.path.abspath(entry_point))
+    assert_no_unresolved_source_sites(rendered_entry)
+    output.append(rendered_entry)
     output.append('')
 
     return output
