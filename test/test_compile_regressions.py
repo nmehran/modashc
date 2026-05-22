@@ -139,6 +139,40 @@ class CompileRegressionTestCase(unittest.TestCase):
 
             project.assert_compiled_matches(self, "main.sh")
 
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "dep from eval command var"\n')
+            project.write("main.sh", 'COMMAND="source ./dep.sh"\neval "$COMMAND"\necho "main"\n')
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_eval_source_replacement_ignores_quoted_decoys(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "dep from eval"\n')
+            project.write("main.sh", 'echo \'eval "source ./dep.sh"\'; eval "source ./dep.sh"\necho "main"\n')
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_eval_source_after_logical_operator_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("subdir/dep.sh", 'echo "dep from chained eval"\n')
+            project.write("main.sh", 'cd subdir && eval "source ./dep.sh"\necho "main"\n')
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_non_source_eval_and_bash_c_commands_match_bash(self):
+        with ScriptProject() as project:
+            project.write("main.sh", 'eval "echo from eval"\nbash -c "echo from child"\necho "main"\n')
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_source_state_on_same_logical_line_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("a.sh", 'FROM_A=./b.sh\n')
+            project.write("b.sh", 'echo "dep from variable set by first source"\n')
+            project.write("main.sh", 'source ./a.sh && source "$FROM_A"\necho "main"\n')
+
+            project.assert_compiled_matches(self, "main.sh")
+
     def test_parent_variables_are_available_before_sourced_file_runs(self):
         with ScriptProject() as project:
             project.write("dep.sh", 'echo "dep:${FOO:-missing}"\n')
@@ -202,6 +236,7 @@ class CompileRegressionTestCase(unittest.TestCase):
             "cat pipe": 'source "$(cat dep-path.txt | head -1)"\n',
             "find multiple matches": 'source "$(find . -name dep.sh)"\n',
             "find exec": 'source "$(find . -name dep.sh -exec echo {} \\;)"\n',
+            "find quit without print": 'source "$(find ./nested -type f -name dep.sh -quit)"\n',
             "eval extra command": 'eval "source ./dep.sh; echo unsafe"\n',
             "eval nested dynamic": 'eval "source $(cat dep-path.txt)"\n',
             "backticks": "source `cat dep-path.txt`\n",

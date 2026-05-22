@@ -129,16 +129,47 @@ def render_source_block(filepath: str, render_source, indent: str):
     return f"{{\n{rendered_source}\n{indent}}}"
 
 
+def find_unquoted_substring(text: str, needle: str, start: int = 0):
+    in_single_quote = False
+    in_double_quote = False
+    escaped = False
+
+    for index, char in enumerate(text):
+        if escaped:
+            escaped = False
+            continue
+
+        if char == '\\' and not in_single_quote:
+            escaped = True
+            continue
+
+        if char == "'" and not in_double_quote:
+            in_single_quote = not in_single_quote
+            continue
+
+        if char == '"' and not in_single_quote:
+            in_double_quote = not in_double_quote
+            continue
+
+        if index >= start and not in_single_quote and not in_double_quote and text.startswith(needle, index):
+            return index
+
+    return -1
+
+
 def replace_command_source_sites(line: str, source_declarations, render_source):
+    search_start = 0
+
     for source_declaration in source_declarations:
         source_site = source_declaration.source_site.strip()
-        source_index = line.find(source_site)
+        source_index = find_unquoted_substring(line, source_site, search_start)
         if source_index < 0:
             raise ValueError(f"Could not replace resolved source command: {source_site}")
 
         indent = re.match(r'\s*', line[:source_index]).group(0)
         replacement = render_source_block(source_declaration.path, render_source, indent)
         line = line[:source_index] + replacement + line[source_index + len(source_site):]
+        search_start = source_index + len(replacement)
 
     return line
 

@@ -15,6 +15,7 @@ from methods.regex.patterns import (
     VARIABLE_ASSIGNMENT_PATTERN,
     VARIABLE_NAME_PATTERN,
     VARIABLE_REFERENCE_PATTERN,
+    create_command_pattern,
 )
 
 RECURSION_LIMIT = 2
@@ -190,26 +191,38 @@ def get_commands(line: str):
     in_single_quote = False
     in_double_quote = False
     escaped = False
+    index = 0
 
-    for char in line:
+    def append_current_command():
+        command = ''.join(current).strip()
+        if command:
+            commands.append(command)
+        current.clear()
+
+    while index < len(line):
+        char = line[index]
         if escaped:
             current.append(char)
             escaped = False
+            index += 1
             continue
 
         if char == '\\' and not in_single_quote:
             current.append(char)
             escaped = True
+            index += 1
             continue
 
         if char == "'" and not in_double_quote:
             in_single_quote = not in_single_quote
             current.append(char)
+            index += 1
             continue
 
         if char == '"' and not in_single_quote:
             in_double_quote = not in_double_quote
             current.append(char)
+            index += 1
             continue
 
         if char == '#' and not in_single_quote and not in_double_quote:
@@ -217,17 +230,23 @@ def get_commands(line: str):
                 break
 
         if char == ';' and not in_single_quote and not in_double_quote:
-            command = ''.join(current).strip()
-            if command:
-                commands.append(command)
-            current = []
+            append_current_command()
+            index += 1
+            continue
+
+        if (
+            not in_single_quote
+            and not in_double_quote
+            and (line.startswith('&&', index) or line.startswith('||', index))
+        ):
+            append_current_command()
+            index += 2
             continue
 
         current.append(char)
+        index += 1
 
-    command = ''.join(current).strip()
-    if command:
-        commands.append(command)
+    append_current_command()
 
     return commands
 
@@ -391,6 +410,7 @@ def parse_find_command(words: list[str], context: dict):
         'path': [],
         'maxdepth': None,
         'mindepth': 0,
+        'has_print': False,
     }
 
     while index < len(words):
@@ -419,8 +439,11 @@ def parse_find_command(words: list[str], context: dict):
             if index >= len(words) or not words[index].isdigit():
                 raise UnsupportedSourceError("unsupported find source command: invalid -mindepth")
             filters['mindepth'] = int(words[index])
-        elif token in {'-print', '-quit'}:
-            pass
+        elif token == '-print':
+            filters['has_print'] = True
+        elif token == '-quit':
+            if not filters['has_print']:
+                raise UnsupportedSourceError("unsupported find source command: -quit requires earlier -print")
         else:
             raise UnsupportedSourceError(f"unsupported find source predicate: {token}")
         index += 1
@@ -429,7 +452,7 @@ def parse_find_command(words: list[str], context: dict):
 
 
 def find_candidate_matches(roots: list[str], filters: dict, context: dict):
-    matches = []
+    matches = set()
     current_directory = context['current_directory']
 
     for root in roots:
@@ -468,9 +491,11 @@ def find_candidate_matches(roots: list[str], filters: dict, context: dict):
                 ):
                     continue
 
-                matches.append(os.path.abspath(candidate))
+                matches.add(os.path.abspath(candidate))
+                if len(matches) > 1:
+                    return sorted(matches)
 
-    return sorted(set(matches))
+    return sorted(matches)
 
 
 def resolve_safe_find_source(inner_command: str, source_expression: str, source_site: str, context: dict,
@@ -555,10 +580,20 @@ def resolve_single_source_payload(payload: str, source_site: str, context: dict,
     )
 
 
+def has_source_command(payload: str):
+    return bool(SOURCE_PATTERN.findall(payload))
+
+
 SOURCE_COMMAND_SUBSTITUTION_RESOLVERS = {
     'cat': resolve_safe_cat_source,
     'find': resolve_safe_find_source,
 }
+
+BASH_COMMAND_PATTERN = create_command_pattern(r'bash|/bin/bash|/usr/bin/bash', regex=True)
+COMMAND_LEVEL_SOURCE_PATTERNS = (
+    ('eval', None),
+    (r'bash|/bin/bash|/usr/bin/bash', BASH_COMMAND_PATTERN),
+)
 
 
 def resolve_eval_source_command(command: str, context: dict, _mode: str):
@@ -571,6 +606,9 @@ def resolve_eval_source_command(command: str, context: dict, _mode: str):
         raise UnsupportedSourceError(f"unsupported eval source command: {stripped_command}")
 
     payload = os.path.expandvars(resolve_variable_references(words[1], context))
+    if not has_source_command(payload):
+        return None
+
     return resolve_single_source_payload(
         payload,
         stripped_command,
@@ -589,10 +627,13 @@ def resolve_bash_c_source_command(command: str, context: dict, mode: str):
     if len(words) != 3 or words[1] != '-c':
         return None
 
+    payload = os.path.expandvars(resolve_variable_references(words[2], context))
+    if not has_source_command(payload):
+        return None
+
     if mode != "context":
         raise UnsupportedSourceError(f"unsupported child-shell source command in executable mode: {stripped_command}")
 
-    payload = os.path.expandvars(resolve_variable_references(words[2], context))
     return resolve_single_source_payload(
         payload,
         stripped_command,
@@ -609,6 +650,31 @@ def resolve_command_level_source(command: str, context: dict, mode: str):
             return resolved_source
 
     return None
+
+
+def resolve_command_level_sources(command: str, context: dict, mode: str):
+    resolved_sources = []
+    seen_commands = set()
+
+    for command_name, pattern in COMMAND_LEVEL_SOURCE_PATTERNS:
+        matches = extract_bash_commands(
+            command_name,
+            command,
+            pattern=pattern,
+            include_separator=True,
+            strip=True,
+        )
+        for _, matched_command, arguments in matches:
+            source_command = f"{matched_command} {arguments}".strip()
+            if source_command in seen_commands:
+                continue
+            seen_commands.add(source_command)
+
+            resolved_source = resolve_command_level_source(source_command, context, mode)
+            if resolved_source:
+                resolved_sources.append(resolved_source)
+
+    return resolved_sources
 
 
 COMMAND_LEVEL_SOURCE_RESOLVERS = (
@@ -671,12 +737,10 @@ def extract_sources_and_variables(script_path, context, sources, seen_sources: d
                         if resolved_source:
                             resolved_sources.append(resolved_source)
 
-                    if not source_matches:
-                        resolved_source = resolve_command_level_source(command, context, mode)
-                        if resolved_source:
-                            resolved_sources.append(resolved_source)
-                        elif is_unsupported_dynamic_source(command):
-                            raise UnsupportedSourceError(f"unsupported dynamic source command: {command.strip()}")
+                    resolved_sources.extend(resolve_command_level_sources(command, context, mode))
+
+                    if not resolved_sources and not source_matches and is_unsupported_dynamic_source(command):
+                        raise UnsupportedSourceError(f"unsupported dynamic source command: {command.strip()}")
 
                     for resolved_source in resolved_sources:
                         context['source_declarations'][script_path][num].append(resolved_source)

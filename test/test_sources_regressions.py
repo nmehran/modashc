@@ -35,6 +35,16 @@ class SourceRegressionTestCase(unittest.TestCase):
             list(get_commands('echo "not # comment"; source file.sh # trailing')),
             ['echo "not # comment"', 'source file.sh'],
         )
+        self.assertEqual(
+            list(get_commands('echo "a&&b"; source file.sh')),
+            ['echo "a&&b"', 'source file.sh'],
+        )
+
+    def test_get_commands_splits_top_level_logical_operators(self):
+        self.assertEqual(
+            list(get_commands('cd subdir && source ./dep.sh || echo missing')),
+            ['cd subdir', 'source ./dep.sh', 'echo missing'],
+        )
 
     def test_static_source_discovery_matrix(self):
         with ScriptProject() as project:

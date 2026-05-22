@@ -179,7 +179,7 @@ Accept only when:
   - `-maxdepth <n>`
   - `-mindepth <n>`
   - `-print`
-  - `-quit`
+  - `-quit`, only after `-print`
 - No `-exec`, `-delete`, `-ok`, `-printf`, shell escapes, pipes, redirects, or
   process substitutions are present.
 - The resolver finds exactly one matching regular file.
@@ -189,6 +189,7 @@ Reject examples:
 
 ```bash
 source "$(find . -name dep.sh)"
+source "$(find . -name dep.sh -quit)"
 source "$(find . -exec echo {} \;)"
 source "$(find . -name '*.sh' | head -1)"
 ```
@@ -204,6 +205,7 @@ Target forms:
 ```bash
 eval "source ./dep.sh"
 eval ". \"$DEP_PATH\""
+eval "$KNOWN_SOURCE_COMMAND"
 ```
 
 Accept only when:
@@ -219,7 +221,7 @@ Reject examples:
 
 ```bash
 eval "source ./dep.sh; rm -rf out"
-eval "$COMMAND"
+eval "$UNRESOLVED_OR_MULTI_COMMAND_PAYLOAD"
 eval "DEP=./dep.sh; source \"$DEP\""
 eval "source $(cat dep-path.txt)"
 ```
