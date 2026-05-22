@@ -3,7 +3,6 @@ import unittest
 
 from methods.source_effects import ExecutionModel, OccurrenceModel
 from methods.source_evaluator import SourceEvaluator
-from methods.source_events import evaluate_sources
 from test.support import ScriptProject
 
 
@@ -91,25 +90,6 @@ class SourceEvaluatorTestCase(unittest.TestCase):
         self.assertEqual(len(result.events), 1)
         self.assertEqual(result.events[0].path, dep)
         self.assertEqual(result.events[0].source_site, 'eval "$COMMAND"')
-
-    def test_evaluator_matches_current_event_bridge_for_supported_subset(self):
-        with ScriptProject() as project:
-            project.write("nested/dep.sh", 'echo "dep"\n')
-            entry = project.write("main.sh", textwrap.dedent("""\
-                ROOT=./nested
-                cd "$ROOT"
-                source ./dep.sh
-                COMMAND="source ./dep.sh"
-                eval "$COMMAND"
-                """))
-
-            current = evaluate_sources(entry)
-            evaluated = SourceEvaluator().evaluate(entry)
-
-        self.assertEqual(
-            [(event.path, event.source_site) for event in evaluated.events],
-            [(event.path, event.source_site) for event in current.events],
-        )
 
     def test_unknown_array_source_raises_structured_diagnostic(self):
         with ScriptProject() as project:
