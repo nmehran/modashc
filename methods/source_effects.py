@@ -48,6 +48,7 @@ class StateSnapshot:
     variables: dict[str, str] = field(default_factory=dict)
     arrays: dict[str, tuple[str, ...]] = field(default_factory=dict)
     shell_options: frozenset[str] = field(default_factory=frozenset)
+    glob_options: frozenset[str] = field(default_factory=frozenset)
     bash_source_stack: tuple[Path, ...] = field(default_factory=tuple)
 
 

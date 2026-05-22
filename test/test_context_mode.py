@@ -145,6 +145,26 @@ class ContextModeTestCase(unittest.TestCase):
         self.assertIn('source "$dep"', content)
         self.assertEqual(content.count('echo "loop a body"'), 1)
 
+    def test_context_output_resolves_glob_for_loop_sources(self):
+        with ScriptProject() as project:
+            project.write("plugins/b.sh", 'echo "glob b body"\n')
+            project.write("plugins/a.sh", 'echo "glob a body"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in ./plugins/*.sh; do
+                  source "$dep"
+                done
+                echo "main body"
+                """))
+
+            output = project.compile("main.sh")
+            content = output.read_text()
+
+        self.assertIn('echo "glob a body"', content)
+        self.assertIn('echo "glob b body"', content)
+        self.assertIn('# modashc: source "$dep" -> plugins/a.sh', content)
+        self.assertIn('# modashc: source "$dep" -> plugins/b.sh', content)
+        self.assertEqual(content.count('echo "glob a body"'), 1)
+
     def test_context_output_preserves_unresolved_source_without_failing(self):
         with ScriptProject() as project:
             project.write("main.sh", 'source "$OPTIONAL_DEP"\necho "main body"\n')

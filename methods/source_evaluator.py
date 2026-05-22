@@ -23,7 +23,14 @@ from methods.source_effects import (
     StateSnapshot,
 )
 from methods.source_frontend import LineParserFrontend, ParserFrontend
-from methods.source_resolver import UnsupportedSourceError, contains_source_command
+from methods.source_resolver import (
+    UnsupportedSourceError,
+    contains_source_command,
+    expand_glob_word,
+    contains_unquoted_token,
+    has_unquoted_glob,
+    parse_shell_words_preserving_quotes,
+)
 from methods.sources import (
     SOURCE_RESOLVER,
     change_directory,
@@ -36,12 +43,20 @@ from methods.regex.utilities import strip_matching_quotes
 ARRAY_INDEX_PATTERN = re.compile(r'\$\{([a-zA-Z_]\w*)\[(\d+)\]\}')
 ARRAY_EXPANSION_PATTERN = re.compile(r'^\$\{([a-zA-Z_]\w*)\[@\]\}$')
 SCALAR_REFERENCE_PATTERN = re.compile(r'\$(?:\{([a-zA-Z_]\w*)\}|([a-zA-Z_]\w*))')
-GLOB_CHAR_PATTERN = re.compile(r'(?<!\\)[*?\[]')
 SHELL_OPTION_FLAGS = {
     'e': 'errexit',
     'E': 'errtrace',
+    'f': 'noglob',
     'u': 'nounset',
 }
+GLOB_SHOPT_OPTIONS = frozenset({
+    'dotglob',
+    'extglob',
+    'failglob',
+    'globstar',
+    'nocaseglob',
+    'nullglob',
+})
 
 
 @dataclass
@@ -51,6 +66,7 @@ class EvaluationState:
     runtime_variables: dict[str, str] = field(default_factory=dict)
     arrays: dict[str, tuple[str, ...]] = field(default_factory=dict)
     shell_options: set[str] = field(default_factory=set)
+    glob_options: set[str] = field(default_factory=set)
     bash_source_stack: tuple[Path, ...] = ()
     occurrence_context: OccurrenceModel = OccurrenceModel.ONCE
 
@@ -58,12 +74,16 @@ class EvaluationState:
         return {
             'vars': self.variables,
             'current_directory': str(self.cwd),
+            'shell_options': self.shell_options,
+            'glob_options': self.glob_options,
         }
 
     def runtime_context(self):
         return {
             'vars': self.runtime_variables,
             'current_directory': str(self.cwd),
+            'shell_options': self.shell_options,
+            'glob_options': self.glob_options,
         }
 
     def snapshot(self):
@@ -72,6 +92,7 @@ class EvaluationState:
             variables=dict(self.variables),
             arrays=dict(self.arrays),
             shell_options=frozenset(self.shell_options),
+            glob_options=frozenset(self.glob_options),
             bash_source_stack=self.bash_source_stack,
         )
 
@@ -82,6 +103,7 @@ class EvaluationState:
             runtime_variables=copy.deepcopy(self.runtime_variables),
             arrays=copy.deepcopy(self.arrays),
             shell_options=set(self.shell_options),
+            glob_options=set(self.glob_options),
             bash_source_stack=self.bash_source_stack,
             occurrence_context=self.occurrence_context,
         )
@@ -228,13 +250,23 @@ class SourceEvaluator:
         if not node.is_exact:
             raise self._unsupported_loop_words(node, "unsupported loop word list")
 
+        raw_words = self._loop_raw_words(node)
+        if len(raw_words) != len(node.words):
+            raise self._unsupported_loop_words(node, "unsupported loop word list syntax")
+
         words = []
-        for word in node.words:
-            words.extend(self._expand_loop_word(word, node, state))
+        for word, raw_word in zip(node.words, raw_words):
+            words.extend(self._expand_loop_word(word, raw_word, node, state))
 
         return words
 
-    def _expand_loop_word(self, word: str, node: ForLoop, state: EvaluationState):
+    def _loop_raw_words(self, node: ForLoop):
+        try:
+            return tuple(parse_shell_words_preserving_quotes(node.words_text))
+        except UnsupportedSourceError as exc:
+            raise self._unsupported_loop_words(node, "unsupported loop word list syntax") from exc
+
+    def _expand_loop_word(self, word: str, raw_word: str, node: ForLoop, state: EvaluationState):
         if '$(' in word or '`' in word:
             raise self._unsupported_loop_words(node, "loop word list is runtime-dynamic")
 
@@ -246,8 +278,20 @@ class SourceEvaluator:
                 raise self._unsupported_loop_words(node, f"loop word list references unknown array: {array_name}")
             return list(values)
 
-        if GLOB_CHAR_PATTERN.search(word):
-            raise self._unsupported_loop_words(node, "loop word list contains unsupported glob")
+        if has_unquoted_glob(raw_word):
+            try:
+                return [
+                    match.word
+                    for match in expand_glob_word(word, state.resolver_context(), node.text, raw_pattern=raw_word)
+                ]
+            except UnsupportedSourceError as exc:
+                raise self._unsupported_loop_words(node, str(exc)) from exc
+
+        if contains_unquoted_token(raw_word, '{') or contains_unquoted_token(raw_word, '}'):
+            raise self._unsupported_loop_words(node, "unsupported brace loop word list")
+
+        if has_unquoted_glob(word):
+            raise self._unsupported_loop_words(node, "unsupported quoted loop glob")
 
         for match in SCALAR_REFERENCE_PATTERN.finditer(word):
             variable_name = match.group(1) or match.group(2)
@@ -261,12 +305,19 @@ class SourceEvaluator:
                     node,
                     "unsupported loop word list contains whitespace after scalar expansion",
                 )
+            if has_unquoted_glob(raw_word) or has_unquoted_glob(resolved_word):
+                raise self._unsupported_loop_words(
+                    node,
+                    "unsupported loop word list requires scalar glob expansion",
+                )
             return [resolved_word]
 
         return [word]
 
     @staticmethod
     def _unsupported_loop_words(node: ForLoop, message: str):
+        if "loop word" not in message:
+            message = f"unsupported loop word list: {message}"
         return unsupported_source_error(
             str(node.location.path),
             node.location.line - 1,
@@ -371,6 +422,8 @@ class SourceEvaluator:
         )
 
     def _apply_raw_command(self, node: RawCommand, state: EvaluationState, stack: tuple[Path, ...]):
+        self._apply_shopt(node, state)
+
         try:
             resolved_sources = SOURCE_RESOLVER.resolve_command_level_sources(
                 node.text,
@@ -417,6 +470,32 @@ class SourceEvaluator:
                 self._evaluate_file(source_path, state.child_shell_copy(), stack)
             else:
                 self._evaluate_file(source_path, state, stack)
+
+    @staticmethod
+    def _apply_shopt(node: RawCommand, state: EvaluationState):
+        stripped_text = node.text.strip()
+        if not stripped_text.startswith("shopt "):
+            return
+
+        try:
+            words = parse_shell_words_preserving_quotes(stripped_text)
+        except UnsupportedSourceError:
+            return
+
+        if len(words) < 3 or words[0] != "shopt":
+            return
+
+        action = words[1]
+        if action not in {"-s", "-u"}:
+            return
+
+        for option in words[2:]:
+            if option not in GLOB_SHOPT_OPTIONS:
+                continue
+            if action == "-s":
+                state.glob_options.add(option)
+            else:
+                state.glob_options.discard(option)
 
     def _record_and_descend(self, source_path: Path, node: SourceSite, source_expression: str, source_site: str,
                             state: EvaluationState, stack: tuple[Path, ...], execution_model: ExecutionModel,

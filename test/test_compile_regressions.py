@@ -221,6 +221,58 @@ class CompileRegressionTestCase(unittest.TestCase):
 
             project.assert_compiled_matches(self, "main.sh")
 
+    def test_glob_for_loop_sources_match_bash(self):
+        with ScriptProject() as project:
+            project.write("plugins/b.sh", 'echo "plugin:b:$dep"\n')
+            project.write("plugins/a.sh", 'echo "plugin:a:$dep"\n')
+            project.write("plugins/readme.txt", 'echo "not sourced"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in ./plugins/*.sh; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh", env={"LC_ALL": "C"})
+
+    def test_glob_for_loop_special_paths_match_bash(self):
+        with ScriptProject() as project:
+            project.write("plugin {dir}#tag/b dep.sh", 'echo "special:b:$dep"\n')
+            project.write("plugin {dir}#tag/a dep.sh", 'echo "special:a:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in "./plugin {dir}#tag"/*.sh; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh", env={"LC_ALL": "C"})
+
+    def test_glob_for_loop_after_cd_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("plugins/b.sh", 'echo "cd:b:$PWD:$dep"\n')
+            project.write("plugins/a.sh", 'echo "cd:a:$PWD:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                cd plugins
+                for dep in ./*.sh; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh", env={"LC_ALL": "C"})
+
+    def test_direct_source_glob_with_single_match_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("plugins/only.sh", 'echo "single glob"\n')
+            project.write("main.sh", 'source ./plugins/*.sh\necho "main"\n')
+
+            project.assert_compiled_matches(self, "main.sh", env={"LC_ALL": "C"})
+
+    def test_direct_source_glob_with_quoted_literal_path_chars_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("plugin {dir}#tag/only dep.sh", 'echo "special single glob"\n')
+            project.write("main.sh", 'source "./plugin {dir}#tag"/*.sh\necho "main"\n')
+
+            project.assert_compiled_matches(self, "main.sh", env={"LC_ALL": "C"})
+
     def test_environment_absolute_source_matches_bash(self):
         with ScriptProject() as project:
             dep = project.write("dep.sh", 'echo "dep from env"\n')
@@ -412,13 +464,41 @@ class CompileRegressionTestCase(unittest.TestCase):
     def test_unsupported_source_families_fail_without_writing_output(self):
         cases = {
             "unknown scalar": ('source "$DEP"\n', 'source "$DEP"'),
-            "for loop": (
-                'for file in ./plugins/*.sh; do source "$file"; done\n',
-                'do source "$file"',
-            ),
             "scalar word-list loop": (
                 'DEPS="./plugins/a.sh ./plugins/b.sh"\nfor file in $DEPS; do source "$file"; done\n',
                 'for file in $DEPS; do source "$file"; done',
+            ),
+            "unmatched glob loop": (
+                'for file in ./missing/*.sh; do source "$file"; done\n',
+                'for file in ./missing/*.sh; do source "$file"; done',
+            ),
+            "quoted glob loop": (
+                'for file in "./plugins/*.sh"; do source "$file"; done\n',
+                'for file in "./plugins/*.sh"; do source "$file"; done',
+            ),
+            "globstar loop": (
+                'for file in ./plugins/**/*.sh; do source "$file"; done\n',
+                'for file in ./plugins/**/*.sh; do source "$file"; done',
+            ),
+            "brace loop": (
+                'for file in ./plugins/{a,b}.sh; do source "$file"; done\n',
+                'for file in ./plugins/{a,b}.sh; do source "$file"; done',
+            ),
+            "nullglob loop": (
+                'shopt -s nullglob\nfor file in ./plugins/*.sh; do source "$file"; done\n',
+                'for file in ./plugins/*.sh; do source "$file"; done',
+            ),
+            "noglob loop": (
+                'set -f\nfor file in ./plugins/*.sh; do source "$file"; done\n',
+                'for file in ./plugins/*.sh; do source "$file"; done',
+            ),
+            "globignore loop": (
+                'GLOBIGNORE="*"\nfor file in ./plugins/*.sh; do source "$file"; done\n',
+                'for file in ./plugins/*.sh; do source "$file"; done',
+            ),
+            "direct source glob multiple matches": (
+                'source ./plugins/*.sh\n',
+                'source ./plugins/*.sh',
             ),
             "if block": (
                 'if [[ -f ./dep.sh ]]; then\n  source ./dep.sh\nfi\n',
@@ -463,6 +543,7 @@ class CompileRegressionTestCase(unittest.TestCase):
                 project.write("dep.sh", 'echo "dep"\n')
                 project.write("prod.sh", 'echo "prod"\n')
                 project.write("plugins/a.sh", 'echo "plugin"\n')
+                project.write("plugins/b.sh", 'echo "plugin b"\n')
                 project.write("main.sh", content)
                 output = project.write("compiled.sh", "existing output\n")
 

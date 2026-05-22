@@ -1,3 +1,4 @@
+import glob
 import os
 import re
 import shlex
@@ -9,6 +10,14 @@ from methods.regex.utilities import extract_bash_commands, strip_matching_quotes
 
 ASSIGNMENT_WORD_PATTERN = re.compile(r'^[a-zA-Z_]\w*(?:\+)?=.*$')
 BASH_COMMAND_PATTERN = create_command_pattern(r'bash|/bin/bash|/usr/bin/bash', regex=True)
+UNSUPPORTED_GLOB_OPTIONS = frozenset({
+    'dotglob',
+    'extglob',
+    'failglob',
+    'globstar',
+    'nocaseglob',
+    'nullglob',
+})
 COMMAND_LEVEL_SOURCE_PATTERNS = (
     ('eval', None),
     (r'bash|/bin/bash|/usr/bin/bash', BASH_COMMAND_PATTERN),
@@ -41,6 +50,12 @@ class ResolvedSource:
     replacement_kind: str = "source"
     source_value: str | None = None
     source_column: int | None = None
+
+
+@dataclass(frozen=True)
+class GlobMatch:
+    word: str
+    path: str
 
 
 @dataclass(frozen=True)
@@ -150,6 +165,158 @@ def parse_shell_words(command: str):
         return shlex.split(command, posix=True)
     except ValueError as exc:
         raise UnsupportedSourceError(f"unsupported source command syntax: {command.strip()} ({exc})") from exc
+
+
+def parse_shell_words_preserving_quotes(command: str):
+    words = []
+    current = []
+    in_single_quote = False
+    in_double_quote = False
+    escaped = False
+
+    for char in command:
+        if escaped:
+            current.append(char)
+            escaped = False
+            continue
+
+        if char == '\\' and not in_single_quote:
+            current.append(char)
+            escaped = True
+            continue
+
+        if char == "'" and not in_double_quote:
+            in_single_quote = not in_single_quote
+            current.append(char)
+            continue
+
+        if char == '"' and not in_single_quote:
+            in_double_quote = not in_double_quote
+            current.append(char)
+            continue
+
+        if char.isspace() and not in_single_quote and not in_double_quote:
+            word = ''.join(current).strip()
+            if word:
+                words.append(word)
+            current = []
+            continue
+
+        current.append(char)
+
+    if escaped or in_single_quote or in_double_quote:
+        raise UnsupportedSourceError(f"unsupported source command syntax: {command.strip()} (unterminated quote)")
+
+    word = ''.join(current).strip()
+    if word:
+        words.append(word)
+
+    return words
+
+
+def contains_unquoted_token(text: str, token: str):
+    in_single_quote = False
+    in_double_quote = False
+    escaped = False
+    index = 0
+
+    while index < len(text):
+        char = text[index]
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+
+        if char == '\\' and not in_single_quote:
+            escaped = True
+            index += 1
+            continue
+
+        if char == "'" and not in_double_quote:
+            in_single_quote = not in_single_quote
+            index += 1
+            continue
+
+        if char == '"' and not in_single_quote:
+            in_double_quote = not in_double_quote
+            index += 1
+            continue
+
+        if not in_single_quote and not in_double_quote and text.startswith(token, index):
+            return True
+
+        index += 1
+
+    return False
+
+
+def has_unquoted_glob(text: str):
+    in_single_quote = False
+    in_double_quote = False
+    escaped = False
+
+    for char in text:
+        if escaped:
+            escaped = False
+            continue
+
+        if char == '\\' and not in_single_quote:
+            escaped = True
+            continue
+
+        if char == "'" and not in_double_quote:
+            in_single_quote = not in_single_quote
+            continue
+
+        if char == '"' and not in_single_quote:
+            in_double_quote = not in_double_quote
+            continue
+
+        if not in_single_quote and not in_double_quote and char in {'*', '?', '['}:
+            return True
+
+    return False
+
+
+def _glob_matches(pattern: str, current_directory: str):
+    if os.path.isabs(pattern):
+        return sorted(glob.glob(pattern))
+    return sorted(glob.glob(pattern, root_dir=current_directory))
+
+
+def expand_glob_word(pattern: str, context: dict, source_site: str, raw_pattern: str | None = None):
+    raw_pattern = raw_pattern if raw_pattern is not None else pattern
+    if contains_unquoted_token(raw_pattern, '**'):
+        raise UnsupportedSourceError(f"unsupported globstar source pattern: {source_site.strip()}")
+    if contains_unquoted_token(raw_pattern, '{') or contains_unquoted_token(raw_pattern, '}'):
+        raise UnsupportedSourceError(f"unsupported brace source pattern: {source_site.strip()}")
+
+    glob_options = set(context.get('glob_options', set()))
+    enabled_unsupported_options = sorted(glob_options & UNSUPPORTED_GLOB_OPTIONS)
+    if enabled_unsupported_options:
+        option_list = ', '.join(enabled_unsupported_options)
+        raise UnsupportedSourceError(f"unsupported glob shell option {option_list}: {source_site.strip()}")
+
+    if 'noglob' in context.get('shell_options', set()):
+        raise UnsupportedSourceError(f"unsupported noglob source pattern: {source_site.strip()}")
+
+    if context.get('vars', {}).get('GLOBIGNORE'):
+        raise UnsupportedSourceError(f"unsupported GLOBIGNORE source pattern: {source_site.strip()}")
+
+    current_directory = context['current_directory']
+    matches = _glob_matches(pattern, current_directory)
+    if not matches:
+        raise UnsupportedSourceError(f"unsupported unmatched source glob: {source_site.strip()}")
+
+    glob_matches = []
+    for match in matches:
+        path = match if os.path.isabs(match) else os.path.join(current_directory, match)
+        resolved_path = os.path.abspath(path)
+        if not os.path.isfile(resolved_path):
+            raise UnsupportedSourceError(f"unsupported non-file source glob match: {source_site.strip()}")
+        glob_matches.append(GlobMatch(word=match, path=resolved_path))
+
+    return tuple(glob_matches)
 
 
 def source_command_index(command: str):
@@ -446,6 +613,24 @@ class SourceResolver:
                                   execution_model: str = "parent-source", replacement_kind: str = "source"):
         if '`' in source_expression:
             raise UnsupportedSourceError(f"unsupported backtick source command: {source_site.strip()}")
+
+        if has_unquoted_glob(source_expression):
+            words = parse_shell_words(source_expression)
+            if len(words) != 1:
+                raise UnsupportedSourceError(f"unsupported source glob arguments: {source_site.strip()}")
+
+            matches = expand_glob_word(words[0], context, source_site, raw_pattern=source_expression)
+            if len(matches) != 1:
+                raise UnsupportedSourceError(f"unsupported ambiguous source glob output: {source_site.strip()}")
+
+            return ResolvedSource(
+                path=matches[0].path,
+                source_expression=source_expression.strip(),
+                source_site=source_site.strip(),
+                execution_model=execution_model,
+                replacement_kind=replacement_kind,
+                source_value=matches[0].word,
+            )
 
         if resolved_path := self.resolve_path(source_expression, context):
             return ResolvedSource(

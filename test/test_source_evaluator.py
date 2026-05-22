@@ -185,13 +185,34 @@ class SourceEvaluatorTestCase(unittest.TestCase):
 
         self.assertEqual([event.path for event in result.events], [first, second])
 
+    def test_exact_glob_for_loop_sources_are_evaluated(self):
+        with ScriptProject() as project:
+            second = project.write("plugins/b.sh", 'echo "b"\n')
+            first = project.write("plugins/a.sh", 'echo "a"\n')
+            project.write("plugins/readme.txt", 'echo "not sourced"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                for dep in ./plugins/*.sh; do
+                  source "$dep"
+                done
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [first, second])
+        self.assertEqual([event.source_value for event in result.events], ["./plugins/a.sh", "./plugins/b.sh"])
+
     def test_unsupported_for_loop_words_raise_structured_diagnostic(self):
         cases = {
-            "glob": 'for dep in ./plugins/*.sh; do source "$dep"; done\n',
             "command substitution": 'for dep in $(cat deps.txt); do source "$dep"; done\n',
             "unknown scalar": 'for dep in "$DEP"; do source "$dep"; done\n',
             "scalar word list": 'DEPS="./a.sh ./b.sh"\nfor dep in $DEPS; do source "$dep"; done\n',
+            "scalar glob": 'DEP="./plugins/*.sh"\nfor dep in $DEP; do source "$dep"; done\n',
             "unknown array": 'for dep in "${deps[@]}"; do source "$dep"; done\n',
+            "unmatched glob": 'for dep in ./plugins/*.sh; do source "$dep"; done\n',
+            "quoted glob": 'for dep in "./plugins/*.sh"; do source "$dep"; done\n',
+            "globstar": 'for dep in ./plugins/**/*.sh; do source "$dep"; done\n',
+            "brace": 'for dep in ./plugins/{a,b}.sh; do source "$dep"; done\n',
+            "nullglob": 'shopt -s nullglob\nfor dep in ./plugins/*.sh; do source "$dep"; done\n',
         }
 
         for name, content in cases.items():
@@ -202,7 +223,7 @@ class SourceEvaluatorTestCase(unittest.TestCase):
                     SourceEvaluator().evaluate(entry)
 
             self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.loop-word-list")
-            expected_line = 2 if name == "scalar word list" else 1
+            expected_line = 2 if name in {"scalar word list", "scalar glob", "nullglob"} else 1
             self.assertEqual(cm.exception.diagnostic.location.line, expected_line)
 
     def test_circular_source_raises_recursion_error(self):
