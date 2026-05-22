@@ -81,4 +81,5 @@ def _source_event_from_declaration(filepath: Path, line_number: int, line_text: 
         source_site=declaration.source_site,
         execution_model=ExecutionModel(declaration.execution_model),
         occurrence_model=occurrence_model,
+        replacement_kind=declaration.replacement_kind,
     )

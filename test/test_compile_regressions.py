@@ -105,6 +105,17 @@ class CompileRegressionTestCase(unittest.TestCase):
 
                 project.assert_compiled_matches(self, "main.sh")
 
+    def test_exact_array_index_source_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("deps/feature.sh", 'echo "feature"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                deps=(./unused.sh ./deps/feature.sh)
+                source "${deps[1]}"
+                echo "main"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
     def test_environment_absolute_source_matches_bash(self):
         with ScriptProject() as project:
             dep = project.write("dep.sh", 'echo "dep from env"\n')
@@ -275,7 +286,6 @@ class CompileRegressionTestCase(unittest.TestCase):
     def test_unsupported_source_families_fail_without_writing_output(self):
         cases = {
             "unknown scalar": ('source "$DEP"\n', 'source "$DEP"'),
-            "array reference": ('deps=(./dep.sh)\nsource "${deps[0]}"\n', 'source "${deps[0]}"'),
             "for loop": (
                 'for file in ./plugins/*.sh; do source "$file"; done\n',
                 'do source "$file"',

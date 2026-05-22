@@ -134,7 +134,7 @@ class SourceEvaluatorTestCase(unittest.TestCase):
             with self.assertRaisesRegex(NotImplementedError, "control flow") as cm:
                 SourceEvaluator().evaluate(entry)
 
-        self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.ir-control-flow")
+        self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.control-flow")
         self.assertEqual(cm.exception.diagnostic.location.line, 2)
         self.assertEqual(cm.exception.diagnostic.fragment, "source ./dep.sh")
 

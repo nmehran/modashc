@@ -1,8 +1,11 @@
 import os
 import re
+from collections import defaultdict
 
 from methods.regex.patterns import SOURCE_PATTERN
+from methods.source_evaluator import SourceEvaluator
 from methods.source_resolver import (
+    ResolvedSource,
     UnsupportedSourceError,
     contains_source_command,
     extract_heredoc_delimiters,
@@ -285,6 +288,21 @@ def render_context_files(ordered_dependencies: list[str], entry_point: str, cont
     return output
 
 
+def context_from_source_events(events):
+    source_declarations = defaultdict(lambda: defaultdict(list))
+
+    for event in events:
+        source_declarations[str(event.location.path)][event.location.line - 1].append(ResolvedSource(
+            path=str(event.path),
+            source_expression=event.source_expression,
+            source_site=event.source_site,
+            execution_model=event.execution_model.value,
+            replacement_kind=event.replacement_kind,
+        ))
+
+    return {'source_declarations': source_declarations}
+
+
 def compile_sources(entry_point: str, output_file: str, mode: str = "context"):
     if mode not in {"context", "executable"}:
         raise ValueError(f"Unsupported compile mode: {mode}")
@@ -295,10 +313,13 @@ def compile_sources(entry_point: str, output_file: str, mode: str = "context"):
     if not os.path.isfile(entry_point):
         raise OSError(f"Error: entry point must be a file - {entry_point}")
 
-    sources, context = get_sources(os.path.abspath(entry_point), mode=mode)
+    entry_point = os.path.abspath(entry_point)
     if mode == "executable":
+        evaluation = SourceEvaluator(mode=mode).evaluate(entry_point)
+        context = context_from_source_events(evaluation.events)
         output = render_executable_script(entry_point, context)
     else:
+        sources, context = get_sources(entry_point, mode=mode)
         output = render_context_files(sources, entry_point, context)
     content = '\n'.join(output)
     write_output(output_file, content)

@@ -21,7 +21,7 @@ from methods.source_effects import (
     StateSnapshot,
 )
 from methods.source_frontend import LineParserFrontend, ParserFrontend
-from methods.source_resolver import UnsupportedSourceError
+from methods.source_resolver import UnsupportedSourceError, contains_source_command
 from methods.sources import SOURCE_RESOLVER, change_directory, resolve_command, resolve_variable_references
 from methods.regex.utilities import strip_matching_quotes
 
@@ -167,13 +167,24 @@ class SourceEvaluator:
             index += 1
 
     def _apply_source_site(self, node: SourceSite, state: EvaluationState, stack: tuple[Path, ...]):
+        if not self._is_plain_source_site(node):
+            raise unsupported_source_error(
+                str(node.location.path),
+                node.location.line - 1,
+                node.text,
+                node.text,
+                "unsupported.source.command-unresolved",
+                "unsupported unresolved source command",
+                "Only direct source and dot commands can be lowered in executable mode.",
+            )
+
         if node.is_control_flow and self.mode == "executable":
             raise unsupported_source_error(
                 str(node.location.path),
                 node.location.line - 1,
                 node.text,
                 node.text,
-                "unsupported.source.ir-control-flow",
+                "unsupported.source.control-flow",
                 "unsupported source in control flow",
                 "Control-flow source sites need modeled branch semantics before executable lowering.",
             )
@@ -193,7 +204,7 @@ class SourceEvaluator:
                 node.location.line - 1,
                 node.text,
                 node.text,
-                "unsupported.source.ir-resolution",
+                "unsupported.source.resolution",
             ) from exc
 
         if not resolved_source:
@@ -202,13 +213,21 @@ class SourceEvaluator:
                 node.location.line - 1,
                 node.text,
                 node.text,
-                "unsupported.source.ir-unresolved",
+                "unsupported.source.unresolved",
                 "unsupported unresolved source",
                 "Use a statically resolvable source path for IR evaluation.",
             )
 
-        self._record_and_descend(Path(resolved_source.path), node, source_expression, source_site, state, stack,
-                                ExecutionModel.PARENT_SOURCE)
+        self._record_and_descend(
+            Path(resolved_source.path),
+            node,
+            source_expression,
+            source_site,
+            state,
+            stack,
+            ExecutionModel.PARENT_SOURCE,
+            "source",
+        )
 
     def _apply_raw_command(self, node: RawCommand, state: EvaluationState, stack: tuple[Path, ...]):
         try:
@@ -224,8 +243,19 @@ class SourceEvaluator:
                 node.location.line - 1,
                 node.text,
                 node.text,
-                "unsupported.source.ir-command-resolution",
+                "unsupported.source.command-resolution",
             ) from exc
+
+        if not resolved_sources and contains_source_command(node.text) and self.mode == "executable":
+            raise unsupported_source_error(
+                str(node.location.path),
+                node.location.line - 1,
+                node.text,
+                node.text,
+                "unsupported.source.command-unresolved",
+                "unsupported unresolved source command",
+                "Use a direct source command or a supported dynamic source expression.",
+            )
 
         for resolved_source in resolved_sources:
             execution_model = ExecutionModel(resolved_source.execution_model)
@@ -236,6 +266,7 @@ class SourceEvaluator:
                 resolved_source.source_expression,
                 resolved_source.source_site,
                 execution_model,
+                resolved_source.replacement_kind,
                 state,
             )
             if execution_model == ExecutionModel.CHILD_SHELL:
@@ -244,12 +275,13 @@ class SourceEvaluator:
                 self._evaluate_file(source_path, state, stack)
 
     def _record_and_descend(self, source_path: Path, node: SourceSite, source_expression: str, source_site: str,
-                            state: EvaluationState, stack: tuple[Path, ...], execution_model: ExecutionModel):
-        self._record_event(source_path, node, source_expression, source_site, execution_model, state)
+                            state: EvaluationState, stack: tuple[Path, ...], execution_model: ExecutionModel,
+                            replacement_kind: str):
+        self._record_event(source_path, node, source_expression, source_site, execution_model, replacement_kind, state)
         self._evaluate_file(source_path, state, stack)
 
     def _record_event(self, source_path: Path, node, source_expression: str, source_site: str,
-                      execution_model: ExecutionModel, state: EvaluationState):
+                      execution_model: ExecutionModel, replacement_kind: str, state: EvaluationState):
         self.events.append(SourceEvent(
             path=source_path.resolve(),
             location=node.location,
@@ -257,6 +289,7 @@ class SourceEvaluator:
             source_site=source_site.strip(),
             execution_model=execution_model,
             occurrence_model=OccurrenceModel.ONCE,
+            replacement_kind=replacement_kind,
             state_before=state.snapshot(),
         ))
 
@@ -281,6 +314,19 @@ class SourceEvaluator:
         return ARRAY_INDEX_PATTERN.sub(replace, source_expression)
 
     @staticmethod
+    def _is_plain_source_site(node: SourceSite):
+        stripped_text = node.text.strip()
+        for separator in ("&&", "||", ";"):
+            if stripped_text.startswith(separator):
+                stripped_text = stripped_text[len(separator):].strip()
+                break
+        return (
+            stripped_text.startswith("source ")
+            or stripped_text.startswith(". ")
+            or stripped_text == "."
+        )
+
+    @staticmethod
     def _with_occurrence_models(events: list[SourceEvent]):
         path_counts = Counter(event.path for event in events)
         return tuple(
@@ -293,6 +339,7 @@ class SourceEvaluator:
                 occurrence_model=(
                     OccurrenceModel.REPEATED if path_counts[event.path] > 1 else event.occurrence_model
                 ),
+                replacement_kind=event.replacement_kind,
                 state_before=event.state_before,
                 condition=event.condition,
             )

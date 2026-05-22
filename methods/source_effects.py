@@ -59,6 +59,7 @@ class SourceEvent:
     source_site: str
     execution_model: ExecutionModel
     occurrence_model: OccurrenceModel
+    replacement_kind: str = "source"
     state_before: StateSnapshot | None = None
     condition: str | None = None
 
