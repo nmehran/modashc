@@ -47,6 +47,20 @@ class SourceRegressionTestCase(unittest.TestCase):
             ['cd subdir', 'source ./dep.sh', 'echo missing'],
         )
 
+    def test_get_commands_preserves_nested_shell_constructs(self):
+        self.assertEqual(
+            list(get_commands('cat <(echo before; source ./dep.sh); echo done')),
+            ['cat <(echo before; source ./dep.sh)', 'echo done'],
+        )
+        self.assertEqual(
+            list(get_commands('echo `echo before; source ./dep.sh`; echo done')),
+            ['echo `echo before; source ./dep.sh`', 'echo done'],
+        )
+        self.assertEqual(
+            list(get_commands('(source ./dep.sh; echo nested); echo done')),
+            ['(source ./dep.sh; echo nested)', 'echo done'],
+        )
+
     def test_command_wrapped_source_is_detected_as_source_command(self):
         from methods.source_resolver import contains_nested_source_command, contains_source_command
 
@@ -68,6 +82,9 @@ class SourceRegressionTestCase(unittest.TestCase):
         self.assertTrue(contains_nested_source_command('echo "$(source ./dep.sh)"'))
         self.assertTrue(contains_nested_source_command('echo `source ./dep.sh`'))
         self.assertTrue(contains_nested_source_command('echo $(( $(source ./dep.sh) + 1 ))'))
+        self.assertTrue(contains_nested_source_command('echo "$(if true; then source ./dep.sh; fi)"'))
+        self.assertTrue(contains_nested_source_command('cat <(for f in ./dep.sh; do source "$f"; done)'))
+        self.assertTrue(contains_nested_source_command('echo `case "$ENV" in prod) . ./dep.sh ;; esac`'))
         self.assertFalse(contains_nested_source_command('echo "source ./dep.sh"'))
         self.assertFalse(contains_nested_source_command("echo 'source ./dep.sh'"))
         self.assertFalse(contains_nested_source_command('echo $((1 + 2))'))

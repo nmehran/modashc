@@ -8,7 +8,9 @@ def get_commands(line: str):
     current = []
     in_single_quote = False
     in_double_quote = False
+    in_backtick = False
     escaped = False
+    paren_depth = 0
     index = 0
 
     def append_current_command():
@@ -31,6 +33,17 @@ def get_commands(line: str):
             index += 1
             continue
 
+        if char == '`' and not in_single_quote:
+            in_backtick = not in_backtick
+            current.append(char)
+            index += 1
+            continue
+
+        if in_backtick:
+            current.append(char)
+            index += 1
+            continue
+
         if char == "'" and not in_double_quote:
             in_single_quote = not in_single_quote
             current.append(char)
@@ -43,11 +56,17 @@ def get_commands(line: str):
             index += 1
             continue
 
-        if char == '#' and not in_single_quote and not in_double_quote:
+        if not in_single_quote and not in_double_quote:
+            if char == '(':
+                paren_depth += 1
+            elif char == ')' and paren_depth:
+                paren_depth -= 1
+
+        if char == '#' and not in_single_quote and not in_double_quote and paren_depth == 0:
             if not current or current[-1].isspace():
                 break
 
-        if char == ';' and not in_single_quote and not in_double_quote:
+        if char == ';' and not in_single_quote and not in_double_quote and paren_depth == 0:
             append_current_command()
             index += 1
             continue
@@ -55,6 +74,7 @@ def get_commands(line: str):
         if (
             not in_single_quote
             and not in_double_quote
+            and paren_depth == 0
             and (line.startswith('&&', index) or line.startswith('||', index))
         ):
             append_current_command()

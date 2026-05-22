@@ -888,6 +888,18 @@ class CompileRegressionTestCase(unittest.TestCase):
                 'echo $(( $(source ./dep.sh) + 1 ))\n',
                 'echo $(( $(source ./dep.sh) + 1 ))',
             ),
+            "command substitution if source": (
+                'echo "$(if true; then source ./dep.sh; fi)"\n',
+                'echo "$(if true; then source ./dep.sh; fi)"',
+            ),
+            "process substitution loop source": (
+                'cat <(for f in ./dep.sh; do source "$f"; done)\n',
+                'cat <(for f in ./dep.sh; do source "$f"; done)',
+            ),
+            "backtick case dot source": (
+                'echo `case "$ENV" in prod) . ./dep.sh ;; esac`\n',
+                'echo `case "$ENV" in prod) . ./dep.sh ;; esac`',
+            ),
             "command builtin source": (
                 'command source ./dep.sh\n',
                 'command source ./dep.sh',

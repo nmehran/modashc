@@ -7,6 +7,7 @@ from fnmatch import fnmatch
 
 from methods.regex.patterns import SOURCE_PATTERN, create_command_pattern
 from methods.regex.utilities import extract_bash_commands, strip_matching_quotes
+from methods.shell_line import get_commands
 
 ASSIGNMENT_WORD_PATTERN = re.compile(r'^[a-zA-Z_]\w*(?:\+)?=.*$')
 BASH_COMMAND_PATTERN = create_command_pattern(r'bash|/bin/bash|/usr/bin/bash', regex=True)
@@ -486,7 +487,10 @@ def _contains_nested_source_command(text: str, depth: int):
 
 
 def _shell_body_contains_source(body: str, depth: int):
-    return contains_source_command(body) or _contains_nested_source_command(body, depth)
+    for line in body.splitlines() or [body]:
+        if any(contains_source_command(command) for command in get_commands(line)):
+            return True
+    return _contains_nested_source_command(body, depth)
 
 
 def _is_array_assignment_paren(text: str, paren_index: int):
