@@ -94,6 +94,10 @@ def construct_context_source_comment(source_declaration, entry_point: str):
         source_label = source_declaration.source_site.strip()
         suffix = f" ({source_declaration.execution_model})"
 
+    if source_declaration.occurrence_model in {"conditional", "mutually-exclusive"}:
+        condition = f": {source_declaration.condition}" if source_declaration.condition else ""
+        suffix = f"{suffix} ({source_declaration.occurrence_model}{condition})"
+
     return f"# modashc: {source_label} -> {format_context_path(source_declaration.path, entry_point)}{suffix}"
 
 
@@ -397,6 +401,8 @@ def context_from_source_events(events):
             replacement_kind=event.replacement_kind,
             source_value=event.source_value,
             source_column=event.location.column,
+            occurrence_model=event.occurrence_model.value,
+            condition=event.condition,
         ))
 
     return {'source_declarations': source_declarations}

@@ -118,6 +118,18 @@ class ForLoop(IRNode):
 
 
 @dataclass(frozen=True)
+class IfBranch:
+    condition: str | None
+    body: tuple[IRNode, ...]
+    keyword: str
+
+
+@dataclass(frozen=True)
+class IfBlock(IRNode):
+    branches: tuple[IfBranch, ...]
+
+
+@dataclass(frozen=True)
 class SourceSite(IRNode):
     command_name: str
     source_expression: str
@@ -133,10 +145,16 @@ class ScriptIR:
 
     @property
     def source_sites(self) -> tuple[SourceSite, ...]:
-        sites = []
-        for node in self.nodes:
-            if isinstance(node, SourceSite):
-                sites.append(node)
-            elif isinstance(node, ForLoop):
-                sites.extend(body_node for body_node in node.body if isinstance(body_node, SourceSite))
-        return tuple(sites)
+        def collect(nodes):
+            sites = []
+            for node in nodes:
+                if isinstance(node, SourceSite):
+                    sites.append(node)
+                elif isinstance(node, ForLoop):
+                    sites.extend(collect(node.body))
+                elif isinstance(node, IfBlock):
+                    for branch in node.branches:
+                        sites.extend(collect(branch.body))
+            return sites
+
+        return tuple(collect(self.nodes))

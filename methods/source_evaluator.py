@@ -15,6 +15,7 @@ from methods.source_effects import (
     EvaluationResult,
     ExecutionModel,
     ForLoop,
+    IfBlock,
     OccurrenceModel,
     RawCommand,
     SetCommand,
@@ -69,6 +70,12 @@ class EvaluationState:
     glob_options: set[str] = field(default_factory=set)
     bash_source_stack: tuple[Path, ...] = ()
     occurrence_context: OccurrenceModel = OccurrenceModel.ONCE
+    condition_context: str | None = None
+    ambiguous_cwd: bool = False
+    ambiguous_variables: set[str] = field(default_factory=set)
+    ambiguous_arrays: set[str] = field(default_factory=set)
+    ambiguous_shell_options: bool = False
+    ambiguous_glob_options: bool = False
 
     def resolver_context(self):
         return {
@@ -106,12 +113,34 @@ class EvaluationState:
             glob_options=set(self.glob_options),
             bash_source_stack=self.bash_source_stack,
             occurrence_context=self.occurrence_context,
+            condition_context=self.condition_context,
+            ambiguous_cwd=self.ambiguous_cwd,
+            ambiguous_variables=set(self.ambiguous_variables),
+            ambiguous_arrays=set(self.ambiguous_arrays),
+            ambiguous_shell_options=self.ambiguous_shell_options,
+            ambiguous_glob_options=self.ambiguous_glob_options,
         )
 
     def conditional_copy(self):
         state = self.child_shell_copy()
         state.occurrence_context = OccurrenceModel.CONDITIONAL
         return state
+
+    def copy_from(self, other: EvaluationState):
+        self.cwd = other.cwd
+        self.variables = copy.deepcopy(other.variables)
+        self.runtime_variables = copy.deepcopy(other.runtime_variables)
+        self.arrays = copy.deepcopy(other.arrays)
+        self.shell_options = set(other.shell_options)
+        self.glob_options = set(other.glob_options)
+        self.bash_source_stack = other.bash_source_stack
+        self.occurrence_context = other.occurrence_context
+        self.condition_context = other.condition_context
+        self.ambiguous_cwd = other.ambiguous_cwd
+        self.ambiguous_variables = set(other.ambiguous_variables)
+        self.ambiguous_arrays = set(other.ambiguous_arrays)
+        self.ambiguous_shell_options = other.ambiguous_shell_options
+        self.ambiguous_glob_options = other.ambiguous_glob_options
 
 
 class SourceEvaluator:
@@ -178,6 +207,8 @@ class SourceEvaluator:
                 self._apply_set(node, state)
             elif isinstance(node, ForLoop):
                 self._apply_for_loop(node, state, stack)
+            elif isinstance(node, IfBlock):
+                self._apply_if_block(node, state, stack)
             elif isinstance(node, SourceSite):
                 self._apply_source_site(node, state, stack)
             elif isinstance(node, RawCommand):
@@ -196,16 +227,21 @@ class SourceEvaluator:
         resolved_value, _ = resolve_command(value, context)
         state.variables[node.name] = resolved_value
         state.runtime_variables[node.name] = runtime_value
+        state.ambiguous_variables.discard(node.name)
 
     @staticmethod
     def _apply_array_assignment(node: ArrayAssignment, state: EvaluationState):
         if node.is_exact:
             state.arrays[node.name] = node.values
+            state.ambiguous_arrays.discard(node.name)
 
     @staticmethod
     def _apply_cd(node: CdCommand, state: EvaluationState):
+        if state.ambiguous_cwd:
+            SourceEvaluator._ensure_cd_state_can_resolve(node, state)
         context = state.resolver_context()
         state.cwd = Path(change_directory(node.path_expression, context))
+        state.ambiguous_cwd = False
 
     @staticmethod
     def _apply_set(node: SetCommand, state: EvaluationState):
@@ -244,6 +280,7 @@ class SourceEvaluator:
         for word in words:
             state.variables[node.variable] = word
             state.runtime_variables[node.variable] = word
+            state.ambiguous_variables.discard(node.variable)
             self._evaluate_nodes(node.body, state, stack)
 
     def _resolve_loop_words(self, node: ForLoop, state: EvaluationState):
@@ -295,6 +332,8 @@ class SourceEvaluator:
 
         for match in SCALAR_REFERENCE_PATTERN.finditer(word):
             variable_name = match.group(1) or match.group(2)
+            if variable_name in state.ambiguous_variables:
+                raise self._unsupported_loop_words(node, f"loop word list references branch-dependent variable: {variable_name}")
             if variable_name not in state.runtime_variables:
                 raise self._unsupported_loop_words(node, f"loop word list references unknown variable: {variable_name}")
 
@@ -328,6 +367,231 @@ class SourceEvaluator:
             "Use a literal finite list, known scalar variables, or an exact ${array[@]} expansion.",
         )
 
+    def _apply_if_block(self, node: IfBlock, state: EvaluationState, stack: tuple[Path, ...]):
+        outer_occurrence_context = state.occurrence_context
+        outer_condition_context = state.condition_context
+        statuses = []
+        for branch in node.branches:
+            if branch.condition is None:
+                statuses.append("else")
+                continue
+            try:
+                statuses.append(self._evaluate_condition(branch.condition, state))
+            except UnsupportedSourceError as exc:
+                if self.mode == "context":
+                    statuses.append("unknown")
+                    continue
+                raise with_source_diagnostic(
+                    exc,
+                    str(node.location.path),
+                    node.location.line - 1,
+                    node.text,
+                    node.text,
+                    "unsupported.source.if-condition",
+                ) from exc
+
+        base_state = state.child_shell_copy()
+        branch_states = []
+        occurrence_model = (
+            OccurrenceModel.MUTUALLY_EXCLUSIVE
+            if len(node.branches) > 1
+            else OccurrenceModel.CONDITIONAL
+        )
+        for branch in node.branches:
+            branch_state = state.child_shell_copy()
+            branch_state.occurrence_context = occurrence_model
+            branch_state.condition_context = branch.condition or "else"
+            self._evaluate_nodes(branch.body, branch_state, stack)
+            branch_states.append(branch_state)
+
+        possible_states = self._possible_if_states(statuses, base_state, branch_states)
+        self._merge_possible_states(state, possible_states)
+        state.occurrence_context = outer_occurrence_context
+        state.condition_context = outer_condition_context
+
+    @staticmethod
+    def _possible_if_states(statuses: list[str], base_state: EvaluationState, branch_states: list[EvaluationState]):
+        if not statuses:
+            return [base_state]
+
+        if "unknown" not in statuses:
+            for status, branch_state in zip(statuses, branch_states):
+                if status in {"true", "else"}:
+                    return [branch_state]
+            return [base_state]
+
+        possible_states = []
+        fallthrough_possible = True
+        for status, branch_state in zip(statuses, branch_states):
+            if not fallthrough_possible:
+                break
+            if status == "false":
+                continue
+            if status == "true":
+                possible_states.append(branch_state)
+                fallthrough_possible = False
+            elif status == "else":
+                possible_states.append(branch_state)
+                fallthrough_possible = False
+            else:
+                possible_states.append(branch_state)
+
+        if fallthrough_possible:
+            possible_states.append(base_state)
+        return possible_states
+
+    @staticmethod
+    def _merge_possible_states(target: EvaluationState, possible_states: list[EvaluationState]):
+        if not possible_states:
+            return
+        if len(possible_states) == 1:
+            target.copy_from(possible_states[0])
+            return
+
+        first = possible_states[0]
+        target.cwd = first.cwd
+        target.ambiguous_cwd = any(state.ambiguous_cwd for state in possible_states) or any(
+            state.cwd != first.cwd for state in possible_states
+        )
+
+        target.ambiguous_variables.clear()
+        SourceEvaluator._merge_state_mapping(
+            target.variables,
+            [state.variables for state in possible_states],
+            target.ambiguous_variables,
+            [state.ambiguous_variables for state in possible_states],
+            clear_ambiguous=False,
+        )
+        SourceEvaluator._merge_state_mapping(
+            target.runtime_variables,
+            [state.runtime_variables for state in possible_states],
+            target.ambiguous_variables,
+            [state.ambiguous_variables for state in possible_states],
+            clear_ambiguous=False,
+        )
+        SourceEvaluator._merge_state_mapping(
+            target.arrays,
+            [state.arrays for state in possible_states],
+            target.ambiguous_arrays,
+            [state.ambiguous_arrays for state in possible_states],
+        )
+
+        first_shell_options = first.shell_options
+        if any(state.ambiguous_shell_options for state in possible_states) or any(
+            state.shell_options != first_shell_options for state in possible_states
+        ):
+            target.ambiguous_shell_options = True
+        else:
+            target.shell_options = set(first_shell_options)
+            target.ambiguous_shell_options = False
+
+        first_glob_options = first.glob_options
+        if any(state.ambiguous_glob_options for state in possible_states) or any(
+            state.glob_options != first_glob_options for state in possible_states
+        ):
+            target.ambiguous_glob_options = True
+        else:
+            target.glob_options = set(first_glob_options)
+            target.ambiguous_glob_options = False
+
+    @staticmethod
+    def _merge_state_mapping(target: dict, state_mappings: list[dict], ambiguous: set[str],
+                             ambiguous_sets: list[set[str]], clear_ambiguous: bool = True):
+        merged = {}
+        if clear_ambiguous:
+            ambiguous.clear()
+        keys = set().union(*(mapping.keys() for mapping in state_mappings), *ambiguous_sets)
+        for key in keys:
+            values = [mapping.get(key) for mapping in state_mappings]
+            if key in set().union(*ambiguous_sets) or any(value != values[0] for value in values[1:]):
+                ambiguous.add(key)
+                continue
+            if values[0] is not None:
+                merged[key] = copy.deepcopy(values[0])
+        target.clear()
+        target.update(merged)
+
+    def _evaluate_condition(self, condition: str, state: EvaluationState):
+        words = self._condition_words(condition)
+        if not words:
+            raise UnsupportedSourceError(f"unsupported empty if condition: {condition}")
+
+        if words[0] == "!":
+            result = self._evaluate_condition(" ".join(words[1:]), state)
+            if result == "true":
+                return "false"
+            if result == "false":
+                return "true"
+            return "unknown"
+
+        if any(token in words for token in {"&&", "||", "=~"}):
+            raise UnsupportedSourceError(f"unsupported compound if condition: {condition}")
+        if '$(' in condition or '`' in condition:
+            raise UnsupportedSourceError(f"unsupported dynamic if condition: {condition}")
+
+        if len(words) == 2 and words[0] in {"-e", "-f", "-d"}:
+            self._condition_path(words[1], state, condition)
+            return "unknown"
+
+        if len(words) == 2 and words[0] in {"-n", "-z"}:
+            value = self._condition_value(words[1], state)
+            if value is None:
+                return "unknown"
+            result = bool(value) if words[0] == "-n" else not bool(value)
+            return "true" if result else "false"
+
+        if len(words) == 3 and words[1] in {"=", "==", "!="}:
+            left = self._condition_value(words[0], state)
+            right = self._condition_value(words[2], state)
+            if left is None or right is None:
+                return "unknown"
+            result = left == right
+            if words[1] == "!=":
+                result = not result
+            return "true" if result else "false"
+
+        raise UnsupportedSourceError(f"unsupported if condition: {condition}")
+
+    @staticmethod
+    def _condition_words(condition: str):
+        stripped = condition.strip()
+        if stripped.startswith("[[") and stripped.endswith("]]"):
+            stripped = stripped[2:-2].strip()
+        elif stripped.startswith("[") and stripped.endswith("]"):
+            stripped = stripped[1:-1].strip()
+        elif stripped.startswith("test "):
+            stripped = stripped[5:].strip()
+        else:
+            raise UnsupportedSourceError(f"unsupported if condition syntax: {condition}")
+        return parse_shell_words_preserving_quotes(stripped)
+
+    @staticmethod
+    def _condition_value(value: str, state: EvaluationState):
+        variable_names = [match.group(1) or match.group(2) for match in SCALAR_REFERENCE_PATTERN.finditer(value)]
+        if any(name in state.ambiguous_variables for name in variable_names):
+            return None
+        if any(name not in state.runtime_variables and f"${name}" in value for name in variable_names):
+            return None
+
+        resolved = resolve_variable_references(value, state.runtime_context())
+        if "$" in resolved:
+            return None
+        resolved = os.path.expandvars(resolved)
+        return strip_matching_quotes(resolved)
+
+    @staticmethod
+    def _condition_path(value: str, state: EvaluationState, condition: str):
+        if state.ambiguous_cwd:
+            raise UnsupportedSourceError(f"unsupported branch-dependent cwd in if condition: {condition}")
+        resolved = SourceEvaluator._condition_value(value, state)
+        if resolved is None:
+            return None
+        resolved = resolve_shell_path_commands(resolved, str(state.cwd))
+        path = Path(resolved)
+        if not path.is_absolute():
+            path = state.cwd / path
+        return path.resolve()
+
     def _apply_source_site(self, node: SourceSite, state: EvaluationState, stack: tuple[Path, ...]):
         if not self._is_plain_source_site(node) and self.mode == "executable":
             raise unsupported_source_error(
@@ -353,6 +617,7 @@ class SourceEvaluator:
         is_context_control_flow = node.is_control_flow and self.mode == "context"
 
         try:
+            self._ensure_source_state_can_resolve(node, node.source_expression, state)
             resolved_expression = self._expand_array_indexes(node.source_expression, node, state)
         except UnsupportedSourceError:
             if self.mode == "context":
@@ -425,6 +690,8 @@ class SourceEvaluator:
         self._apply_shopt(node, state)
 
         try:
+            if contains_source_command(node.text):
+                self._ensure_source_state_can_resolve(node, node.text, state)
             resolved_sources = SOURCE_RESOLVER.resolve_command_level_sources(
                 node.text,
                 state.resolver_context(),
@@ -519,7 +786,67 @@ class SourceEvaluator:
             replacement_kind=replacement_kind,
             source_value=source_value,
             state_before=state.snapshot(),
+            condition=state.condition_context,
         ))
+
+    @staticmethod
+    def _ensure_source_state_can_resolve(node, source_expression: str, state: EvaluationState):
+        if state.ambiguous_cwd:
+            raise unsupported_source_error(
+                str(node.location.path),
+                node.location.line - 1,
+                node.text,
+                node.text,
+                "unsupported.source.branch-state",
+                "unsupported source after branch-dependent cwd",
+                "Reset cwd with an exact cd before the next source, or keep branch cwd effects convergent.",
+            )
+
+        variable_names = {match.group(1) or match.group(2) for match in SCALAR_REFERENCE_PATTERN.finditer(source_expression)}
+        ambiguous_variables = sorted(variable_names & state.ambiguous_variables)
+        if ambiguous_variables:
+            raise unsupported_source_error(
+                str(node.location.path),
+                node.location.line - 1,
+                node.text,
+                node.text,
+                "unsupported.source.branch-state",
+                f"unsupported source after branch-dependent variable: {', '.join(ambiguous_variables)}",
+                "Assign the same source-relevant value on every branch before sourcing it.",
+            )
+
+        array_names = {match.group(1) for match in ARRAY_INDEX_PATTERN.finditer(source_expression)}
+        ambiguous_arrays = sorted(array_names & state.ambiguous_arrays)
+        if ambiguous_arrays:
+            raise unsupported_source_error(
+                str(node.location.path),
+                node.location.line - 1,
+                node.text,
+                node.text,
+                "unsupported.source.branch-state",
+                f"unsupported source after branch-dependent array: {', '.join(ambiguous_arrays)}",
+                "Assign the same source-relevant array values on every branch before sourcing them.",
+            )
+
+    @staticmethod
+    def _ensure_cd_state_can_resolve(node: CdCommand, state: EvaluationState):
+        candidate = resolve_variable_references(node.path_expression, state.runtime_context())
+        if "$" in candidate:
+            candidate = ""
+        candidate = os.path.expandvars(strip_matching_quotes(candidate))
+        candidate = resolve_shell_path_commands(candidate, None)
+        if candidate and os.path.isabs(candidate):
+            return
+
+        raise unsupported_source_error(
+            str(node.location.path),
+            node.location.line - 1,
+            node.text,
+            node.text,
+            "unsupported.source.branch-state",
+            "unsupported relative cd after branch-dependent cwd",
+            "Use an absolute cd target before the next source, or keep branch cwd effects convergent.",
+        )
 
     @staticmethod
     def _expand_array_indexes(source_expression: str, node: SourceSite, state: EvaluationState):

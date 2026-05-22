@@ -273,6 +273,118 @@ class CompileRegressionTestCase(unittest.TestCase):
 
             project.assert_compiled_matches(self, "main.sh", env={"LC_ALL": "C"})
 
+    def test_if_block_source_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("optional.sh", 'echo "optional:$LOAD_OPTIONAL"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                if [[ -n "$LOAD_OPTIONAL" ]]; then
+                  source ./optional.sh
+                fi
+                echo "main"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh", env={"LOAD_OPTIONAL": "1"})
+            project.assert_compiled_matches(self, "main.sh", env={"LOAD_OPTIONAL": ""})
+
+    def test_if_else_branch_sources_match_bash(self):
+        with ScriptProject() as project:
+            project.write("prod.sh", 'echo "prod:$MODE"\n')
+            project.write("dev.sh", 'echo "dev:$MODE"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                if [[ "$MODE" == prod ]]; then
+                  source ./prod.sh
+                else
+                  source ./dev.sh
+                fi
+                echo "main"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh", env={"MODE": "prod"})
+            project.assert_compiled_matches(self, "main.sh", env={"MODE": "dev"})
+
+    def test_if_elif_branch_sources_match_bash(self):
+        with ScriptProject() as project:
+            project.write("prod.sh", 'echo "prod:$MODE"\n')
+            project.write("stage.sh", 'echo "stage:$MODE"\n')
+            project.write("dev.sh", 'echo "dev:$MODE"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                if [[ "$MODE" == prod ]]; then
+                  source ./prod.sh
+                elif [[ "$MODE" == stage ]]; then
+                  source ./stage.sh
+                else
+                  source ./dev.sh
+                fi
+                echo "main"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh", env={"MODE": "prod"})
+            project.assert_compiled_matches(self, "main.sh", env={"MODE": "stage"})
+            project.assert_compiled_matches(self, "main.sh", env={"MODE": "dev"})
+
+    def test_if_bracket_and_test_predicates_match_bash(self):
+        with ScriptProject() as project:
+            project.write("bracket.sh", 'echo "bracket"\n')
+            project.write("testdep.sh", 'echo "test predicate"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                if [ -f ./bracket.sh ]; then
+                  source ./bracket.sh
+                fi
+                if test -f ./testdep.sh; then
+                  source ./testdep.sh
+                fi
+                echo "main"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_if_branch_local_state_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("a.sh", 'echo "branch:a:$DEP"\n')
+            project.write("b.sh", 'echo "branch:b:$DEP"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                if [[ -n "$USE_A" ]]; then
+                  DEP=./a.sh
+                  source "$DEP"
+                else
+                  DEP=./b.sh
+                  source "$DEP"
+                fi
+                echo "main"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh", env={"USE_A": "1"})
+            project.assert_compiled_matches(self, "main.sh", env={"USE_A": ""})
+
+    def test_if_branch_local_cd_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("enabled/dep.sh", 'echo "enabled:$PWD"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                if [[ -n "$LOAD_ENABLED" ]]; then
+                  cd enabled
+                  source ./dep.sh
+                fi
+                echo "main"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh", env={"LOAD_ENABLED": "1"})
+            project.assert_compiled_matches(self, "main.sh", env={"LOAD_ENABLED": ""})
+
+    def test_if_converged_state_after_branch_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "after:$DEP"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                if [[ -n "$FLAG" ]]; then
+                  DEP=./dep.sh
+                else
+                  DEP=./dep.sh
+                fi
+                source "$DEP"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh", env={"FLAG": "1"})
+            project.assert_compiled_matches(self, "main.sh", env={"FLAG": ""})
+
     def test_environment_absolute_source_matches_bash(self):
         with ScriptProject() as project:
             dep = project.write("dep.sh", 'echo "dep from env"\n')
@@ -500,9 +612,13 @@ class CompileRegressionTestCase(unittest.TestCase):
                 'source ./plugins/*.sh\n',
                 'source ./plugins/*.sh',
             ),
-            "if block": (
-                'if [[ -f ./dep.sh ]]; then\n  source ./dep.sh\nfi\n',
-                'source ./dep.sh',
+            "unsupported if predicate": (
+                'if grep -q enabled config; then\n  source ./dep.sh\nfi\n',
+                'grep -q enabled config',
+            ),
+            "divergent if branch state": (
+                'if [[ -n "$USE_A" ]]; then\n  DEP=./a.sh\nelse\n  DEP=./b.sh\nfi\nsource "$DEP"\n',
+                'source "$DEP"',
             ),
             "case block": (
                 'case "$ENV" in\n  prod) source ./prod.sh ;;\nesac\n',
@@ -542,6 +658,8 @@ class CompileRegressionTestCase(unittest.TestCase):
             with self.subTest(name=name), ScriptProject() as project:
                 project.write("dep.sh", 'echo "dep"\n')
                 project.write("prod.sh", 'echo "prod"\n')
+                project.write("a.sh", 'echo "a"\n')
+                project.write("b.sh", 'echo "b"\n')
                 project.write("plugins/a.sh", 'echo "plugin"\n')
                 project.write("plugins/b.sh", 'echo "plugin b"\n')
                 project.write("main.sh", content)

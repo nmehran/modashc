@@ -192,7 +192,26 @@ class ContextModeTestCase(unittest.TestCase):
 
         self.assertIn('source "$NEXT"', content)
         self.assertNotIn('echo "next body"', content)
+        self.assertIn('# modashc: source ./optional.sh -> optional.sh (conditional: [[ -n "$LOAD_OPTIONAL" ]])', content)
         self.assertIn('echo "main body"', content)
+
+    def test_context_output_marks_mutually_exclusive_if_sources(self):
+        with ScriptProject() as project:
+            project.write("prod.sh", 'echo "prod body"\n')
+            project.write("dev.sh", 'echo "dev body"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                if [[ "$MODE" == prod ]]; then
+                  source ./prod.sh
+                else
+                  source ./dev.sh
+                fi
+                """))
+
+            output = project.compile("main.sh")
+            content = output.read_text()
+
+        self.assertIn('# modashc: source ./prod.sh -> prod.sh (mutually-exclusive: [[ "$MODE" == prod ]])', content)
+        self.assertIn('# modashc: source ./dev.sh -> dev.sh (mutually-exclusive: else)', content)
 
     def test_context_output_classifies_bash_c_source_as_child_shell(self):
         with ScriptProject() as project:

@@ -11,6 +11,8 @@ from methods.source_effects import (
     Assignment,
     CdCommand,
     ForLoop,
+    IfBlock,
+    IfBranch,
     RawCommand,
     ScriptIR,
     SetCommand,
@@ -35,6 +37,11 @@ FOR_LOOP_PATTERN = re.compile(r'^\s*for\s+([a-zA-Z_]\w*)\s+in\s+(.+?)\s*;\s*do(?
 FOR_HEADER_PATTERN = re.compile(r'^\s*for\s+([a-zA-Z_]\w*)\s+in\s+(.+?)\s*$')
 DO_LINE_PATTERN = re.compile(r'^\s*do\s*$')
 INLINE_DONE_PATTERN = re.compile(r'^(.*?)(?:;\s*)?done\s*$')
+IF_COMMAND_PATTERN = re.compile(r'^\s*if\s+(.+?)\s*$')
+ELIF_COMMAND_PATTERN = re.compile(r'^\s*elif\s+(.+?)\s*$')
+THEN_COMMAND_PATTERN = re.compile(r'^\s*then(?:\s+(.+?))?\s*$')
+ELSE_COMMAND_PATTERN = re.compile(r'^\s*else(?:\s+(.+?))?\s*$')
+FI_COMMAND_PATTERN = re.compile(r'^\s*fi\s*$')
 
 
 class ParserFrontend(Protocol):
@@ -72,6 +79,12 @@ class LineParserFrontend:
                 exclusion_patterns=[r'\#\!.*'],
                 escape_exclusions=False,
             )
+
+            if_block, next_line_index = self._parse_if_block(script_path, line_number, code_line, lines, line_index)
+            if if_block:
+                nodes.append(if_block)
+                line_index = next_line_index
+                continue
 
             for_loop, next_line_index = self._parse_for_loop(script_path, line_number, code_line, lines, line_index)
             if for_loop:
@@ -143,6 +156,105 @@ class LineParserFrontend:
             return set_command
 
         return RawCommand(location=location, text=command)
+
+    def _parse_if_block(self, script_path: Path, line_number: int, code_line: str, lines: list[str], line_index: int):
+        commands = get_commands(code_line)
+        if not commands or not IF_COMMAND_PATTERN.match(commands[0]):
+            return None, line_index + 1
+
+        branches = []
+        current_condition = None
+        current_keyword = None
+        current_body = []
+        saw_then = False
+        nested_depth = 0
+        index = line_index
+
+        while index < len(lines):
+            line = lines[index]
+            code = remove_comments(
+                line,
+                ['#'],
+                exclusion_patterns=[r'\#\!.*'],
+                escape_exclusions=False,
+            )
+
+            for command in get_commands(code):
+                stripped_command = command.strip()
+
+                if nested_depth:
+                    current_body.append((index + 1, command))
+                    if IF_COMMAND_PATTERN.match(stripped_command):
+                        nested_depth += 1
+                    elif FI_COMMAND_PATTERN.match(stripped_command):
+                        nested_depth -= 1
+                    continue
+
+                if match := IF_COMMAND_PATTERN.match(stripped_command):
+                    if current_keyword is not None:
+                        current_body.append((index + 1, command))
+                        nested_depth = 1
+                        continue
+                    current_keyword = "if"
+                    current_condition = match.group(1).strip()
+                    saw_then = False
+                    continue
+
+                if match := ELIF_COMMAND_PATTERN.match(stripped_command):
+                    if current_keyword is None:
+                        return None, line_index + 1
+                    branches.append(self._if_branch(script_path, current_keyword, current_condition, current_body))
+                    current_keyword = "elif"
+                    current_condition = match.group(1).strip()
+                    current_body = []
+                    saw_then = False
+                    continue
+
+                if match := THEN_COMMAND_PATTERN.match(stripped_command):
+                    if current_keyword not in {"if", "elif"}:
+                        return None, line_index + 1
+                    saw_then = True
+                    if match.group(1):
+                        current_body.append((index + 1, match.group(1).strip()))
+                    continue
+
+                if match := ELSE_COMMAND_PATTERN.match(stripped_command):
+                    if current_keyword is None:
+                        return None, line_index + 1
+                    branches.append(self._if_branch(script_path, current_keyword, current_condition, current_body))
+                    current_keyword = "else"
+                    current_condition = None
+                    current_body = []
+                    saw_then = True
+                    if match.group(1):
+                        current_body.append((index + 1, match.group(1).strip()))
+                    continue
+
+                if FI_COMMAND_PATTERN.match(stripped_command):
+                    if current_keyword is None or (current_keyword in {"if", "elif"} and not saw_then):
+                        return None, line_index + 1
+                    branches.append(self._if_branch(script_path, current_keyword, current_condition, current_body))
+                    column = self._command_column(code_line, "if")
+                    return IfBlock(
+                        location=SourceLocation(script_path, line_number, column),
+                        text=code_line.strip(),
+                        branches=tuple(branches),
+                    ), index + 1
+
+                if current_keyword is None or (current_keyword in {"if", "elif"} and not saw_then):
+                    return None, line_index + 1
+                current_body.append((index + 1, command))
+
+            index += 1
+
+        return None, line_index + 1
+
+    def _if_branch(self, script_path: Path, keyword: str, condition: str | None, body_lines):
+        return IfBranch(
+            condition=condition,
+            body=self._parse_loop_body(script_path, body_lines),
+            keyword=keyword,
+        )
 
     def _parse_for_loop(self, script_path: Path, line_number: int, code_line: str, lines: list[str], line_index: int):
         match = FOR_LOOP_PATTERN.match(code_line)

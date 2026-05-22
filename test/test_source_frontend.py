@@ -2,7 +2,16 @@ import textwrap
 import unittest
 from pathlib import Path
 
-from methods.source_effects import ArrayAssignment, Assignment, CdCommand, ForLoop, RawCommand, SetCommand, SourceSite
+from methods.source_effects import (
+    ArrayAssignment,
+    Assignment,
+    CdCommand,
+    ForLoop,
+    IfBlock,
+    RawCommand,
+    SetCommand,
+    SourceSite,
+)
 from methods.source_frontend import LineParserFrontend
 
 
@@ -152,7 +161,7 @@ class LineParserFrontendTestCase(unittest.TestCase):
             '"${deps[0]}"',
         ])
         self.assertEqual([site.location.line for site in ir.source_sites], [1, 3, 6, 7, 10])
-        self.assertEqual([site.is_control_flow for site in ir.source_sites], [False, True, True, True, False])
+        self.assertEqual([site.is_control_flow for site in ir.source_sites], [False, False, True, True, False])
 
     def test_control_flow_marking_is_source_site_specific_on_mixed_lines(self):
         ir = self.parse('source ./always.sh; if true; then source ./branch.sh; fi\n')
@@ -226,6 +235,44 @@ class LineParserFrontendTestCase(unittest.TestCase):
         self.assertIsInstance(loop, ForLoop)
         self.assertEqual(loop.words, ())
         self.assertFalse(loop.is_exact)
+
+    def test_parses_simple_multiline_if_block_node(self):
+        ir = self.parse("""\
+            if [[ -f ./local.sh ]]; then
+              source ./local.sh
+            elif [[ -f ./fallback.sh ]]; then
+              source ./fallback.sh
+            else
+              source ./default.sh
+            fi
+            """)
+
+        self.assertEqual(len(ir.nodes), 1)
+        block = ir.nodes[0]
+        self.assertIsInstance(block, IfBlock)
+        self.assertEqual([branch.keyword for branch in block.branches], ["if", "elif", "else"])
+        self.assertEqual([branch.condition for branch in block.branches], [
+            "[[ -f ./local.sh ]]",
+            "[[ -f ./fallback.sh ]]",
+            None,
+        ])
+        self.assertEqual([branch.body[0].source_expression for branch in block.branches], [
+            "./local.sh",
+            "./fallback.sh",
+            "./default.sh",
+        ])
+        self.assertEqual([branch.body[0].location.line for branch in block.branches], [2, 4, 6])
+        self.assertEqual([site.is_control_flow for site in ir.source_sites], [False, False, False])
+
+    def test_parses_simple_inline_if_block_node(self):
+        ir = self.parse('if [[ "$MODE" == prod ]]; then source ./prod.sh; else source ./dev.sh; fi\n')
+
+        self.assertEqual(len(ir.nodes), 1)
+        block = ir.nodes[0]
+        self.assertIsInstance(block, IfBlock)
+        self.assertEqual([branch.keyword for branch in block.branches], ["if", "else"])
+        self.assertEqual([branch.condition for branch in block.branches], ['[[ "$MODE" == prod ]]', None])
+        self.assertEqual([site.source_expression for site in ir.source_sites], ["./prod.sh", "./dev.sh"])
 
 
 if __name__ == "__main__":

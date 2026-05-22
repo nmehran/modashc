@@ -102,21 +102,35 @@ class SourceEvaluatorTestCase(unittest.TestCase):
         self.assertEqual(cm.exception.diagnostic.location.line, 1)
         self.assertEqual(cm.exception.diagnostic.fragment, 'source "${deps[0]}"')
 
-    def test_control_flow_source_rejects_even_when_path_is_static(self):
+    def test_if_block_source_is_evaluated_as_conditional(self):
         with ScriptProject() as project:
-            project.write("dep.sh", 'echo "dep"\n')
+            dep = project.write("dep.sh", 'echo "dep"\n')
             entry = project.write("main.sh", textwrap.dedent("""\
                 if [[ -f ./dep.sh ]]; then
                   source ./dep.sh
                 fi
                 """))
 
-            with self.assertRaisesRegex(NotImplementedError, "control flow") as cm:
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [dep])
+        self.assertEqual(result.events[0].occurrence_model, OccurrenceModel.CONDITIONAL)
+        self.assertEqual(result.events[0].condition, "[[ -f ./dep.sh ]]")
+
+    def test_if_block_unsupported_condition_raises_structured_diagnostic(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "dep"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                if grep -q enabled config; then
+                  source ./dep.sh
+                fi
+                """))
+
+            with self.assertRaisesRegex(NotImplementedError, "if condition") as cm:
                 SourceEvaluator().evaluate(entry)
 
-        self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.control-flow")
-        self.assertEqual(cm.exception.diagnostic.location.line, 2)
-        self.assertEqual(cm.exception.diagnostic.fragment, "source ./dep.sh")
+        self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.if-condition")
+        self.assertEqual(cm.exception.diagnostic.location.line, 1)
 
     def test_context_control_flow_source_is_conditional_and_does_not_leak_state(self):
         with ScriptProject() as project:
@@ -136,7 +150,62 @@ class SourceEvaluatorTestCase(unittest.TestCase):
             OccurrenceModel.CONDITIONAL,
             OccurrenceModel.CONDITIONAL,
         ])
+        self.assertEqual([event.condition for event in result.events], ['[[ -n "$LOAD_OPTIONAL" ]]', '[[ -n "$LOAD_OPTIONAL" ]]'])
         self.assertNotIn("NEXT", result.final_state.variables)
+
+    def test_if_block_converged_branch_state_is_available_after_merge(self):
+        with ScriptProject() as project:
+            dep = project.write("dep.sh", 'echo "dep"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                if [[ -n "$USE_A" ]]; then
+                  DEP=./dep.sh
+                else
+                  DEP=./dep.sh
+                fi
+                source "$DEP"
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [dep])
+        self.assertEqual(result.events[0].occurrence_model, OccurrenceModel.ONCE)
+        self.assertIsNone(result.events[0].condition)
+
+    def test_if_block_divergent_branch_state_rejects_later_source(self):
+        with ScriptProject() as project:
+            project.write("a.sh", 'echo "a"\n')
+            project.write("b.sh", 'echo "b"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                if [[ -n "$USE_A" ]]; then
+                  DEP=./a.sh
+                else
+                  DEP=./b.sh
+                fi
+                source "$DEP"
+                """))
+
+            with self.assertRaisesRegex(NotImplementedError, "branch-dependent variable") as cm:
+                SourceEvaluator().evaluate(entry)
+
+        self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.branch-state")
+        self.assertEqual(cm.exception.diagnostic.location.line, 6)
+
+    def test_if_block_divergent_cwd_rejects_later_relative_cd(self):
+        with ScriptProject() as project:
+            project.mkdir("subdir")
+            project.mkdir("relative")
+            entry = project.write("main.sh", textwrap.dedent("""\
+                if [[ -n "$USE_SUBDIR" ]]; then
+                  cd subdir
+                fi
+                cd relative
+                """))
+
+            with self.assertRaisesRegex(NotImplementedError, "relative cd after branch-dependent cwd") as cm:
+                SourceEvaluator().evaluate(entry)
+
+        self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.branch-state")
+        self.assertEqual(cm.exception.diagnostic.location.line, 4)
 
     def test_exact_literal_for_loop_sources_are_evaluated_in_order(self):
         with ScriptProject() as project:

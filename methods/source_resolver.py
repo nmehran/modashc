@@ -50,6 +50,8 @@ class ResolvedSource:
     replacement_kind: str = "source"
     source_value: str | None = None
     source_column: int | None = None
+    occurrence_model: str | None = None
+    condition: str | None = None
 
 
 @dataclass(frozen=True)
