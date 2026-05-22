@@ -77,8 +77,9 @@ safe to lower, compilation fails before writing or overwriting the output file.
   are exact, and source-relevant body effects are modeled, including positional
   source arguments, exact assignment prefixes, `local` scalar assignments, cwd
   changes, exact `return` / `shift`, exact dynamic dispatch, nested modeled
-  control flow, same-line post-definition calls, and functions defined by
-  sourced files
+  control flow, same-line post-definition calls, source-equivalent
+  branch-defined functions, function-call status for chained source sites, and
+  functions defined by sourced files
 - `bash -c "source ..."` classification in context mode
 
 Unsupported or ambiguous dynamic forms fail closed in executable mode. This
@@ -87,8 +88,9 @@ includes direct source globs with multiple matches, unmatched or quoted globs,
 `GLOBIGNORE` patterns that remove every source match, custom-IFS word
 splitting, unsupported command or glob-bearing file/bracket conditional
 predicates, unsupported case subjects or arm patterns, process substitution,
-unknown or recursive function dispatch, branch-dependent function returns,
-nested dynamic substitutions, and multi-result `cat` or `find` output.
+unknown runtime-dynamic or recursive function dispatch, non-equivalent
+branch-defined functions, branch-dependent function returns, nested dynamic
+substitutions, and multi-result `cat` or `find` output.
 
 Control-flow evaluation beyond exact finite loops, modeled `if` blocks, and
 exact `case` blocks is intentionally fail-closed until broader glob,

@@ -133,6 +133,19 @@ class LineParserFrontendTestCase(unittest.TestCase):
         self.assertEqual(ir.nodes[0].body[0].source_expression, "./dep.sh")
         self.assertEqual(ir.nodes[1].text, "load_dep")
 
+    def test_parses_same_line_function_definitions_inside_if_body(self):
+        ir = self.parse("""\
+            if [[ -n "$USE_ALT" ]]; then
+              load_dep() { source ./dep.sh; }
+            else
+              load_dep() { source ./dep.sh; }
+            fi
+            load_dep
+            """)
+
+        self.assertEqual([type(node) for node in ir.nodes[0].branches[0].body], [FunctionDef])
+        self.assertEqual([type(node) for node in ir.nodes[0].branches[1].body], [FunctionDef])
+
     def test_function_body_parameter_expansion_is_not_a_closing_brace(self):
         ir = self.parse("""\
             helper() {

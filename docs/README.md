@@ -29,4 +29,5 @@ The intended approach is captured in the
 - Remaining glob semantics: `extglob`, direct source glob arguments, and full
   `GLOBIGNORE` edge behavior
 - Broader case pattern and fallthrough semantics
-- Runtime dispatch, recursive functions, and branch-dependent function returns
+- Runtime-dynamic dispatch, recursive functions, non-equivalent branch-defined
+  functions, and branch-dependent function returns

@@ -268,6 +268,128 @@ class SourceEvaluatorTestCase(unittest.TestCase):
         self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.function-control")
         self.assertEqual(cm.exception.diagnostic.location.line, 2)
 
+    def test_branch_dependent_function_return_status_raises_structured_diagnostic(self):
+        with ScriptProject() as project:
+            entry = project.write("main.sh", textwrap.dedent("""\
+                load_dep() {
+                  if [[ -n "$SKIP" ]]; then
+                    return 0
+                  else
+                    return 1
+                  fi
+                }
+                load_dep
+                """))
+
+            with self.assertRaisesRegex(NotImplementedError, "branch-dependent function return") as cm:
+                SourceEvaluator().evaluate(entry)
+
+        self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.function-control")
+        self.assertEqual(cm.exception.diagnostic.location.line, 2)
+
+    def test_function_return_status_controls_chained_sources(self):
+        with ScriptProject() as project:
+            fallback = project.write("fallback.sh", 'echo "fallback"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                load_dep() {
+                  return 1
+                }
+                load_dep && source ./skipped.sh
+                load_dep || source ./fallback.sh
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [fallback])
+        self.assertEqual([disabled.source_site for disabled in result.disabled_sources], ["source ./skipped.sh"])
+        self.assertEqual(result.disabled_sources[0].condition, "&& previous command status")
+
+    def test_function_shift_status_controls_chained_sources(self):
+        with ScriptProject() as project:
+            fallback = project.write("fallback.sh", 'echo "fallback"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                shift_too_far() {
+                  shift 9
+                }
+                shift_too_far ignored && source ./skipped.sh
+                shift_too_far ignored || source ./fallback.sh
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [fallback])
+        self.assertEqual([disabled.source_site for disabled in result.disabled_sources], ["source ./skipped.sh"])
+
+    def test_branch_dependent_equivalent_function_definitions_are_evaluated(self):
+        with ScriptProject() as project:
+            dep = project.write("dep.sh", 'echo "dep"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                if [[ -n "$USE_ALT" ]]; then
+                  load_dep() { source ./dep.sh; }
+                else
+                  load_dep() { source ./dep.sh; }
+                fi
+                load_dep
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [dep, dep])
+        self.assertEqual({event.occurrence_model for event in result.events}, {OccurrenceModel.MUTUALLY_EXCLUSIVE})
+
+    def test_branch_merge_preserves_existing_function_without_duplicate_variant(self):
+        with ScriptProject() as project:
+            dep = project.write("dep.sh", 'echo "dep"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                load_dep() { source ./dep.sh; }
+                if [[ -n "$NOISE" ]]; then
+                  :
+                else
+                  :
+                fi
+                load_dep
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [dep])
+        self.assertEqual(result.events[0].occurrence_model, OccurrenceModel.ONCE)
+
+    def test_branch_dependent_different_function_definitions_raise_structured_diagnostic(self):
+        with ScriptProject() as project:
+            project.write("a.sh", 'echo "a"\n')
+            project.write("b.sh", 'echo "b"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                if [[ -n "$USE_A" ]]; then
+                  load_dep() { source ./a.sh; }
+                else
+                  load_dep() { source ./b.sh; }
+                fi
+                load_dep
+                """))
+
+            with self.assertRaisesRegex(NotImplementedError, "branch-dependent function") as cm:
+                SourceEvaluator().evaluate(entry)
+
+        self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.function-dispatch")
+        self.assertEqual(cm.exception.diagnostic.location.line, 6)
+
+    def test_unresolved_dynamic_function_dispatch_rejects_source_relevant_functions(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "dep"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                load_dep() {
+                  source ./dep.sh
+                }
+                "$FN"
+                """))
+
+            with self.assertRaisesRegex(NotImplementedError, "dynamic function dispatch") as cm:
+                SourceEvaluator().evaluate(entry)
+
+        self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.function-dispatch")
+        self.assertEqual(cm.exception.diagnostic.location.line, 4)
+
     def test_recursive_function_source_raises_structured_diagnostic(self):
         with ScriptProject() as project:
             project.write("dep.sh", 'echo "dep"\n')

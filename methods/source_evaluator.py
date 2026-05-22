@@ -91,6 +91,7 @@ class EvaluationState:
     runtime_variables: dict[str, str] = field(default_factory=dict)
     arrays: dict[str, tuple[str, ...]] = field(default_factory=dict)
     functions: dict[str, FunctionDef] = field(default_factory=dict)
+    function_variants: dict[str, tuple[FunctionDef, ...]] = field(default_factory=dict)
     shell_options: set[str] = field(default_factory=set)
     glob_options: set[str] = field(default_factory=set)
     bash_source_stack: tuple[Path, ...] = ()
@@ -104,6 +105,7 @@ class EvaluationState:
     ambiguous_glob_options: bool = False
     function_call_stack: tuple[str, ...] = ()
     local_scopes: list[dict[str, tuple[bool, str | None, bool, str | None, bool]]] = field(default_factory=list)
+    last_status: int | None = 0
 
     def resolver_context(self):
         return {
@@ -139,6 +141,7 @@ class EvaluationState:
             runtime_variables=copy.deepcopy(self.runtime_variables),
             arrays=copy.deepcopy(self.arrays),
             functions=copy.deepcopy(self.functions),
+            function_variants=copy.deepcopy(self.function_variants),
             shell_options=set(self.shell_options),
             glob_options=set(self.glob_options),
             bash_source_stack=self.bash_source_stack,
@@ -152,6 +155,7 @@ class EvaluationState:
             ambiguous_glob_options=self.ambiguous_glob_options,
             function_call_stack=self.function_call_stack,
             local_scopes=copy.deepcopy(self.local_scopes),
+            last_status=self.last_status,
         )
 
     def conditional_copy(self):
@@ -165,6 +169,7 @@ class EvaluationState:
         self.runtime_variables = copy.deepcopy(other.runtime_variables)
         self.arrays = copy.deepcopy(other.arrays)
         self.functions = copy.deepcopy(other.functions)
+        self.function_variants = copy.deepcopy(other.function_variants)
         self.shell_options = set(other.shell_options)
         self.glob_options = set(other.glob_options)
         self.bash_source_stack = other.bash_source_stack
@@ -178,6 +183,7 @@ class EvaluationState:
         self.ambiguous_glob_options = other.ambiguous_glob_options
         self.function_call_stack = other.function_call_stack
         self.local_scopes = copy.deepcopy(other.local_scopes)
+        self.last_status = other.last_status
 
 
 @dataclass
@@ -292,6 +298,7 @@ class SourceEvaluator:
         state.variables[node.name] = resolved_value
         state.runtime_variables[node.name] = runtime_value
         state.ambiguous_variables.discard(node.name)
+        state.last_status = 0
 
     @staticmethod
     def _capture_local_variable(name: str, state: EvaluationState):
@@ -347,11 +354,14 @@ class SourceEvaluator:
         if node.is_exact:
             state.arrays[node.name] = node.values
             state.ambiguous_arrays.discard(node.name)
+        state.last_status = 0
 
     @staticmethod
     def _apply_function_def(node: FunctionDef, state: EvaluationState):
         state.functions[node.name] = node
+        state.function_variants.pop(node.name, None)
         state.ambiguous_functions.discard(node.name)
+        state.last_status = 0
 
     @staticmethod
     def _apply_cd(node: CdCommand, state: EvaluationState):
@@ -360,6 +370,7 @@ class SourceEvaluator:
         context = state.resolver_context()
         state.cwd = Path(change_directory(node.path_expression, context))
         state.ambiguous_cwd = False
+        state.last_status = 0
 
     @staticmethod
     def _apply_set(node: SetCommand, state: EvaluationState):
@@ -386,6 +397,7 @@ class SourceEvaluator:
                     else:
                         state.shell_options.discard(option)
             index += 1
+        state.last_status = 0
 
     def _apply_for_loop(self, node: ForLoop, state: EvaluationState, stack: tuple[Path, ...]):
         try:
@@ -702,6 +714,18 @@ class SourceEvaluator:
             )
 
         selected_outcomes = returning_outcomes or continuing_outcomes
+        if returning_outcomes:
+            first_status = returning_outcomes[0].return_signal.status
+            if any(outcome.return_signal.status != first_status for outcome in returning_outcomes):
+                raise unsupported_source_error(
+                    str(node.location.path),
+                    node.location.line - 1,
+                    node.text,
+                    node.text,
+                    "unsupported.source.function-control",
+                    "unsupported branch-dependent function return",
+                    "Make function return status exact before later source-aware effects.",
+                )
         self._merge_possible_states(state, [outcome.state for outcome in selected_outcomes])
         if returning_outcomes:
             raise returning_outcomes[0].return_signal
@@ -1040,12 +1064,7 @@ class SourceEvaluator:
             target.ambiguous_arrays,
             [state.ambiguous_arrays for state in possible_states],
         )
-        SourceEvaluator._merge_state_mapping(
-            target.functions,
-            [state.functions for state in possible_states],
-            target.ambiguous_functions,
-            [state.ambiguous_functions for state in possible_states],
-        )
+        SourceEvaluator._merge_function_state(target, possible_states)
 
         first_shell_options = first.shell_options
         if any(state.ambiguous_shell_options for state in possible_states) or any(
@@ -1065,6 +1084,13 @@ class SourceEvaluator:
             target.glob_options = set(first_glob_options)
             target.ambiguous_glob_options = False
 
+        first_last_status = first.last_status
+        target.last_status = (
+            first_last_status
+            if all(state.last_status == first_last_status for state in possible_states)
+            else None
+        )
+
     @staticmethod
     def _merge_state_mapping(target: dict, state_mappings: list[dict], ambiguous: set[str],
                              ambiguous_sets: list[set[str]], clear_ambiguous: bool = True):
@@ -1081,6 +1107,115 @@ class SourceEvaluator:
                 merged[key] = copy.deepcopy(values[0])
         target.clear()
         target.update(merged)
+
+    @staticmethod
+    def _merge_function_state(target: EvaluationState, possible_states: list[EvaluationState]):
+        target.functions.clear()
+        target.function_variants.clear()
+        target.ambiguous_functions.clear()
+
+        keys = set().union(
+            *(state.functions.keys() for state in possible_states),
+            *(state.function_variants.keys() for state in possible_states),
+            *(state.ambiguous_functions for state in possible_states),
+        )
+        for key in keys:
+            if any(key in state.ambiguous_functions for state in possible_states):
+                target.ambiguous_functions.add(key)
+                continue
+
+            variants_by_signature = {}
+            missing = False
+            for state in possible_states:
+                variants = state.function_variants.get(key)
+                if variants is None:
+                    function_def = state.functions.get(key)
+                    variants = (function_def,) if function_def is not None else ()
+                if not variants:
+                    missing = True
+                    continue
+                for function_def in variants:
+                    signature_variants = variants_by_signature.setdefault(
+                        SourceEvaluator._function_signature(function_def),
+                        [],
+                    )
+                    if function_def not in signature_variants:
+                        signature_variants.append(function_def)
+
+            if missing or len(variants_by_signature) != 1:
+                target.ambiguous_functions.add(key)
+                continue
+
+            variants = tuple(next(iter(variants_by_signature.values())))
+            target.functions[key] = variants[0]
+            if len(variants) > 1:
+                target.function_variants[key] = variants
+
+    @staticmethod
+    def _function_signature(function_def: FunctionDef):
+        return (
+            "function",
+            function_def.name,
+            tuple(SourceEvaluator._node_signature(node) for node in function_def.body),
+        )
+
+    @staticmethod
+    def _node_signature(node):
+        if isinstance(node, Assignment):
+            return ("assignment", node.name, node.value, node.prefix)
+        if isinstance(node, ArrayAssignment):
+            return ("array", node.name, node.values, node.is_exact)
+        if isinstance(node, CdCommand):
+            return ("cd", node.path_expression)
+        if isinstance(node, SetCommand):
+            return ("set", node.arguments)
+        if isinstance(node, FunctionDef):
+            return SourceEvaluator._function_signature(node)
+        if isinstance(node, ForLoop):
+            return (
+                "for",
+                node.variable,
+                node.words,
+                node.words_text,
+                node.is_exact,
+                tuple(SourceEvaluator._node_signature(child) for child in node.body),
+            )
+        if isinstance(node, IfBlock):
+            return (
+                "if",
+                tuple(
+                    (
+                        branch.keyword,
+                        branch.condition,
+                        tuple(SourceEvaluator._node_signature(child) for child in branch.body),
+                    )
+                    for branch in node.branches
+                ),
+            )
+        if isinstance(node, CaseBlock):
+            return (
+                "case",
+                node.subject,
+                tuple(
+                    (
+                        arm.patterns,
+                        arm.terminator,
+                        tuple(SourceEvaluator._node_signature(child) for child in arm.body),
+                    )
+                    for arm in node.arms
+                ),
+            )
+        if isinstance(node, SourceSite):
+            return (
+                "source",
+                node.command_name,
+                node.source_expression,
+                node.separator,
+                node.is_control_flow,
+            )
+        if isinstance(node, RawCommand):
+            return ("raw", node.text)
+        return (type(node).__name__, node.text)
 
     def _evaluate_condition(self, condition: str, state: EvaluationState):
         condition = condition.strip()
@@ -1498,6 +1633,9 @@ class SourceEvaluator:
         return path.resolve()
 
     def _apply_source_site(self, node: SourceSite, state: EvaluationState, stack: tuple[Path, ...]):
+        if self._source_site_skipped_by_known_status(node, state):
+            return
+
         if not self._is_plain_source_site(node) and self.mode == "executable":
             raise unsupported_source_error(
                 str(node.location.path),
@@ -1590,6 +1728,16 @@ class SourceEvaluator:
             "source",
             source_value,
         )
+        state.last_status = 0
+
+    def _source_site_skipped_by_known_status(self, node: SourceSite, state: EvaluationState):
+        if node.separator == "&&" and state.last_status not in {None, 0}:
+            self._disable_unreachable_sources([node], "&& previous command status")
+            return True
+        if node.separator == "||" and state.last_status == 0:
+            self._disable_unreachable_sources([node], "|| previous command status")
+            return True
+        return False
 
     def _apply_raw_command(self, node: RawCommand, state: EvaluationState, stack: tuple[Path, ...]):
         if self._apply_function_call(node, state, stack):
@@ -1602,7 +1750,9 @@ class SourceEvaluator:
             self._apply_function_shift(node, state)
             return
 
-        self._apply_shopt(node, state)
+        if self._apply_shopt(node, state):
+            state.last_status = 0
+            return
 
         try:
             if contains_source_command(node.text):
@@ -1652,6 +1802,7 @@ class SourceEvaluator:
                 self._evaluate_file(source_path, state.child_shell_copy(), stack)
             else:
                 self._evaluate_file(source_path, state, stack)
+        state.last_status = 0 if resolved_sources else None
 
     def _apply_function_call(self, node: RawCommand, state: EvaluationState, stack: tuple[Path, ...]):
         try:
@@ -1667,7 +1818,20 @@ class SourceEvaluator:
         if index >= len(words):
             return False
 
-        function_name = self._resolve_function_name(words[index], node, state)
+        function_name, exact_dispatch = self._resolve_function_name(words[index], node, state)
+        if not exact_dispatch:
+            if self._state_has_source_relevant_functions(state):
+                raise unsupported_source_error(
+                    str(node.location.path),
+                    node.location.line - 1,
+                    node.text,
+                    node.text,
+                    "unsupported.source.function-dispatch",
+                    "unsupported dynamic function dispatch",
+                    "Function dispatch must resolve exactly when source-relevant functions are in scope.",
+                )
+            return False
+
         if function_name in state.ambiguous_functions:
             raise unsupported_source_error(
                 str(node.location.path),
@@ -1693,29 +1857,74 @@ class SourceEvaluator:
                 "Recursive source effects need an explicit bounded recursion model.",
             )
 
+        variants = state.function_variants.get(function_name, (function_def,))
         arguments = self._resolve_function_arguments(words[index + 1:], node, state)
+        prefix_words = words[:index]
+        if len(variants) == 1:
+            self._apply_function_call_variant(
+                variants[0],
+                function_name,
+                arguments,
+                prefix_words,
+                node,
+                state,
+                stack,
+            )
+            return True
+
+        base_state = state.child_shell_copy()
+        outcomes = []
+        for variant in variants:
+            variant_state = base_state.child_shell_copy()
+            variant_state.occurrence_context = OccurrenceModel.MUTUALLY_EXCLUSIVE
+            self._apply_function_call_variant(
+                variant,
+                function_name,
+                arguments,
+                prefix_words,
+                node,
+                variant_state,
+                stack,
+            )
+            outcomes.append(EvaluationOutcome(variant_state))
+
+        self._merge_possible_states(state, [outcome.state for outcome in outcomes])
+        return True
+
+    def _apply_function_call_variant(
+        self,
+        function_def: FunctionDef,
+        function_name: str,
+        arguments: tuple[str, ...],
+        prefix_words: list[str],
+        call_node: RawCommand,
+        state: EvaluationState,
+        stack: tuple[Path, ...],
+    ):
         prefix_scope = {}
-        self._apply_function_assignment_prefixes(words[:index], prefix_scope, node, state)
+        self._apply_function_assignment_prefixes(prefix_words, prefix_scope, call_node, state)
         previous_positionals = self._push_function_positionals(arguments, state)
         previous_call_stack = state.function_call_stack
         state.function_call_stack = (*state.function_call_stack, function_name)
         state.local_scopes.append({})
+        return_status = None
         try:
             try:
                 self._evaluate_nodes(function_def.body, state, stack)
-            except FunctionReturnSignal:
-                pass
+            except FunctionReturnSignal as signal:
+                return_status = signal.status
         finally:
             local_scope = state.local_scopes.pop()
             self._restore_local_scope(local_scope, state)
             self._restore_function_positionals(previous_positionals, len(arguments), state)
             self._restore_local_scope(prefix_scope, state)
             state.function_call_stack = previous_call_stack
-        return True
+        if return_status is not None:
+            state.last_status = return_status
 
     def _resolve_function_name(self, word: str, node: RawCommand, state: EvaluationState):
         if "$" not in word:
-            return strip_matching_quotes(word)
+            return strip_matching_quotes(word), True
 
         try:
             return self._resolve_function_exact_word(
@@ -1726,9 +1935,19 @@ class SourceEvaluator:
                 "unsupported dynamic function dispatch",
                 "unsupported unresolved function dispatch",
                 "Function dispatch must resolve to a known local function before source-aware evaluation.",
-            )
+            ), True
         except UnsupportedSourceError:
-            return strip_matching_quotes(word)
+            return strip_matching_quotes(word), False
+
+    def _state_has_source_relevant_functions(self, state: EvaluationState):
+        return any(
+            self._node_list_may_source(function_def.body)
+            for function_def in state.functions.values()
+        ) or any(
+            self._node_list_may_source(function_def.body)
+            for variants in state.function_variants.values()
+            for function_def in variants
+        )
 
     def _apply_function_assignment_prefixes(self, words: list[str], scope: dict, node: RawCommand,
                                             state: EvaluationState):
@@ -1906,7 +2125,11 @@ class SourceEvaluator:
             if name.isdigit() and int(name) > 0
         )
         argument_count = positional_indexes[-1] if positional_indexes else 0
-        if count == 0 or count > argument_count:
+        if count == 0:
+            state.last_status = 0
+            return
+        if count > argument_count:
+            state.last_status = 1
             return
 
         for index in range(1, argument_count + 1):
@@ -1925,6 +2148,7 @@ class SourceEvaluator:
                 state.variables.pop(target, None)
                 state.runtime_variables.pop(target, None)
             state.ambiguous_variables.discard(target)
+        state.last_status = 0
 
     def _resolve_function_control_word(self, word: str, node: RawCommand, state: EvaluationState, command: str):
         return self._resolve_function_exact_word(
@@ -1953,19 +2177,19 @@ class SourceEvaluator:
     def _apply_shopt(node: RawCommand, state: EvaluationState):
         stripped_text = node.text.strip()
         if not stripped_text.startswith("shopt "):
-            return
+            return False
 
         try:
             words = parse_shell_words_preserving_quotes(stripped_text)
         except UnsupportedSourceError:
-            return
+            return False
 
         if len(words) < 3 or words[0] != "shopt":
-            return
+            return False
 
         action = words[1]
         if action not in {"-s", "-u"}:
-            return
+            return False
 
         for option in words[2:]:
             if option not in GLOB_SHOPT_OPTIONS:
@@ -1974,6 +2198,7 @@ class SourceEvaluator:
                 state.glob_options.add(option)
             else:
                 state.glob_options.discard(option)
+        return True
 
     def _record_and_descend(self, source_path: Path, node: SourceSite, source_expression: str, source_site: str,
                             state: EvaluationState, stack: tuple[Path, ...], execution_model: ExecutionModel,

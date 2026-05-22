@@ -226,6 +226,16 @@ class LineParserFrontend:
                 escape_exclusions=False,
             )
 
+            if (
+                current_keyword is not None
+                and saw_then
+                and not nested_depth
+                and self._line_starts_function_definition(code)
+            ):
+                current_body.append((index + 1, code))
+                index += 1
+                continue
+
             for command in get_commands(code):
                 stripped_command = command.strip()
 
@@ -302,6 +312,10 @@ class LineParserFrontend:
             body=self._parse_loop_body(script_path, body_lines),
             keyword=keyword,
         )
+
+    @staticmethod
+    def _line_starts_function_definition(line: str):
+        return bool(FUNCTION_HEADER_PATTERN.match(line) or FUNCTION_SIGNATURE_PATTERN.match(line))
 
     def _parse_function_def(self, script_path: Path, line_number: int, code_line: str, lines: list[str],
                             line_index: int):

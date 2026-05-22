@@ -254,9 +254,11 @@ Bash function semantics. The current subset supports exact positional
 arguments such as `$1`, source-relevant scalar `local` assignments, cwd and
 variable mutation in parent state, exact assignment prefixes, and functions
 defined by sourced files, exact dynamic dispatch, exact `return` / `shift`,
-same-line post-definition calls, and nested modeled control flow. Recursive
-calls, branch-dependent returns, and runtime-dynamic dispatch remain
-fail-closed until explicitly modeled.
+same-line post-definition calls, nested modeled control flow, source-equivalent
+branch-defined functions, and exact function-call status for chained source
+sites. Recursive calls, branch-dependent returns, non-equivalent
+branch-defined functions, and runtime-dynamic dispatch remain fail-closed until
+explicitly modeled.
 
 ## Control-Flow Semantics
 
@@ -552,9 +554,10 @@ non-matching arms are replaced with no-ops in executable output.
 Implemented for the first bounded subset. Known local functions are evaluated
 when arguments are exact and the body contains modeled source-relevant
 constructs. Exact `return`, `shift`, dynamic dispatch, same-line
-post-definition calls, and nested function-body control flow are modeled.
-Recursive calls, branch-dependent returns, and runtime-dynamic dispatch remain
-unsupported until bounded.
+post-definition calls, nested function-body control flow, source-equivalent
+branch-defined functions, and function-call status for chained source sites are
+modeled. Recursive calls, branch-dependent returns, non-equivalent branch
+definitions, and runtime-dynamic dispatch remain unsupported until bounded.
 
 ### Phase 10: Child-Shell Lowering
 

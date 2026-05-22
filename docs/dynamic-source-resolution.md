@@ -359,8 +359,9 @@ These still need separate specs before implementation:
 - Conditional predicates outside the modeled side-effect-free subset.
 - Broader case pattern and fallthrough semantics.
 - Complex array/list-based source paths.
-- Broader user-defined function semantics, including dynamic dispatch,
-  recursive calls, `return`, `shift`, and nested modeled control flow.
+- Broader user-defined function semantics, including runtime-dynamic dispatch,
+  recursive calls, non-equivalent branch-defined functions, and
+  branch-dependent returns.
 - Process substitution and generated source streams.
 
 ### Unsupported But Practical
@@ -430,7 +431,8 @@ scope:
   exact arguments, positional source expressions, parent-state mutations,
   exact assignment prefixes, scalar `local` assignments, exact `return` /
   `shift`, exact dynamic dispatch, same-line post-definition calls, and nested
-  modeled control flow.
+  modeled control flow. It also supports source-equivalent branch-defined
+  functions and exact function-call status for chained source sites.
 - Executable mode fails before output when unsupported source forms would leave
   live runtime `source` commands.
 
@@ -440,6 +442,6 @@ with stable codes, source locations, rejected fragments, messages, and hints.
 
 Future resolver increments should stay small, tested, and fail-closed. Case,
 complex array, broader conditional, `extglob`, direct source glob argument
-semantics, recursive functions, branch-dependent function returns, and
-runtime-dispatch support should not be added as one-off resolver patches; those
-belong in the evaluator/IR design.
+semantics, recursive functions, non-equivalent branch-defined functions,
+branch-dependent function returns, and runtime-dispatch support should not be
+added as one-off resolver patches; those belong in the evaluator/IR design.

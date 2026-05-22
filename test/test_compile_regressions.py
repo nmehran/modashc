@@ -1143,6 +1143,48 @@ class CompileRegressionTestCase(unittest.TestCase):
         self.assertEqual(actual.stdout, expected.stdout)
         self.assertNotIn("should not run", compiled_content)
 
+        with ScriptProject() as project:
+            project.write("after.sh", 'echo "after should not run"\n')
+            project.write("fallback.sh", 'echo "fallback runs"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                load_dep() {
+                  return 1
+                }
+
+                load_dep && source ./after.sh
+                load_dep || source ./fallback.sh
+                """))
+
+            output = project.compile("main.sh", mode="executable")
+            expected = project.run("main.sh")
+            actual = project.run(output)
+            compiled_content = output.read_text()
+
+        self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
+        self.assertEqual(actual.stdout, expected.stdout)
+        self.assertNotIn("after should not run", compiled_content)
+
+        with ScriptProject() as project:
+            project.write("after.sh", 'echo "after shift should not run"\n')
+            project.write("fallback.sh", 'echo "fallback shift runs"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                shift_too_far() {
+                  shift 9
+                }
+
+                shift_too_far ignored && source ./after.sh
+                shift_too_far ignored || source ./fallback.sh
+                """))
+
+            output = project.compile("main.sh", mode="executable")
+            expected = project.run("main.sh")
+            actual = project.run(output)
+            compiled_content = output.read_text()
+
+        self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
+        self.assertEqual(actual.stdout, expected.stdout)
+        self.assertNotIn("after shift should not run", compiled_content)
+
     def test_nested_function_control_flow_matches_bash(self):
         with ScriptProject() as project:
             project.write("dep.sh", 'echo "nested function dep"\n')
@@ -1196,6 +1238,58 @@ class CompileRegressionTestCase(unittest.TestCase):
             )
 
             project.assert_compiled_matches(self, "main.sh")
+
+    def test_branch_dependent_function_definitions_match_bash_when_equivalent(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "branch function dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                if [[ -n "$USE_ALT" ]]; then
+                  load_dep() { source ./dep.sh; }
+                else
+                  load_dep() { source ./dep.sh; }
+                fi
+
+                load_dep
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            project.assert_compiled_matches(self, "main.sh", env={"USE_ALT": "1"})
+
+    def test_branch_dependent_function_definitions_reject_when_different(self):
+        with ScriptProject() as project:
+            project.write("a.sh", 'echo "a"\n')
+            project.write("b.sh", 'echo "b"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                if [[ -n "$USE_A" ]]; then
+                  load_dep() { source ./a.sh; }
+                else
+                  load_dep() { source ./b.sh; }
+                fi
+
+                load_dep
+                """))
+            output = project.path("compiled.sh")
+
+            with self.assertRaisesRegex(NotImplementedError, "branch-dependent function"):
+                project.compile("main.sh", output=output, mode="executable")
+
+            self.assertFalse(output.exists())
+
+    def test_unresolved_dynamic_function_dispatch_rejects_before_output(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                load_dep() {
+                  source ./dep.sh
+                }
+                "$FN"
+                """))
+            output = project.path("compiled.sh")
+
+            with self.assertRaisesRegex(NotImplementedError, "dynamic function dispatch"):
+                project.compile("main.sh", output=output, mode="executable")
+
+            self.assertFalse(output.exists())
 
     def test_duplicate_sources_execute_each_time_bash_would_execute_them(self):
         with ScriptProject() as project:
