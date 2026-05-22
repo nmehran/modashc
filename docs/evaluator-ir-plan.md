@@ -359,23 +359,37 @@ Already complete:
 - child-shell classification in context mode
 - fail-closed unsupported families
 
-### Phase 1: Structured Diagnostics
+### Phase 1: Parser Frontend Contract And Feasibility
+
+Introduce a parser frontend interface and fixture matrix before committing to a
+specific parser implementation. Evaluate candidates against real shell-project
+fixtures:
+
+- current targeted line parser
+- `bashlex` or another Python-native Bash parser
+- `tree-sitter-bash`
+- any other parser that can produce stable locations and nested syntax
+
+The output contract is `ScriptIR`, not a third-party AST shape. The project
+should keep a replaceable parser boundary even if a real parser is adopted.
+
+### Phase 2: Structured Diagnostics
 
 Introduce diagnostic types without changing behavior. Keep message strings as a
 compatibility layer. Update tests to assert codes for unsupported source forms.
 
-### Phase 2: IR Skeleton
+### Phase 3: IR Skeleton
 
 Introduce `ScriptIR`, node classes, and source locations. Build IR for currently
 supported constructs only. Render behavior should remain unchanged.
 
-### Phase 3: Evaluator For Existing Behavior
+### Phase 4: Evaluator For Existing Behavior
 
 Move current traversal behavior onto the evaluator. Existing regression tests
 must stay green. This phase proves the IR can replace traversal without adding
 new surface area.
 
-### Phase 4: Exact Arrays And Word Lists
+### Phase 5: Exact Arrays And Word Lists
 
 Support exact arrays and word-list expansion:
 
@@ -386,22 +400,22 @@ for dep in "${deps[@]}"; do
 done
 ```
 
-### Phase 5: Deterministic Globs And Finite Loops
+### Phase 6: Deterministic Globs And Finite Loops
 
 Support finite loop unrolling over deterministic literal/glob word lists. Add
 explicit iteration limits and diagnostics.
 
-### Phase 6: Provable Conditionals And Cases
+### Phase 7: Provable Conditionals And Cases
 
 Support file tests and exact string comparisons. Context mode may gain
 conditional provenance; executable mode should remain strict.
 
-### Phase 7: Modeled Functions
+### Phase 8: Modeled Functions
 
 Evaluate known local functions whose source-relevant behavior is fully modeled.
 Reject recursive or runtime-dynamic function dispatch unless bounded.
 
-### Phase 8: Child-Shell Lowering
+### Phase 9: Child-Shell Lowering
 
 If needed, add explicit child-shell rendering for executable mode. This should
 not be implemented by parent-shell inlining.
