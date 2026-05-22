@@ -6,7 +6,7 @@ import os
 import re
 from collections import Counter
 from dataclasses import dataclass, field
-from fnmatch import fnmatchcase
+from fnmatch import fnmatch, fnmatchcase
 from pathlib import Path
 
 from methods.source_diagnostics import unsupported_source_error, with_source_diagnostic
@@ -923,12 +923,60 @@ class SourceEvaluator:
             raise self._unsupported_loop_words(node, "unsupported find command substitution")
 
         roots, filters = parsed_find
-        matches = SOURCE_RESOLVER.find_candidate_matches(roots, filters, state.resolver_context())
-        relative_matches = []
-        for match in matches:
-            relative = os.path.relpath(match, state.cwd)
-            relative_matches.append(f"./{relative}" if not relative.startswith(os.pardir) else match)
-        return "\n".join(relative_matches)
+        root_words = self._find_root_words(stripped_words)
+        matches = self._find_word_list_matches(root_words, roots, filters, node, state)
+        return "\n".join(matches)
+
+    @staticmethod
+    def _find_root_words(words: list[str]):
+        roots = []
+        index = 1
+        while index < len(words) and not words[index].startswith("-"):
+            roots.append(words[index])
+            index += 1
+        return roots or ["."]
+
+    def _find_word_list_matches(self, root_words: list[str], roots: list[str], filters: dict, node,
+                                state: EvaluationState):
+        matches = []
+        for root_word, root in zip(root_words, roots):
+            display_root = self._resolve_exact_runtime_word(root_word, node, state, "loop word list")
+            for directory, dirnames, filenames in os.walk(root):
+                dirnames.sort()
+                filenames.sort()
+
+                relative_directory = os.path.relpath(directory, root)
+                directory_depth = 0 if relative_directory == os.curdir else len(relative_directory.split(os.sep))
+                maxdepth = filters['maxdepth']
+                if maxdepth is not None and directory_depth >= maxdepth:
+                    dirnames[:] = []
+
+                for filename in filenames:
+                    candidate = os.path.join(directory, filename)
+                    candidate_depth = directory_depth + 1
+                    if candidate_depth < filters['mindepth']:
+                        continue
+                    if maxdepth is not None and candidate_depth > maxdepth:
+                        continue
+                    if not os.path.isfile(candidate):
+                        continue
+                    display_path = self._find_display_path(display_root, root, candidate)
+                    if filters['name'] and not any(fnmatch(filename, pattern) for pattern in filters['name']):
+                        continue
+                    if filters['path'] and not any(fnmatch(display_path, pattern) for pattern in filters['path']):
+                        continue
+
+                    matches.append(display_path)
+                    if filters.get('quit'):
+                        return matches
+        return matches
+
+    @staticmethod
+    def _find_display_path(display_root: str, resolved_root: str, candidate: str):
+        relative = os.path.relpath(candidate, resolved_root)
+        if relative == os.curdir:
+            return display_root
+        return os.path.join(display_root, relative)
 
     def _evaluate_printf_word_list(self, words: list[str], node, state: EvaluationState):
         if len(words) < 2:
@@ -2969,10 +3017,12 @@ class SourceEvaluator:
             return
         variable = read_words[0][0]
         values = tuple(value for _, value in read_words)
-        inline_do = bool(re.search(r';\s*do\s*$', node.text))
+        header_match = re.match(r'^(.*?;\s*do)\b', node.text)
+        header_text = header_match.group(1) if header_match else node.text
+        inline_do = bool(header_match)
         self._record_line_replacement(
             node.location,
-            node.text,
+            header_text,
             (
                 f"for {variable} in {self._shell_quote_words(values)}; do"
                 if inline_do

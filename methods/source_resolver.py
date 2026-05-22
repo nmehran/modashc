@@ -927,6 +927,7 @@ class SourceResolver:
             'maxdepth': None,
             'mindepth': 0,
             'has_print': False,
+            'quit': False,
         }
 
         while index < len(words):
@@ -960,6 +961,7 @@ class SourceResolver:
             elif token == '-quit':
                 if not filters['has_print']:
                     raise UnsupportedSourceError("unsupported find source command: -quit requires earlier -print")
+                filters['quit'] = True
             else:
                 raise UnsupportedSourceError(f"unsupported find source predicate: {token}")
             index += 1
@@ -968,7 +970,7 @@ class SourceResolver:
 
     @staticmethod
     def find_candidate_matches(roots: list[str], filters: dict, context: dict):
-        matches = set()
+        matches = []
         current_directory = context['current_directory']
 
         for root in roots:
@@ -1007,7 +1009,9 @@ class SourceResolver:
                     ):
                         continue
 
-                    matches.add(os.path.abspath(candidate))
+                    matches.append(os.path.abspath(candidate))
+                    if filters.get('quit'):
+                        return matches
                     if len(matches) > 1:
                         return sorted(matches)
 

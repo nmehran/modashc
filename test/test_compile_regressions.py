@@ -942,6 +942,20 @@ class CompileRegressionTestCase(unittest.TestCase):
             self.assertNotIn("$(find ./plugins", project.path("compiled.sh").read_text())
 
         with ScriptProject() as project:
+            project.write("plugins/a.sh", 'echo "absolute find dep"\n')
+            project.write("main.sh", textwrap.dedent(f"""\
+                for dep in $(find {project.root}/plugins -type f -name '*.sh' -print); do
+                  echo "dep=$dep"
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            compiled = project.path("compiled.sh").read_text()
+            self.assertNotIn("$(find ", compiled)
+            self.assertIn(str(project.root / "plugins" / "a.sh"), compiled)
+
+        with ScriptProject() as project:
             project.write("plugins/a.sh", 'echo "a"\n')
             project.write("plugins/b.sh", 'echo "b"\n')
             project.write("deps.txt", "./plugins/*.sh\n")
@@ -1008,6 +1022,16 @@ class CompileRegressionTestCase(unittest.TestCase):
 
             project.assert_compiled_matches(self, "main.sh")
             self.assertNotIn("$(cat deps.txt)", project.path("compiled.sh").read_text())
+
+        with ScriptProject() as project:
+            project.write("inline.sh", 'echo "inline read dep"\n')
+            project.write("deps.txt", "./inline.sh\n")
+            project.write("main.sh", 'while IFS= read -r dep; do echo "$dep"; source "$dep"; done < deps.txt\n')
+
+            project.assert_compiled_matches(self, "main.sh")
+            compiled = project.path("compiled.sh").read_text()
+            self.assertNotIn("deps.txt", compiled)
+            self.assertIn("for dep in './inline.sh'; do", compiled)
 
     def test_richer_array_sources_match_bash(self):
         with ScriptProject() as project:
