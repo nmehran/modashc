@@ -190,7 +190,7 @@ Accept only when:
 - No `-exec`, `-delete`, `-ok`, `-printf`, shell escapes, pipes, redirects, or
   process substitutions are present.
 - The resolver finds exactly one matching regular file.
-- Traversal order is deterministic, such as sorted path order.
+- Traversal order follows Bash/GNU `find` traversal order for executable parity.
 
 Reject examples:
 
@@ -311,7 +311,7 @@ done
 Accept only when the command substitution is a single safe producer:
 
 - `cat` with exact readable file operands
-- deterministic `find` with the existing safe predicate subset
+- safe `find` with the existing predicate subset and Bash/GNU traversal order
 - `printf '%s\n' ...` with exact arguments
 - `sort` with exact readable file operands and optional `-u`
 - `head` with one exact readable file operand and optional `-n N` / `-N`

@@ -55,8 +55,8 @@ The supported path command substitutions are `dirname`, `basename`, and
 
 ## Safe File And Command Producers
 
-Supported when producer output is deterministic and resolves to the required
-number of paths:
+Supported when producer output is exact for the current project tree and
+resolves to the required number of paths:
 
 ```bash
 source "$(cat dep-path.txt)"
@@ -67,6 +67,8 @@ eval "source ./dep.sh"
 For loop word lists and read-loop producers, the supported safe commands are
 `cat`, `find`, `printf`, `sort`, `head`, `grep -lF`, `grep -lE`, `realpath`,
 `dirname`, and `basename`.
+Modeled `find` producers preserve Bash/GNU `find` traversal order rather than
+sorting matches.
 
 Context mode can classify `bash -c "source ..."` as child-shell context. It is
 not executable-mode parent-source semantics.

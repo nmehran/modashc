@@ -1274,9 +1274,6 @@ class SourceEvaluator:
         for root_word, root in zip(root_words, roots):
             display_root = self._resolve_exact_runtime_word(root_word, node, state, "loop word list")
             for directory, dirnames, filenames in os.walk(root):
-                dirnames.sort()
-                filenames.sort()
-
                 relative_directory = os.path.relpath(directory, root)
                 directory_depth = 0 if relative_directory == os.curdir else len(relative_directory.split(os.sep))
                 maxdepth = filters['maxdepth']

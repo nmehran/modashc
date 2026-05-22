@@ -1029,9 +1029,6 @@ class SourceResolver:
 
         for root in roots:
             for directory, dirnames, filenames in os.walk(root):
-                dirnames.sort()
-                filenames.sort()
-
                 relative_directory = os.path.relpath(directory, root)
                 directory_depth = 0 if relative_directory == os.curdir else len(relative_directory.split(os.sep))
                 maxdepth = filters['maxdepth']
@@ -1067,9 +1064,9 @@ class SourceResolver:
                     if filters.get('quit'):
                         return matches
                     if len(matches) > 1:
-                        return sorted(matches)
+                        return matches
 
-        return sorted(matches)
+        return matches
 
     def resolve_safe_find_source(self, inner_command: str, source_expression: str, source_site: str, context: dict,
                                  execution_model: str, replacement_kind: str):

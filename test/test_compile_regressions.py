@@ -1221,7 +1221,9 @@ class CompileRegressionTestCase(unittest.TestCase):
             project.assert_compiled_matches(self, "main.sh")
             compiled = project.path("compiled.sh").read_text()
             self.assertNotIn("find ./plugins", compiled)
-            self.assertIn("( for dep in './plugins/a.sh' './plugins/b.sh'; do", compiled)
+            self.assertIn("( for dep in", compiled)
+            self.assertIn("'./plugins/a.sh'", compiled)
+            self.assertIn("'./plugins/b.sh'", compiled)
 
         with ScriptProject() as project:
             project.write("plugins/a.sh", 'echo "lastpipe:a"; VALUE=a\n')
