@@ -48,7 +48,7 @@ class SourceRegressionTestCase(unittest.TestCase):
         )
 
     def test_command_wrapped_source_is_detected_as_source_command(self):
-        from methods.source_resolver import contains_source_command
+        from methods.source_resolver import contains_nested_source_command, contains_source_command
 
         self.assertTrue(contains_source_command('command source ./dep.sh'))
         self.assertTrue(contains_source_command('command -p source ./dep.sh'))
@@ -62,6 +62,17 @@ class SourceRegressionTestCase(unittest.TestCase):
         self.assertFalse(contains_source_command('command -v source'))
         self.assertFalse(contains_source_command('command -V source'))
         self.assertFalse(contains_source_command('FOO=bar echo source ./dep.sh'))
+        self.assertTrue(contains_nested_source_command('(source ./dep.sh)'))
+        self.assertTrue(contains_nested_source_command('(. ./dep.sh)'))
+        self.assertTrue(contains_nested_source_command('cat <(source ./dep.sh)'))
+        self.assertTrue(contains_nested_source_command('echo "$(source ./dep.sh)"'))
+        self.assertTrue(contains_nested_source_command('echo `source ./dep.sh`'))
+        self.assertTrue(contains_nested_source_command('echo $(( $(source ./dep.sh) + 1 ))'))
+        self.assertFalse(contains_nested_source_command('echo "source ./dep.sh"'))
+        self.assertFalse(contains_nested_source_command("echo 'source ./dep.sh'"))
+        self.assertFalse(contains_nested_source_command('echo $((1 + 2))'))
+        self.assertFalse(contains_nested_source_command('tokens=(source ./dep.sh)'))
+        self.assertFalse(contains_nested_source_command('declare -a tokens=(source ./dep.sh)'))
 
     def test_heredoc_detection_ignores_quotes_and_arithmetic(self):
         from methods.source_resolver import extract_heredoc_delimiters
@@ -113,6 +124,40 @@ class SourceRegressionTestCase(unittest.TestCase):
                 os.chdir(before)
 
         self.assertEqual(after, before)
+
+    def test_get_sources_uses_ir_evaluator_for_modeled_control_flow(self):
+        with ScriptProject() as project:
+            project.write("loop-a.sh", 'echo "loop a"\n')
+            project.write("loop-b.sh", 'echo "loop b"\n')
+            project.write("if-dep.sh", 'echo "if dep"\n')
+            project.write("case-dep.sh", 'echo "case dep"\n')
+            project.write("main.sh", "\n".join([
+                "for dep in ./loop-a.sh ./loop-b.sh; do",
+                '  source "$dep"',
+                "done",
+                "MODE=prod",
+                'if [[ "$MODE" == prod ]]; then',
+                "  source ./if-dep.sh",
+                "fi",
+                "ENV=prod",
+                'case "$ENV" in',
+                "  prod) source ./case-dep.sh ;;",
+                "esac",
+                "",
+            ]))
+
+            actual = [
+                path.relative_to(project.root).as_posix()
+                for path in project.sources("main.sh")
+            ]
+
+        self.assertEqual(actual, [
+            "loop-a.sh",
+            "loop-b.sh",
+            "if-dep.sh",
+            "case-dep.sh",
+            "main.sh",
+        ])
 
     def test_relative_source_resolution_does_not_fall_back_to_process_cwd(self):
         before = os.getcwd()

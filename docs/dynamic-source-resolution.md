@@ -353,7 +353,7 @@ These still need separate specs before implementation:
     source "$file"
   done
   ```
-- Case-driven source selection.
+- Broader case pattern and fallthrough semantics.
 - Complex array/list-based source paths.
 - User-defined functions that compute source paths.
 - Process substitution and generated source streams.
@@ -407,8 +407,10 @@ scope:
 - `ResolvedSource` records describe exact dependency resolution.
 - `methods.source_resolver` owns source command detection, heredoc guards, safe
   dynamic source resolvers, and unsupported-source classification.
-- `methods.sources` owns traversal, cwd tracking, variable state, and path
-  context.
+- `methods.source_evaluator` owns traversal, cwd tracking, variable state, and
+  source-event production.
+- `methods.sources` owns path-resolution helpers and the `get_sources()`
+  compatibility wrapper over source-effect evaluation.
 - Safe `cat`, safe `find`, safe `eval source`, and context-only
   `bash -c source` classification are implemented.
 - Exact finite `for` loop lowering is implemented for literal words, known

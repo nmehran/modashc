@@ -30,6 +30,7 @@ from methods.source_frontend import LineParserFrontend, ParserFrontend
 from methods.source_resolver import (
     UnsupportedSourceError,
     contains_source_command,
+    contains_nested_source_command,
     expand_glob_word,
     contains_unquoted_token,
     has_unquoted_glob,
@@ -1059,7 +1060,7 @@ class SourceEvaluator:
                 "unsupported.source.command-resolution",
             ) from exc
 
-        if not resolved_sources and contains_source_command(node.text) and self.mode == "executable":
+        if not resolved_sources and self._raw_command_may_source(node.text) and self.mode == "executable":
             raise unsupported_source_error(
                 str(node.location.path),
                 node.location.line - 1,
@@ -1192,9 +1193,37 @@ class SourceEvaluator:
     def _raw_command_may_source(command: str):
         return bool(
             contains_source_command(command)
-            or re.search(r'\b(?:eval|bash|/bin/bash|/usr/bin/bash)\b.*(?:\bsource\b|(?:^|[\s;&|])\.)', command)
+            or contains_nested_source_command(command)
+            or SourceEvaluator._raw_command_payload_may_source(command)
             or SourceEvaluator._raw_command_may_expand_to_source(command)
         )
+
+    @staticmethod
+    def _raw_command_payload_may_source(command: str):
+        try:
+            words = parse_shell_words_preserving_quotes(command.strip())
+        except UnsupportedSourceError:
+            return bool(
+                re.search(r'^\s*(?:[a-zA-Z_]\w*(?:\+)?=\S+\s+)*(?:eval|bash|/bin/bash|/usr/bin/bash)\b', command)
+                and re.search(r'\bsource\b|(?:^|[\s;&|])\.', command)
+            )
+
+        index = 0
+        while index < len(words) and ASSIGNMENT_WORD_PATTERN.match(words[index]):
+            index += 1
+        if index >= len(words):
+            return False
+
+        command_name = words[index]
+        if command_name == "eval":
+            payload = strip_matching_quotes(" ".join(words[index + 1:]))
+            return contains_source_command(payload) or contains_nested_source_command(payload)
+
+        if command_name in {"bash", "/bin/bash", "/usr/bin/bash"} and len(words) > index + 2 and words[index + 1] == "-c":
+            payload = strip_matching_quotes(words[index + 2])
+            return contains_source_command(payload) or contains_nested_source_command(payload)
+
+        return False
 
     @staticmethod
     def _raw_command_may_expand_to_source(command: str):

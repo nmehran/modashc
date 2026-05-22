@@ -374,6 +374,209 @@ def contains_source_command(command: str):
     return source_command_index(command) is not None
 
 
+def contains_nested_source_command(command: str):
+    """Detect live source commands inside shell constructs we do not lower.
+
+    This intentionally does not treat quoted text as shell code, but it does
+    inspect command substitutions, process substitutions, and parenthesized
+    subshells because those run nested shell code at runtime.
+    """
+    return _contains_nested_source_command(command, depth=0)
+
+
+def _contains_nested_source_command(text: str, depth: int):
+    if depth > 8:
+        return True
+
+    in_single_quote = False
+    in_double_quote = False
+    escaped = False
+    index = 0
+
+    while index < len(text):
+        char = text[index]
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+
+        if char == '\\' and not in_single_quote:
+            escaped = True
+            index += 1
+            continue
+
+        if char == "'" and not in_double_quote:
+            in_single_quote = not in_single_quote
+            index += 1
+            continue
+
+        if char == '"' and not in_single_quote:
+            in_double_quote = not in_double_quote
+            index += 1
+            continue
+
+        if in_single_quote:
+            index += 1
+            continue
+
+        if char == '`':
+            body, end_index = _read_backtick_body(text, index + 1)
+            if body is None:
+                return True
+            if _shell_body_contains_source(body, depth + 1):
+                return True
+            index = end_index + 1
+            continue
+
+        if text.startswith('$((', index):
+            body, end_index = _read_balanced_body(text, index + 3)
+            if end_index is None:
+                return True
+            if _contains_nested_source_command(body, depth + 1):
+                return True
+            index = end_index + 1
+            continue
+
+        if text.startswith('$(', index):
+            body, end_index = _read_balanced_body(text, index + 2)
+            if end_index is None:
+                return True
+            if _shell_body_contains_source(body, depth + 1):
+                return True
+            index = end_index + 1
+            continue
+
+        if not in_double_quote and (text.startswith('<(', index) or text.startswith('>(', index)):
+            body, end_index = _read_balanced_body(text, index + 2)
+            if end_index is None:
+                return True
+            if _shell_body_contains_source(body, depth + 1):
+                return True
+            index = end_index + 1
+            continue
+
+        if not in_double_quote and text.startswith('((', index):
+            body, end_index = _read_balanced_body(text, index + 2)
+            if end_index is None:
+                return True
+            if _contains_nested_source_command(body, depth + 1):
+                return True
+            index = end_index + 1
+            continue
+
+        if not in_double_quote and char == '(' and _is_array_assignment_paren(text, index):
+            body, end_index = _read_balanced_body(text, index + 1)
+            if end_index is None:
+                return True
+            index = end_index + 1
+            continue
+
+        if not in_double_quote and char == '(':
+            body, end_index = _read_balanced_body(text, index + 1)
+            if end_index is None:
+                return True
+            if _shell_body_contains_source(body, depth + 1):
+                return True
+            index = end_index + 1
+            continue
+
+        index += 1
+
+    return False
+
+
+def _shell_body_contains_source(body: str, depth: int):
+    return contains_source_command(body) or _contains_nested_source_command(body, depth)
+
+
+def _is_array_assignment_paren(text: str, paren_index: int):
+    if paren_index == 0 or text[paren_index - 1] != '=':
+        return False
+
+    word_start = paren_index - 2
+    while word_start >= 0 and not text[word_start].isspace() and text[word_start] not in ';&|':
+        word_start -= 1
+
+    assignment_name = text[word_start + 1:paren_index - 1]
+    return bool(re.fullmatch(r'[a-zA-Z_]\w*(?:\[[^\]]+\])?\+?', assignment_name))
+
+
+def _read_backtick_body(text: str, start_index: int):
+    body = []
+    escaped = False
+    index = start_index
+
+    while index < len(text):
+        char = text[index]
+        if escaped:
+            body.append(char)
+            escaped = False
+            index += 1
+            continue
+
+        if char == '\\':
+            body.append(char)
+            escaped = True
+            index += 1
+            continue
+
+        if char == '`':
+            return ''.join(body), index
+
+        body.append(char)
+        index += 1
+
+    return None, None
+
+
+def _read_balanced_body(text: str, start_index: int):
+    body = []
+    in_single_quote = False
+    in_double_quote = False
+    escaped = False
+    depth = 1
+    index = start_index
+
+    while index < len(text):
+        char = text[index]
+        if escaped:
+            body.append(char)
+            escaped = False
+            index += 1
+            continue
+
+        if char == '\\' and not in_single_quote:
+            body.append(char)
+            escaped = True
+            index += 1
+            continue
+
+        if char == "'" and not in_double_quote:
+            in_single_quote = not in_single_quote
+            body.append(char)
+            index += 1
+            continue
+
+        if char == '"' and not in_single_quote:
+            in_double_quote = not in_double_quote
+            body.append(char)
+            index += 1
+            continue
+
+        if not in_single_quote and not in_double_quote:
+            if char == '(':
+                depth += 1
+            elif char == ')':
+                depth -= 1
+                if depth == 0:
+                    return ''.join(body), index
+
+        body.append(char)
+        index += 1
+
+    return None, None
+
+
 def starts_unsupported_control_block(command: str):
     return bool(re.match(r'^\s*(?:if|for|while|until|case|select)\b', command))
 

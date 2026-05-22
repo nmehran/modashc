@@ -116,6 +116,15 @@ class CompileRegressionTestCase(unittest.TestCase):
 
             project.assert_compiled_matches(self, "main.sh")
 
+    def test_non_source_array_words_match_bash(self):
+        with ScriptProject() as project:
+            project.write("main.sh", textwrap.dedent("""\
+                tokens=(source ./dep.sh)
+                printf '%s:%s\n' "${tokens[0]}" "${tokens[1]}"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
     def test_exact_literal_for_loop_sources_match_bash(self):
         with ScriptProject() as project:
             project.write("a.sh", 'echo "dep:a:$dep"\n')
@@ -850,6 +859,34 @@ class CompileRegressionTestCase(unittest.TestCase):
             "case POSIX class pattern": (
                 'ENV=5\ncase "$ENV" in\n  [[:digit:]]) source ./prod.sh ;;\nesac\n',
                 'case "$ENV" in',
+            ),
+            "subshell source": (
+                '(source ./dep.sh)\n',
+                '(source ./dep.sh)',
+            ),
+            "subshell dot source": (
+                '(. ./dep.sh)\n',
+                '(. ./dep.sh)',
+            ),
+            "separated subshell source": (
+                'echo before; ( source ./dep.sh ); echo after\n',
+                '( source ./dep.sh )',
+            ),
+            "command substitution source": (
+                'echo "$(source ./dep.sh)"\n',
+                'echo "$(source ./dep.sh)"',
+            ),
+            "process substitution source": (
+                'cat <(source ./dep.sh)\n',
+                'cat <(source ./dep.sh)',
+            ),
+            "backtick substitution source": (
+                'echo `source ./dep.sh`\n',
+                'echo `source ./dep.sh`',
+            ),
+            "arithmetic nested source": (
+                'echo $(( $(source ./dep.sh) + 1 ))\n',
+                'echo $(( $(source ./dep.sh) + 1 ))',
             ),
             "command builtin source": (
                 'command source ./dep.sh\n',

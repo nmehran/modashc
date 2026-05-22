@@ -1,33 +1,16 @@
 import os
 import re
-from collections import defaultdict
 
-from methods.regex.utilities import extract_bash_commands, strip_matching_quotes, replace_substring
+from methods.regex.utilities import strip_matching_quotes, replace_substring
 from methods.regex.patterns import (
     BASENAME_PATTERN,
-    CD_PATTERN,
     DIRNAME_PATTERN,
     REALPATH_PATTERN,
-    SOURCE_PATTERN,
-    VARIABLE_ASSIGNMENT_PATTERN,
     VARIABLE_NAME_PATTERN,
     VARIABLE_REFERENCE_PATTERN,
 )
-from methods.source_diagnostics import unsupported_source_error, with_source_diagnostic
-from methods.source_resolver import (
-    SourceResolver,
-    UnsupportedSourceError,
-    contains_source_command,
-    ends_unsupported_control_block,
-    extract_heredoc_delimiters,
-    is_heredoc_end,
-    is_unsupported_control_flow_source,
-    is_unsupported_dynamic_source,
-    starts_unsupported_control_block,
-)
+from methods.source_resolver import SourceResolver
 from methods.shell_line import get_commands
-
-RECURSION_LIMIT = 2
 
 
 def validate_path(path):
@@ -51,18 +34,6 @@ def validate_path(path):
         return False
 
     return True
-
-
-def define_variable(var_match, context):
-    """Define a variable based on known context."""
-
-    var_name = var_match.group(2).strip()
-    var_value = var_match.group(4).strip()
-
-    # substitute known variables from context
-    var_value = resolve_variable_references(var_value, context)
-
-    return var_name, strip_matching_quotes(var_value)
 
 
 def resolve_shell_path_commands(path_command: str, base_dir=None):
@@ -180,10 +151,6 @@ def resolve_command(command, context):
     return command, is_valid_path
 
 
-def resolve_cd_path(cd_match: tuple[str, str]):
-    return cd_match[0][1]
-
-
 def change_directory(path: str, context: dict) -> str:
     """Change the current directory based on a cd command."""
 
@@ -209,18 +176,6 @@ def change_directory(path: str, context: dict) -> str:
     return new_path
 
 
-def enforce_recursion_limit(seen_sources, script_path, references):
-    referrer = references[-1]
-    seen_sources[script_path][referrer] += 1
-
-    if seen_sources[script_path][referrer] >= RECURSION_LIMIT and script_path in references:
-        error_message = (f"Maximum recursion limit of {RECURSION_LIMIT} reached.  "
-                         f"Ensure there are no circular dependencies and try again:"
-                         f"\nReferrer: {referrer}\nCurrent-Script: {script_path}")
-        raise RecursionError(error_message)
-    return
-
-
 def is_relative_path(path: str):
     # Strip matching single and double quotes from the start and end of the path
     stripped_path = strip_matching_quotes(path)
@@ -243,172 +198,19 @@ def resolve_path(source_path: str, context: dict):
 SOURCE_RESOLVER = SourceResolver(resolve_path, resolve_variable_references, get_commands)
 
 
-def extract_sources_and_variables(script_path, context, sources, seen_sources: dict, references=None, mode="executable"):
-    """Extract source statements and global variables from a shell script."""
-
-    if not validate_path(script_path):
-        raise FileNotFoundError(f"Error: File does not exist - {script_path}")
-
-    if script_path not in context['source_declarations']:
-        context['source_declarations'][script_path] = defaultdict(list)
-
-    if script_path not in seen_sources:
-        seen_sources[script_path] = defaultdict(int)
-
-    if references is None:
-        references = (script_path,)
-    else:
-        enforce_recursion_limit(seen_sources, script_path, references)
-        references = (*references, script_path)
-
-    previous_bash_source = context['vars'].get('BASH_SOURCE')
-    context['vars']['BASH_SOURCE'] = os.path.abspath(script_path)
-
-    try:
-        control_depth = 0
-        active_heredocs = []
-        with open(script_path, 'r') as file:
-            for num, line in enumerate(file):
-                if active_heredocs:
-                    if is_heredoc_end(line, active_heredocs[0]):
-                        active_heredocs.pop(0)
-                    continue
-
-                for command in get_commands(line):
-                    # Skip commands that are quoted strings rather than shell commands.
-                    if not command or re.match(r'\s*["\']', command):
-                        continue
-
-                    command_control_depth = control_depth
-                    context['vars']['BASH_SOURCE'] = os.path.abspath(script_path)
-                    resolved_command = resolve_command(command, context)[0]
-
-                    cd_match = extract_bash_commands('cd', resolved_command, CD_PATTERN, strip=False)
-                    if cd_match:
-                        cd_path = resolve_cd_path(cd_match).strip()
-                        change_directory(cd_path, context)
-
-                    # Match variable definitions
-                    var_match = VARIABLE_ASSIGNMENT_PATTERN.match(command)
-                    if var_match:
-                        var_name, var_value = define_variable(var_match, context)
-                        resolved_command, _ = resolve_command(var_value, context)
-                        context['vars'][var_name] = resolved_command
-
-                    resolved_sources = []
-
-                    # Match source statements
-                    source_matches = SOURCE_PATTERN.findall(command)
-                    command_contains_source = bool(source_matches) or contains_source_command(command)
-                    if command_contains_source and mode == "executable" and is_unsupported_control_flow_source(
-                        command,
-                        command_control_depth,
-                    ):
-                        raise unsupported_source_error(
-                            script_path,
-                            num,
-                            line,
-                            command,
-                            "unsupported.source.control-flow",
-                            "unsupported source in control flow",
-                            "Move source resolution outside unsupported control flow or wait for IR evaluation support.",
-                        )
-
-                    for _, source_command, source_path in source_matches:
-                        source_site = f"{source_command} {source_path.strip()}"
-                        try:
-                            resolved_source = SOURCE_RESOLVER.resolve_source_expression(source_path, source_site, context)
-                        except UnsupportedSourceError as exc:
-                            raise with_source_diagnostic(
-                                exc,
-                                script_path,
-                                num,
-                                line,
-                                source_site,
-                                "unsupported.source.resolution",
-                            ) from exc
-                        if resolved_source:
-                            resolved_sources.append(resolved_source)
-                        elif mode == "executable":
-                            raise unsupported_source_error(
-                                script_path,
-                                num,
-                                line,
-                                source_site,
-                                "unsupported.source.unresolved",
-                                "unsupported unresolved source",
-                                "Use a statically resolvable source path or context mode.",
-                            )
-
-                    try:
-                        resolved_sources.extend(SOURCE_RESOLVER.resolve_command_level_sources(command, context, mode))
-                    except UnsupportedSourceError as exc:
-                        raise with_source_diagnostic(
-                            exc,
-                            script_path,
-                            num,
-                            line,
-                            command,
-                            "unsupported.source.command-resolution",
-                        ) from exc
-
-                    if command_contains_source and not source_matches and not resolved_sources and mode == "executable":
-                        raise unsupported_source_error(
-                            script_path,
-                            num,
-                            line,
-                            command,
-                            "unsupported.source.command-unresolved",
-                            "unsupported unresolved source command",
-                            "Use a direct source command or a supported dynamic source expression.",
-                        )
-
-                    if not resolved_sources and not source_matches and is_unsupported_dynamic_source(command):
-                        raise unsupported_source_error(
-                            script_path,
-                            num,
-                            line,
-                            command,
-                            "unsupported.source.dynamic",
-                            "unsupported dynamic source command",
-                            "Keep dynamic source discovery inside the documented safe subset.",
-                        )
-
-                    for resolved_source in resolved_sources:
-                        context['source_declarations'][script_path][num].append(resolved_source)
-                        extract_sources_and_variables(
-                            resolved_source.path, context, sources, seen_sources, references, mode=mode
-                        )
-                        context['vars']['BASH_SOURCE'] = os.path.abspath(script_path)
-                        if seen_sources[resolved_source.path][script_path] == 1:
-                            sources.append(resolved_source.path)
-
-                    if starts_unsupported_control_block(command):
-                        control_depth += 1
-                    elif ends_unsupported_control_block(command):
-                        control_depth = max(0, control_depth - 1)
-
-                active_heredocs.extend(extract_heredoc_delimiters(line))
-    finally:
-        if previous_bash_source is None:
-            context['vars'].pop('BASH_SOURCE', None)
-        else:
-            context['vars']['BASH_SOURCE'] = previous_bash_source
-
-    return sources
-
-
 def get_sources(entrypoint, mode="executable"):
-    sources = []
+    from methods.compile import context_from_source_events, context_paths_from_source_events
+    from methods.source_evaluator import SourceEvaluator
 
-    # Initialize context with the entry point
-    current_directory = os.path.abspath(os.path.dirname(entrypoint))
-    context = {
-        'vars': {'0': os.path.abspath(entrypoint)},
-        'current_directory': current_directory,
-        'source_declarations': {}}
-    change_directory(current_directory, context)
+    if not validate_path(entrypoint):
+        raise FileNotFoundError(f"Error: File does not exist - {entrypoint}")
 
-    extract_sources_and_variables(entrypoint, context, sources, seen_sources={}, mode=mode)
-    sources.append(entrypoint)
+    entrypoint = os.path.abspath(entrypoint)
+    evaluation = SourceEvaluator(mode=mode).evaluate(entrypoint)
+    sources = context_paths_from_source_events(entrypoint, evaluation.events)
+    context = context_from_source_events(evaluation.events, evaluation.disabled_sources)
+    context.update({
+        'vars': {'0': entrypoint},
+        'current_directory': os.path.dirname(entrypoint),
+    })
     return sources, context

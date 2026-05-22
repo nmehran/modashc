@@ -120,6 +120,8 @@ class LineParserFrontend:
         source_spans = []
 
         for match in SOURCE_PATTERN.finditer(line):
+            if self._source_match_is_nested_shell(match):
+                continue
             separator, command_name, arguments = match.groups()
             if not command_name:
                 continue
@@ -154,6 +156,10 @@ class LineParserFrontend:
             nodes.append(self._command_node(script_path, line_number, line, command))
 
         return sorted(nodes, key=lambda node: node.location.column)
+
+    @staticmethod
+    def _source_match_is_nested_shell(match):
+        return match.group(0).lstrip().startswith('$(')
 
     def _command_node(self, script_path: Path, line_number: int, line: str, command: str):
         location = SourceLocation(script_path, line_number, self._command_column(line, command))

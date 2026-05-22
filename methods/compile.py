@@ -8,6 +8,7 @@ from methods.source_resolver import (
     ResolvedSource,
     UnsupportedSourceError,
     contains_source_command,
+    contains_nested_source_command,
     extract_heredoc_delimiters,
     is_heredoc_end,
 )
@@ -326,7 +327,7 @@ def assert_no_unresolved_source_sites(content: str):
         stripped_line = line.strip()
         if not stripped_line or stripped_line.startswith("#"):
             continue
-        if SOURCE_PATTERN.findall(line) or contains_source_command(line):
+        if SOURCE_PATTERN.findall(line) or contains_source_command(line) or contains_nested_source_command(line):
             raise UnsupportedSourceError(f"unresolved source remained in executable output: {stripped_line}")
 
         active_heredocs.extend(extract_heredoc_delimiters(line))

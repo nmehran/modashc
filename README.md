@@ -116,8 +116,8 @@ python modashc.py test/sample_dir/script_main.sh sample-runnable.sh --mode execu
   shell options, source events, and structured unsupported diagnostics.
 - `methods/source_resolver.py`: source command detection, heredoc guards, safe
   dynamic source resolvers, and unsupported-source classification.
-- `methods/sources.py`: legacy path-resolution helpers still used by the
-  evaluator while traversal moves onto IR.
+- `methods/sources.py`: path-resolution helpers and the `get_sources()`
+  compatibility wrapper over source-effect evaluation.
 - `methods/functions.py`: function-call extraction utility.
 - `test/support.py`: real temporary shell-project harness used by regression
   tests.
@@ -142,8 +142,8 @@ Design notes live in [docs](docs/README.md).
 
 ## Current Roadmap
 
-- Case statements with exact subjects and mutually exclusive source arms.
 - Modeled function calls whose source effects are bounded and exact.
+- Broader conditional predicates, glob semantics, and case pattern semantics.
 
 ## Installation
 
