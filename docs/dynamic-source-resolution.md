@@ -370,7 +370,8 @@ unsupported forms:
   frontend cannot preserve exact nested locations.
 - Branch-divergent cwd, variables, arrays, or shell options followed by later
   source resolution that depends on that divergent state.
-- Case-driven source selection.
+- Case subjects or arm patterns outside the exact modeled case subset.
+- Case fallthrough terminators, `;&` and `;;&`.
 
 These are not merely more dynamic resolvers. They require control-flow and
 multi-result semantics, and they should be designed separately.
@@ -412,6 +413,8 @@ scope:
   source globs are implemented for one-match cases only.
 - Branch-aware `if` / `elif` / `else` source lowering is implemented for the
   side-effect-free predicate subset and fail-closed branch-state merge.
+- Exact `case` source lowering is planned next for known scalar subjects,
+  mutually exclusive arms, and no-op unreachable source sites.
 - Executable mode fails before output when unsupported source forms would leave
   live runtime `source` commands.
 

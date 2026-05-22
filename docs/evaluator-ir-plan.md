@@ -320,7 +320,7 @@ Unsupported but practical predicates to track:
 
 ### Case Statements
 
-Case support should start with exact subject values:
+Case support starts with exact subject values:
 
 ```bash
 case "$ENV" in
@@ -329,9 +329,31 @@ case "$ENV" in
 esac
 ```
 
-If the subject is unknown, context mode may record mutually exclusive arms as
-context-only dependencies. Executable mode should reject until it can preserve
-runtime branching.
+Supported subjects:
+
+- literal values
+- known scalar variables
+- known environment variables
+- known assignments before the `case`
+
+Supported arm patterns:
+
+- literal patterns
+- quoted literal patterns
+- alternates such as `prod|stage`
+- default `*`
+- ordinary Bash case globs using `*`, `?`, or bracket classes, when the subject
+  is exact
+
+Executable mode evaluates the first matching arm, applies its source-relevant
+state, and neutralizes source sites in unreachable arms. If no arm matches, the
+case contributes no source-relevant state. Context mode may record all arm
+dependencies with mutually exclusive provenance because the output is
+readable-first.
+
+Executable mode rejects unknown or runtime-dynamic subjects, fallthrough
+terminators (`;&`, `;;&`), extglob-dependent patterns, and case bodies whose
+source-relevant behavior cannot be modeled.
 
 ### Globs
 
@@ -499,7 +521,8 @@ that divergent state; then executable mode fails before output.
 ### Phase 8: Case Statements
 
 Support exact subjects and mutually exclusive source arms. Reuse the branch
-state merge model from `if` blocks.
+state merge model from `if` blocks. Source sites in non-matching arms should be
+replaced with no-ops in executable output.
 
 ### Phase 9: Modeled Functions
 
