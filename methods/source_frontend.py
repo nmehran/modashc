@@ -6,7 +6,12 @@ from typing import Protocol
 from methods.regex.patterns import SOURCE_PATTERN
 from methods.regex.utilities import remove_comments
 from methods.source_effects import RawCommand, ScriptIR, SourceLocation, SourceSite
-from methods.source_resolver import extract_heredoc_delimiters, is_heredoc_end
+from methods.source_resolver import (
+    contains_source_command,
+    extract_heredoc_delimiters,
+    is_heredoc_end,
+    source_command_index,
+)
 from methods.shell_line import get_commands
 
 
@@ -65,7 +70,12 @@ class LineParserFrontend:
             source_spans.append(match.span())
 
         for command in get_commands(line):
-            if not command or any(command in line[start:end] for start, end in source_spans):
+            if not command:
+                continue
+            if any(command in line[start:end] for start, end in source_spans):
+                continue
+            if contains_source_command(command):
+                nodes.append(self._fallback_source_site(script_path, line_number, line, command))
                 continue
             column = line.find(command) + 1
             nodes.append(RawCommand(
@@ -74,3 +84,20 @@ class LineParserFrontend:
             ))
 
         return sorted(nodes, key=lambda node: node.location.column)
+
+    @staticmethod
+    def _fallback_source_site(script_path: Path, line_number: int, line: str, command: str):
+        words = command.split()
+        source_index = source_command_index(command)
+        command_name = words[source_index] if source_index is not None and source_index < len(words) else "source"
+        command_offset = line.find(command)
+        source_offset = command.find(command_name)
+        expression = command[source_offset + len(command_name):].strip() if source_offset >= 0 else ""
+        column = command_offset + source_offset + 1 if command_offset >= 0 and source_offset >= 0 else 1
+
+        return SourceSite(
+            location=SourceLocation(script_path, line_number, max(column, 1)),
+            text=command,
+            command_name=command_name,
+            source_expression=expression,
+        )

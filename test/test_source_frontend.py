@@ -81,6 +81,29 @@ class LineParserFrontendTestCase(unittest.TestCase):
         self.assertEqual([node.source_expression for node in source_sites], ["./dep.sh"])
         self.assertEqual([type(node) for node in ir.nodes], [RawCommand, RawCommand, SourceSite])
 
+    def test_finds_source_sites_inside_future_control_flow_fixtures(self):
+        ir = self.parse("""\
+            for file in ./plugins/*.sh; do source "$file"; done
+            if [[ -f ./local.sh ]]; then
+              source ./local.sh
+            fi
+            case "$ENV" in
+              prod) source ./prod.sh ;;
+              dev) source ./dev.sh ;;
+            esac
+            deps=(./base.sh ./feature.sh)
+            source "${deps[0]}"
+            """)
+
+        self.assertEqual([site.source_expression for site in ir.source_sites], [
+            '"$file"',
+            "./local.sh",
+            "./prod.sh",
+            "./dev.sh",
+            '"${deps[0]}"',
+        ])
+        self.assertEqual([site.location.line for site in ir.source_sites], [1, 3, 6, 7, 10])
+
 
 if __name__ == "__main__":
     unittest.main()
