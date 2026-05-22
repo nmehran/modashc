@@ -2,14 +2,13 @@ import os
 import re
 
 from methods.regex.patterns import SOURCE_PATTERN
-from methods.sources import (
+from methods.source_resolver import (
     UnsupportedSourceError,
     contains_source_command,
     extract_heredoc_delimiters,
-    get_sources,
     is_heredoc_end,
-    validate_path,
 )
+from methods.sources import get_sources, validate_path
 
 SET_SHEBANG = "#!/bin/bash"
 

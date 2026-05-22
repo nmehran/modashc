@@ -47,7 +47,7 @@ class SourceRegressionTestCase(unittest.TestCase):
         )
 
     def test_command_wrapped_source_is_detected_as_source_command(self):
-        from methods.sources import contains_source_command
+        from methods.source_resolver import contains_source_command
 
         self.assertTrue(contains_source_command('command source ./dep.sh'))
         self.assertTrue(contains_source_command('command -p source ./dep.sh'))
@@ -63,7 +63,7 @@ class SourceRegressionTestCase(unittest.TestCase):
         self.assertFalse(contains_source_command('FOO=bar echo source ./dep.sh'))
 
     def test_heredoc_detection_ignores_quotes_and_arithmetic(self):
-        from methods.sources import extract_heredoc_delimiters
+        from methods.source_resolver import extract_heredoc_delimiters
 
         self.assertEqual([item.value for item in extract_heredoc_delimiters('cat <<EOF')], ['EOF'])
         self.assertEqual([item.value for item in extract_heredoc_delimiters("cat <<'EOF'")], ['EOF'])
