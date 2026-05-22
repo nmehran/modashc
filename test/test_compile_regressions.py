@@ -876,6 +876,23 @@ class CompileRegressionTestCase(unittest.TestCase):
 
             project.assert_compiled_matches(self, "main.sh")
 
+        with ScriptProject() as project:
+            project.write("outer.sh", 'echo "outer redirected:$DEP"\n')
+            project.write("inner.sh", 'echo "inner redirected:$DEP"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                DEP=./outer.sh
+                load_dep() {
+                  local DEP=./inner.sh
+                  source "$DEP"
+                } > out.txt
+
+                load_dep
+                cat out.txt
+                source "$DEP"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
     def test_duplicate_sources_execute_each_time_bash_would_execute_them(self):
         with ScriptProject() as project:
             project.write("dep.sh", 'echo "dep"\n')
@@ -1033,6 +1050,10 @@ class CompileRegressionTestCase(unittest.TestCase):
             "function return before source": (
                 'load_dep() { return 0; source ./dep.sh; }\nload_dep\n',
                 'return 0',
+            ),
+            "function trailing command after definition": (
+                'load_dep() { source ./dep.sh; }; load_dep\n',
+                'load_dep() { source ./dep.sh; }; load_dep',
             ),
             "command builtin source": (
                 'command source ./dep.sh\n',

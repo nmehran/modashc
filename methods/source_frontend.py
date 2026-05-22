@@ -322,8 +322,8 @@ class LineParserFrontend:
 
         body_lines = []
         before_close, has_close, trailing = self._split_function_closing_brace(first_tail)
-        if trailing.strip().strip(";"):
-            return None, line_index + 1
+        if not self._function_close_tail_supported(trailing):
+            return self._unsupported_function_node(script_path, line_number, code_line), line_index + 1
         if before_close.strip():
             body_lines.append((first_tail_line_number, before_close.strip()))
         if has_close:
@@ -355,8 +355,9 @@ class LineParserFrontend:
 
             before_close, has_close, trailing = self._split_function_closing_brace(body_code_line)
             if has_close:
-                if trailing.strip().strip(";"):
-                    return None, line_index + 1
+                if not self._function_close_tail_supported(trailing):
+                    raw_text = "\n".join(lines[line_index:body_index + 1])
+                    return self._unsupported_function_node(script_path, line_number, raw_text), body_index + 1
                 if before_close.strip():
                     body_lines.append((body_line_number, before_close.strip()))
                 return FunctionDef(
@@ -371,6 +372,25 @@ class LineParserFrontend:
             body_index += 1
 
         return None, line_index + 1
+
+    @staticmethod
+    def _unsupported_function_node(script_path: Path, line_number: int, text: str):
+        return RawCommand(
+            location=SourceLocation(script_path, line_number, 1),
+            text=text.strip(),
+        )
+
+    @staticmethod
+    def _function_close_tail_supported(trailing: str):
+        tail = re.sub(r'^(?:;\s*)+', '', trailing.strip())
+        if not tail:
+            return True
+
+        commands = get_commands(tail)
+        if len(commands) != 1:
+            return False
+
+        return bool(re.match(r'^(?:\d*(?:<>|>>|>|<|>\||<<-?|<<<)|&>>?)', commands[0].strip()))
 
     @staticmethod
     def _next_function_opening_line(lines: list[str], line_index: int):
