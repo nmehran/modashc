@@ -9,7 +9,7 @@
 - **Resolve Shell Functions**: Handles shell functions like `$(dirname ...)`, `$(basename ...)`, and `$(realpath ...)`.
 - **Variable Substitution**: Substitutes variables using a provided context and environment variables.
 - **Error Handling**: Validates paths and provides warnings for potential issues like unresolved variables.
-- **Extract Components**: Extracts global variables, function definitions, and source statements from scripts.
+- **Source Graph Rendering**: Discovers source relationships and renders them for either readable context or executable output.
 - **Dependency Detection**: 
   - **Static Dependencies**: Automatically detects and includes statically defined dependencies.
   - **Relative Dependencies**: Resolves dependencies specified using relative paths.
@@ -23,7 +23,6 @@
 - **Limited Shell Function Support**: While it supports common shell functions like `$(dirname ...)`, `$(basename ...)`, and `$(realpath ...)`, other custom or less common shell functions may not be resolved correctly.
 - **Variable Resolution**: `modashc` resolves variables based on the provided context and environment. Unresolved or dynamically generated variables at runtime may not be accurately substituted.
 - **Error Reporting**: The tool provides basic warnings and error messages. However, detailed debugging information for complex scripts might require manual inspection.
-- **Function Definitions**: The extraction of function definitions assumes standard Bash syntax. Non-standard or malformed function definitions may not be correctly identified and extracted.
 - **File System Changes**: `modashc` tracks the working directory during script processing using heuristics.  However, it may not accurately resolve `cd` commands called using unconventional or complex patterns.
 ## Installation
 
@@ -56,10 +55,14 @@ python modashc.py scripts/main.sh runnable_output.sh --mode executable
 
 ## How It Works
 
+### Design Docs
+
+Detailed behavior specs live in [docs](docs/README.md).
+
 ### File Structure
 
 - `methods/sources.py`: Contains functions to resolve paths, variables, and shell functions.
-- `methods/compile.py`: Contains functions to extract script components, merge files, and write the final output.
+- `methods/compile.py`: Contains the context and executable renderers.
 - `modashc.py`: Entry point for the CLI tool.
 
 ### Optional Setup Helper
@@ -74,9 +77,9 @@ Contributions are welcome! Please submit a pull request or open an issue to cont
 
 ## Features Roadmap
 
-### Runtime Dependency Resolution
-- [ ] Implement a secure, sandboxed shell interpreter
-  - [ ] Conduct vulnerability assessments
+### Dynamic Source Resolution
+- [ ] Implement a Python-only resolver registry for common dynamic source idioms
+- [ ] Keep unsupported source forms fail-closed with explicit diagnostics
 
 ### Performance Optimization
 - [ ] Downstream codebase written in C++
