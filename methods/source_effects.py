@@ -47,6 +47,7 @@ class StateSnapshot:
     cwd: Path
     variables: dict[str, str] = field(default_factory=dict)
     arrays: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    associative_arrays: dict[str, dict[str, str]] = field(default_factory=dict)
     shell_options: frozenset[str] = field(default_factory=frozenset)
     glob_options: frozenset[str] = field(default_factory=frozenset)
     bash_source_stack: tuple[Path, ...] = field(default_factory=tuple)
@@ -76,9 +77,17 @@ class DisabledSourceSite:
 
 
 @dataclass(frozen=True)
+class LineReplacement:
+    location: SourceLocation
+    old: str
+    new: str
+
+
+@dataclass(frozen=True)
 class EvaluationResult:
     events: tuple[SourceEvent, ...]
     disabled_sources: tuple[DisabledSourceSite, ...] = ()
+    line_replacements: tuple[LineReplacement, ...] = ()
     diagnostics: tuple[Diagnostic, ...] = ()
     final_state: StateSnapshot | None = None
 
@@ -106,6 +115,10 @@ class ArrayAssignment(IRNode):
     name: str
     values: tuple[str, ...]
     is_exact: bool = True
+    operation: str = "assign"
+    index: str | None = None
+    associative_values: tuple[tuple[str, str], ...] = ()
+    raw_values: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -131,6 +144,15 @@ class ForLoop(IRNode):
     body: tuple[IRNode, ...]
     words_text: str
     is_exact: bool = True
+
+
+@dataclass(frozen=True)
+class WhileLoop(IRNode):
+    keyword: str
+    condition: str
+    body: tuple[IRNode, ...]
+    trailing: str = ""
+    end_location: SourceLocation | None = None
 
 
 @dataclass(frozen=True)
@@ -182,6 +204,8 @@ class ScriptIR:
                 elif isinstance(node, FunctionDef):
                     sites.extend(collect(node.body))
                 elif isinstance(node, ForLoop):
+                    sites.extend(collect(node.body))
+                elif isinstance(node, WhileLoop):
                     sites.extend(collect(node.body))
                 elif isinstance(node, IfBlock):
                     for branch in node.branches:

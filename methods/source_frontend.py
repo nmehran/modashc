@@ -21,6 +21,7 @@ from methods.source_effects import (
     SetCommand,
     SourceLocation,
     SourceSite,
+    WhileLoop,
 )
 from methods.source_resolver import (
     contains_source_command,
@@ -30,13 +31,15 @@ from methods.source_resolver import (
     is_heredoc_end,
     parse_shell_words,
     parse_shell_words_preserving_quotes,
+    strip_shell_word_quotes,
     starts_unsupported_control_block,
     source_command_index,
     UnsupportedSourceError,
 )
 from methods.shell_line import get_commands
 
-ARRAY_ASSIGNMENT_PATTERN = re.compile(r'^(?:declare\s+-a\s+)?([a-zA-Z_]\w*)=\((.*)\)$')
+ARRAY_ASSIGNMENT_PATTERN = re.compile(r'^(?:(declare)\s+(-[aA])\s+)?([a-zA-Z_]\w*)(\+?)=\((.*)\)$')
+ARRAY_INDEX_ASSIGNMENT_PATTERN = re.compile(r'^([a-zA-Z_]\w*)\[([^\]]+)\](\+?)=(.*)$')
 FUNCTION_HEADER_PATTERN = re.compile(
     r'^\s*(?:(?:function\s+([a-zA-Z_]\w*)(?:\s*\(\s*\))?)|([a-zA-Z_]\w*)\s*\(\s*\))\s*\{\s*(.*)$'
 )
@@ -46,8 +49,10 @@ FUNCTION_SIGNATURE_PATTERN = re.compile(
 FUNCTION_OPEN_PATTERN = re.compile(r'^\s*\{\s*(.*)$')
 FOR_LOOP_PATTERN = re.compile(r'^\s*for\s+([a-zA-Z_]\w*)\s+in\s+(.+?)\s*;\s*do(?:\s*(.*))?$')
 FOR_HEADER_PATTERN = re.compile(r'^\s*for\s+([a-zA-Z_]\w*)\s+in\s+(.+?)\s*$')
+WHILE_LOOP_PATTERN = re.compile(r'^\s*(while|until)\s+(.+?)\s*;\s*do(?:\s*(.*))?$')
+WHILE_HEADER_PATTERN = re.compile(r'^\s*(while|until)\s+(.+?)\s*$')
 DO_LINE_PATTERN = re.compile(r'^\s*do\s*$')
-INLINE_DONE_PATTERN = re.compile(r'^(.*?)(?:;\s*)?done\s*$')
+INLINE_DONE_PATTERN = re.compile(r'^(.*?)(?:;\s*)?done(?:\s+(.*))?$')
 IF_COMMAND_PATTERN = re.compile(r'^\s*if\s+(.+?)\s*$')
 ELIF_COMMAND_PATTERN = re.compile(r'^\s*elif\s+(.+?)\s*$')
 THEN_COMMAND_PATTERN = re.compile(r'^\s*then(?:\s+(.+?))?\s*$')
@@ -130,6 +135,12 @@ class LineParserFrontend:
             for_loop, next_line_index = self._parse_for_loop(script_path, line_number, code_line, lines, line_index)
             if for_loop:
                 nodes.append(for_loop)
+                line_index = next_line_index
+                continue
+
+            while_loop, next_line_index = self._parse_while_loop(script_path, line_number, code_line, lines, line_index)
+            if while_loop:
+                nodes.append(while_loop)
                 line_index = next_line_index
                 continue
 
@@ -876,10 +887,107 @@ class LineParserFrontend:
             is_exact=is_exact,
         ), next_line_index
 
+    def _parse_while_loop(self, script_path: Path, line_number: int, code_line: str, lines: list[str],
+                          line_index: int):
+        match = WHILE_LOOP_PATTERN.match(code_line)
+        do_line_index = line_index
+        if match:
+            keyword, condition, inline_body = match.groups()
+        else:
+            match = WHILE_HEADER_PATTERN.match(code_line)
+            if not match or line_index + 1 >= len(lines):
+                return None, line_index + 1
+
+            do_line_index = line_index + 1
+            do_code_line = remove_comments(
+                lines[do_line_index],
+                ['#'],
+                exclusion_patterns=[r'\#\!.*'],
+                escape_exclusions=False,
+            )
+            do_match = DO_LINE_PATTERN.match(do_code_line)
+            if not do_match:
+                return None, line_index + 1
+
+            keyword, condition = match.groups()
+            inline_body = ""
+
+        if inline_body is None:
+            inline_body = ""
+
+        if inline_body.strip() == "":
+            body_start_index = do_line_index + 1
+        else:
+            body_start_index = do_line_index
+
+        if body_start_index <= line_index:
+            body_start_index = line_index + 1
+
+        body_lines = []
+        trailing = ""
+        end_line_number = line_number
+        next_line_index = body_start_index
+
+        if inline_body is not None and inline_body.strip():
+            done_match = INLINE_DONE_PATTERN.match(inline_body.strip())
+            if not done_match:
+                return None, line_index + 1
+            body_lines.append((do_line_index + 1, done_match.group(1).strip()))
+            trailing = (done_match.group(2) or "").strip()
+            end_line_number = do_line_index + 1
+            next_line_index = do_line_index + 1
+        else:
+            body_index = body_start_index
+            active_heredocs = []
+            control_depth = 0
+            while body_index < len(lines):
+                body_line_number = body_index + 1
+                body_line = lines[body_index]
+
+                if active_heredocs:
+                    body_lines.append((body_line_number, body_line))
+                    if is_heredoc_end(body_line, active_heredocs[0]):
+                        active_heredocs.pop(0)
+                    body_index += 1
+                    continue
+
+                body_code_line = remove_comments(
+                    body_line,
+                    ['#'],
+                    exclusion_patterns=[r'\#\!.*'],
+                    escape_exclusions=False,
+                )
+                stripped_body_line = body_code_line.strip()
+                done_match = re.match(r'^done(?:\s+(.*))?$', stripped_body_line)
+                if done_match and control_depth == 0:
+                    trailing = (done_match.group(1) or "").strip()
+                    end_line_number = body_line_number
+                    next_line_index = body_index + 1
+                    break
+
+                body_lines.append((body_line_number, body_code_line))
+                active_heredocs.extend(extract_heredoc_delimiters(body_line))
+                control_depth = self._next_control_depth(body_code_line, control_depth)
+                body_index += 1
+            else:
+                return None, line_index + 1
+
+        column = self._command_column(code_line, keyword)
+        return WhileLoop(
+            location=SourceLocation(script_path, line_number, column),
+            text=code_line.strip(),
+            keyword=keyword,
+            condition=condition.strip(),
+            body=self._parse_loop_body(script_path, body_lines),
+            trailing=trailing,
+            end_location=SourceLocation(script_path, end_line_number, 1),
+        ), next_line_index
+
     @staticmethod
     def _parse_loop_words(words_text: str):
         try:
-            return tuple(parse_shell_words(words_text)), True
+            raw_words = parse_shell_words_preserving_quotes(words_text)
+            return tuple(strip_shell_word_quotes(word) for word in raw_words), True
         except UnsupportedSourceError:
             return (), False
 
@@ -903,24 +1011,60 @@ class LineParserFrontend:
     @staticmethod
     def _array_assignment_node(location: SourceLocation, command: str):
         match = ARRAY_ASSIGNMENT_PATTERN.match(command)
+        if match:
+            _, flag, name, append_operator, values_text = match.groups()
+            is_exact = True
+            associative_values = ()
+            try:
+                raw_values = tuple(parse_shell_words_preserving_quotes(values_text))
+                values = tuple(strip_shell_word_quotes(value) for value in raw_values)
+            except UnsupportedSourceError:
+                raw_values = ()
+                values = ()
+                is_exact = False
+
+            if flag == "-A" and is_exact:
+                associative_values = LineParserFrontend._parse_associative_array_values(raw_values)
+                is_exact = bool(associative_values) or not raw_values
+
+            return ArrayAssignment(
+                location=location,
+                text=command,
+                name=name,
+                values=values,
+                is_exact=is_exact,
+                operation="append" if append_operator else "assign",
+                associative_values=associative_values,
+                raw_values=raw_values,
+            )
+
+        match = ARRAY_INDEX_ASSIGNMENT_PATTERN.match(command)
         if not match:
             return None
 
-        name, values_text = match.groups()
-        is_exact = True
-        try:
-            values = tuple(parse_shell_words(values_text))
-        except UnsupportedSourceError:
-            values = ()
-            is_exact = False
+        name, index, append_operator, value = match.groups()
 
         return ArrayAssignment(
             location=location,
             text=command,
             name=name,
-            values=values,
-            is_exact=is_exact,
+            values=(strip_shell_word_quotes(value.strip()),),
+            is_exact=True,
+            operation="append" if append_operator else "set",
+            index=index.strip(),
+            raw_values=(value.strip(),),
         )
+
+    @staticmethod
+    def _parse_associative_array_values(raw_values):
+        pairs = []
+        for raw_value in raw_values:
+            match = re.match(r'^\[([^\]]+)\]=(.*)$', raw_value, re.S)
+            if not match:
+                return ()
+            key, value = match.groups()
+            pairs.append((strip_shell_word_quotes(key.strip()), strip_shell_word_quotes(value.strip())))
+        return tuple(pairs)
 
     @staticmethod
     def _assignment_node(location: SourceLocation, command: str):

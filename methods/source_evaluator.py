@@ -21,24 +21,30 @@ from methods.source_effects import (
     FunctionDef,
     ForLoop,
     IfBlock,
+    LineReplacement,
     OccurrenceModel,
     RawCommand,
     SetCommand,
     SourceEvent,
     SourceSite,
+    SourceLocation,
     StateSnapshot,
+    WhileLoop,
 )
 from methods.source_frontend import LineParserFrontend, ParserFrontend
 from methods.source_resolver import (
     UnsupportedSourceError,
     contains_source_command,
     contains_nested_source_command,
+    extract_exact_command_substitution,
     expand_glob_word,
+    has_unsupported_shell_operator,
     has_unquoted_brace_expansion,
     has_unquoted_extglob,
     contains_unquoted_token,
     has_unquoted_glob,
     parse_shell_words_preserving_quotes,
+    strip_shell_word_quotes,
 )
 from methods.sources import (
     SOURCE_RESOLVER,
@@ -50,11 +56,13 @@ from methods.sources import (
 from methods.regex.utilities import strip_matching_quotes
 
 ARRAY_INDEX_PATTERN = re.compile(r'\$\{([a-zA-Z_]\w*)\[(\d+)\]\}')
+ARRAY_ANY_INDEX_PATTERN = re.compile(r'\$\{([a-zA-Z_]\w*)\[([^\]]+)\]\}')
 ARRAY_EXPANSION_PATTERN = re.compile(r'^\$\{([a-zA-Z_]\w*)\[@\]\}$')
 SCALAR_REFERENCE_PATTERN = re.compile(r'\$(?:\{([a-zA-Z_]\w*|[0-9]+)\}|([a-zA-Z_]\w*|[0-9]+))')
 SCALAR_WORD_PATTERN = re.compile(r'^\$(?:\{([a-zA-Z_]\w*|[0-9]+)\}|([a-zA-Z_]\w*|[0-9]+))$')
 ASSIGNMENT_WORD_PATTERN = re.compile(r'^[a-zA-Z_]\w*(?:\+)?=.*$')
 DEFAULT_IFS = " \t\n"
+MAX_MODELED_LOOP_ITERATIONS = 256
 SHELL_OPTION_FLAGS = {
     'e': 'errexit',
     'E': 'errtrace',
@@ -90,6 +98,7 @@ class EvaluationState:
     variables: dict[str, str] = field(default_factory=dict)
     runtime_variables: dict[str, str] = field(default_factory=dict)
     arrays: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    associative_arrays: dict[str, dict[str, str]] = field(default_factory=dict)
     functions: dict[str, FunctionDef] = field(default_factory=dict)
     function_variants: dict[str, tuple[FunctionDef, ...]] = field(default_factory=dict)
     shell_options: set[str] = field(default_factory=set)
@@ -106,6 +115,7 @@ class EvaluationState:
     function_call_stack: tuple[str, ...] = ()
     local_scopes: list[dict[str, tuple[bool, str | None, bool, str | None, bool]]] = field(default_factory=list)
     last_status: int | None = 0
+    loop_depth: int = 0
 
     def resolver_context(self):
         return {
@@ -129,6 +139,7 @@ class EvaluationState:
             cwd=self.cwd,
             variables=dict(self.variables),
             arrays=dict(self.arrays),
+            associative_arrays=copy.deepcopy(self.associative_arrays),
             shell_options=frozenset(self.shell_options),
             glob_options=frozenset(self.glob_options),
             bash_source_stack=self.bash_source_stack,
@@ -140,6 +151,7 @@ class EvaluationState:
             variables=copy.deepcopy(self.variables),
             runtime_variables=copy.deepcopy(self.runtime_variables),
             arrays=copy.deepcopy(self.arrays),
+            associative_arrays=copy.deepcopy(self.associative_arrays),
             functions=copy.deepcopy(self.functions),
             function_variants=copy.deepcopy(self.function_variants),
             shell_options=set(self.shell_options),
@@ -156,6 +168,7 @@ class EvaluationState:
             function_call_stack=self.function_call_stack,
             local_scopes=copy.deepcopy(self.local_scopes),
             last_status=self.last_status,
+            loop_depth=self.loop_depth,
         )
 
     def conditional_copy(self):
@@ -168,6 +181,7 @@ class EvaluationState:
         self.variables = copy.deepcopy(other.variables)
         self.runtime_variables = copy.deepcopy(other.runtime_variables)
         self.arrays = copy.deepcopy(other.arrays)
+        self.associative_arrays = copy.deepcopy(other.associative_arrays)
         self.functions = copy.deepcopy(other.functions)
         self.function_variants = copy.deepcopy(other.function_variants)
         self.shell_options = set(other.shell_options)
@@ -184,12 +198,21 @@ class EvaluationState:
         self.function_call_stack = other.function_call_stack
         self.local_scopes = copy.deepcopy(other.local_scopes)
         self.last_status = other.last_status
+        self.loop_depth = other.loop_depth
 
 
 @dataclass
 class FunctionReturnSignal(Exception):
     status: int
     node: RawCommand
+
+
+class LoopBreakSignal(Exception):
+    pass
+
+
+class LoopContinueSignal(Exception):
+    pass
 
 
 @dataclass
@@ -206,6 +229,7 @@ class SourceEvaluator:
         self.mode = mode
         self.events: list[SourceEvent] = []
         self.disabled_sources: list[DisabledSourceSite] = []
+        self.line_replacements: list[LineReplacement] = []
 
     def evaluate(self, entrypoint: str | Path):
         entrypoint = Path(entrypoint).resolve()
@@ -217,10 +241,12 @@ class SourceEvaluator:
         )
         self.events = []
         self.disabled_sources = []
+        self.line_replacements = []
         self._evaluate_file(entrypoint, state, ())
         return EvaluationResult(
             events=self._with_occurrence_models(self.events),
             disabled_sources=tuple(self.disabled_sources),
+            line_replacements=tuple(self.line_replacements),
             final_state=state.snapshot(),
         )
 
@@ -269,6 +295,8 @@ class SourceEvaluator:
                     self._apply_function_def(node, state)
                 elif isinstance(node, ForLoop):
                     self._apply_for_loop(node, state, stack)
+                elif isinstance(node, WhileLoop):
+                    self._apply_while_loop(node, state, stack)
                 elif isinstance(node, IfBlock):
                     self._apply_if_block(node, state, stack)
                 elif isinstance(node, CaseBlock):
@@ -281,10 +309,17 @@ class SourceEvaluator:
                 self._disable_unreachable_sources(nodes[index + 1:], "return")
                 raise
 
-    @staticmethod
-    def _apply_assignment(node: Assignment, state: EvaluationState):
+    def _apply_assignment(self, node: Assignment, state: EvaluationState):
         if node.prefix == "local" and state.local_scopes:
             SourceEvaluator._capture_local_variable(node.name, state)
+
+        arithmetic_value = self._assignment_arithmetic_value(node, state)
+        if arithmetic_value is not None:
+            state.variables[node.name] = arithmetic_value
+            state.runtime_variables[node.name] = arithmetic_value
+            state.ambiguous_variables.discard(node.name)
+            state.last_status = 0
+            return
 
         runtime_context = state.runtime_context()
         runtime_value = resolve_variable_references(node.value, runtime_context)
@@ -299,6 +334,24 @@ class SourceEvaluator:
         state.runtime_variables[node.name] = runtime_value
         state.ambiguous_variables.discard(node.name)
         state.last_status = 0
+
+    def _assignment_arithmetic_value(self, node: Assignment, state: EvaluationState):
+        value = node.value.strip()
+        if not value.startswith("$((") or not value.endswith("))"):
+            return None
+        expression = value[3:-2].strip()
+        result = self._evaluate_arithmetic_expression(expression, state, node.text)
+        if result is None:
+            raise unsupported_source_error(
+                str(node.location.path),
+                node.location.line - 1,
+                node.text,
+                node.text,
+                "unsupported.source.arithmetic",
+                "unsupported arithmetic assignment",
+                "Arithmetic assignments must resolve exactly.",
+            )
+        return str(result)
 
     @staticmethod
     def _capture_local_variable(name: str, state: EvaluationState):
@@ -349,12 +402,152 @@ class SourceEvaluator:
             else:
                 state.ambiguous_variables.discard(name)
 
-    @staticmethod
-    def _apply_array_assignment(node: ArrayAssignment, state: EvaluationState):
-        if node.is_exact:
-            state.arrays[node.name] = node.values
+    def _apply_array_assignment(self, node: ArrayAssignment, state: EvaluationState):
+        if not node.is_exact:
+            state.ambiguous_arrays.add(node.name)
+            state.last_status = 0
+            return
+
+        if node.associative_values:
+            if node.operation == "assign":
+                state.associative_arrays[node.name] = {}
+            target = state.associative_arrays.setdefault(node.name, {})
+            for key, value in node.associative_values:
+                target[self._resolve_array_word(key, node, state)] = self._resolve_array_word(value, node, state)
+            state.arrays.pop(node.name, None)
             state.ambiguous_arrays.discard(node.name)
+            state.last_status = 0
+            return
+
+        values = self._resolve_array_values(node, state)
+        if self.mode == "executable" and any('$(' in raw_value for raw_value in node.raw_values):
+            operator = "+=" if node.operation == "append" else "="
+            self._record_line_replacement(
+                node.location,
+                node.text,
+                f"{node.name}{operator}({self._shell_quote_words(values)})",
+            )
+        if node.operation == "assign":
+            state.arrays[node.name] = values
+            state.associative_arrays.pop(node.name, None)
+        elif node.operation == "append":
+            existing = state.arrays.get(node.name, ())
+            state.arrays[node.name] = (*existing, *values)
+            state.associative_arrays.pop(node.name, None)
+        elif node.operation == "set":
+            self._set_indexed_array_value(node, values, state)
+
+        state.ambiguous_arrays.discard(node.name)
         state.last_status = 0
+
+    def _resolve_array_values(self, node: ArrayAssignment, state: EvaluationState):
+        values = []
+        raw_values = node.raw_values or node.values
+        for value, raw_value in zip(node.values, raw_values):
+            values.extend(self._expand_array_assignment_word(value, raw_value, node, state))
+        return tuple(values)
+
+    def _expand_array_assignment_word(self, value: str, raw_value: str, node: ArrayAssignment,
+                                      state: EvaluationState):
+        if '$(' in raw_value or '$(' in value:
+            return tuple(self._resolve_command_substitution_loop_word(value, raw_value, node, state))
+
+        resolved = self._resolve_array_word(value, node, state)
+        if self._raw_word_is_unquoted_scalar(raw_value):
+            return tuple(self._split_array_scalar_word(resolved, node, state))
+        if has_unquoted_glob(raw_value):
+            try:
+                return tuple(
+                    match.word
+                    for match in expand_glob_word(resolved, state.resolver_context(), node.text, raw_pattern=raw_value)
+                )
+            except UnsupportedSourceError as exc:
+                raise self._unsupported_array_assignment(node, str(exc)) from exc
+        return (resolved,)
+
+    def _resolve_array_word(self, value: str, node: ArrayAssignment, state: EvaluationState):
+        if '`' in value:
+            raise self._unsupported_array_assignment(node, "unsupported array assignment backticks")
+        for match in SCALAR_REFERENCE_PATTERN.finditer(value):
+            variable_name = match.group(1) or match.group(2)
+            if variable_name in state.ambiguous_variables:
+                raise self._unsupported_array_assignment(
+                    node,
+                    f"array assignment references branch-dependent variable: {variable_name}",
+                )
+            if variable_name not in state.runtime_variables:
+                raise self._unsupported_array_assignment(
+                    node,
+                    f"array assignment references unknown variable: {variable_name}",
+                )
+        resolved = resolve_variable_references(value, state.runtime_context())
+        resolved = os.path.expandvars(resolved)
+        if "$" in resolved:
+            raise self._unsupported_array_assignment(node, "array assignment contains unresolved scalar expansion")
+        return strip_matching_quotes(resolved)
+
+    def _split_array_scalar_word(self, resolved_word: str, node: ArrayAssignment, state: EvaluationState):
+        self._ensure_default_ifs_for_node(node, state)
+        words = []
+        for field in resolved_word.split():
+            if has_unquoted_glob(field):
+                try:
+                    words.extend(
+                        match.word
+                        for match in expand_glob_word(field, state.resolver_context(), node.text, raw_pattern=field)
+                    )
+                except UnsupportedSourceError as exc:
+                    raise self._unsupported_array_assignment(node, str(exc)) from exc
+            else:
+                words.append(field)
+        return words
+
+    def _set_indexed_array_value(self, node: ArrayAssignment, values: tuple[str, ...], state: EvaluationState):
+        if len(values) != 1:
+            raise self._unsupported_array_assignment(node, "indexed array assignment must resolve to one value")
+        index = self._resolve_array_index(node.index or "", node, state)
+        existing = list(state.arrays.get(node.name, ()))
+        if index < 0:
+            raise self._unsupported_array_assignment(node, "negative array indexes are unsupported")
+        if index >= len(existing):
+            existing.extend("" for _ in range(index - len(existing) + 1))
+        if node.operation == "append":
+            existing[index] = existing[index] + values[0]
+        else:
+            existing[index] = values[0]
+        state.arrays[node.name] = tuple(existing)
+        state.associative_arrays.pop(node.name, None)
+
+    @staticmethod
+    def _resolve_array_index(index_expression: str, node, state: EvaluationState):
+        index_expression = strip_matching_quotes(index_expression.strip())
+        if re.fullmatch(r'\d+', index_expression):
+            return int(index_expression)
+        resolved = resolve_variable_references(index_expression, state.runtime_context())
+        resolved = os.path.expandvars(strip_matching_quotes(resolved))
+        if not re.fullmatch(r'\d+', resolved):
+            raise unsupported_source_error(
+                str(node.location.path),
+                node.location.line - 1,
+                node.text,
+                node.text,
+                "unsupported.source.array-index",
+                "unsupported array index expression",
+                "Array indexes must resolve to exact non-negative integers.",
+            )
+        return int(resolved)
+
+    @staticmethod
+    def _unsupported_array_assignment(node: ArrayAssignment, message: str):
+        return unsupported_source_error(
+            str(node.location.path),
+            node.location.line - 1,
+            node.text,
+            node.text,
+            "unsupported.source.array-assignment",
+            f"unsupported array assignment: {message}",
+            "Array assignments must resolve to exact finite values.",
+        )
 
     @staticmethod
     def _apply_function_def(node: FunctionDef, state: EvaluationState):
@@ -407,6 +600,13 @@ class SourceEvaluator:
                 return
             raise
 
+        if self.mode == "executable" and words and self._loop_words_need_exact_replacement(node):
+            self._record_line_replacement(
+                node.location,
+                node.words_text,
+                self._shell_quote_words(tuple(words)),
+            )
+
         if not words:
             self._disable_unreachable_sources(node.body, f"for {node.variable} in {node.words_text}")
             return
@@ -415,7 +615,141 @@ class SourceEvaluator:
             state.variables[node.variable] = word
             state.runtime_variables[node.variable] = word
             state.ambiguous_variables.discard(node.variable)
-            self._evaluate_nodes(node.body, state, stack)
+            state.loop_depth += 1
+            try:
+                self._evaluate_nodes(node.body, state, stack)
+            except LoopContinueSignal:
+                continue
+            except LoopBreakSignal:
+                break
+            finally:
+                state.loop_depth -= 1
+
+    def _apply_while_loop(self, node: WhileLoop, state: EvaluationState, stack: tuple[Path, ...]):
+        read_words = self._read_loop_words(node, state)
+        if read_words is not None:
+            if not read_words:
+                self._disable_unreachable_sources(node.body, f"{node.keyword} {node.condition}")
+                return
+            if self.mode == "executable":
+                self._record_read_loop_replacements(node, read_words)
+            for variable, value in read_words:
+                state.variables[variable] = value
+                state.runtime_variables[variable] = value
+                state.ambiguous_variables.discard(variable)
+                state.loop_depth += 1
+                try:
+                    self._evaluate_nodes(node.body, state, stack)
+                except LoopContinueSignal:
+                    continue
+                except LoopBreakSignal:
+                    break
+                finally:
+                    state.loop_depth -= 1
+            return
+
+        for iteration in range(MAX_MODELED_LOOP_ITERATIONS):
+            try:
+                condition_status = self._evaluate_condition(node.condition, state)
+            except UnsupportedSourceError as exc:
+                if self.mode == "context":
+                    if self._node_list_may_source(node.body):
+                        loop_state = state.conditional_copy()
+                        self._evaluate_nodes(node.body, loop_state, stack)
+                    return
+                raise with_source_diagnostic(
+                    exc,
+                    str(node.location.path),
+                    node.location.line - 1,
+                    node.text,
+                    node.text,
+                    "unsupported.source.loop-condition",
+                ) from exc
+
+            should_run = condition_status == "true" if node.keyword == "while" else condition_status == "false"
+            if condition_status == "unknown":
+                if not self._node_list_may_source(node.body):
+                    return
+                raise unsupported_source_error(
+                    str(node.location.path),
+                    node.location.line - 1,
+                    node.text,
+                    node.text,
+                    "unsupported.source.loop-condition",
+                    f"unsupported unknown {node.keyword} condition",
+                    "Loop conditions must be exact before source-aware lowering.",
+                )
+            if not should_run:
+                if iteration == 0:
+                    self._disable_unreachable_sources(node.body, f"{node.keyword} {node.condition}")
+                return
+
+            state.loop_depth += 1
+            try:
+                self._evaluate_nodes(node.body, state, stack)
+            except LoopContinueSignal:
+                continue
+            except LoopBreakSignal:
+                return
+            finally:
+                state.loop_depth -= 1
+
+        raise unsupported_source_error(
+            str(node.location.path),
+            node.location.line - 1,
+            node.text,
+            node.text,
+            "unsupported.source.loop-iteration",
+            f"unsupported {node.keyword} loop exceeds modeled iteration limit",
+            "Use finite loops whose source effects resolve within the modeled iteration limit.",
+        )
+
+    def _read_loop_words(self, node: WhileLoop, state: EvaluationState):
+        if node.keyword != "while":
+            return None
+        if not node.trailing.startswith("<"):
+            return None
+
+        condition_words = parse_shell_words_preserving_quotes(node.condition)
+        if not condition_words:
+            return None
+
+        preserve_line = False
+        index = 0
+        if condition_words[index].startswith("IFS="):
+            preserve_line = condition_words[index] == "IFS="
+            index += 1
+        if index >= len(condition_words) or strip_shell_word_quotes(condition_words[index]) != "read":
+            return None
+        index += 1
+
+        while index < len(condition_words) and condition_words[index].startswith("-"):
+            option = strip_shell_word_quotes(condition_words[index])
+            if option == "-r":
+                index += 1
+                continue
+            raise self._unsupported_loop_condition(node, f"unsupported read option: {option}")
+
+        if index != len(condition_words) - 1:
+            raise self._unsupported_loop_condition(node, "unsupported read loop condition")
+
+        variable = strip_shell_word_quotes(condition_words[index])
+        if not re.fullmatch(r'[a-zA-Z_]\w*', variable):
+            raise self._unsupported_loop_condition(node, "unsupported read loop variable")
+
+        trailing_words = parse_shell_words_preserving_quotes(node.trailing)
+        if len(trailing_words) != 2 or trailing_words[0] != "<":
+            raise self._unsupported_loop_condition(node, "unsupported read loop redirection")
+
+        input_path = self._word_list_path(strip_shell_word_quotes(trailing_words[1]), node, state)
+        if not input_path.is_file():
+            raise self._unsupported_loop_condition(node, "unsupported read loop input path")
+
+        values = []
+        for line in input_path.read_text().splitlines():
+            value = line if preserve_line else line.strip()
+            values.append((variable, value))
+        return values
 
     def _resolve_loop_words(self, node: ForLoop, state: EvaluationState):
         if not node.is_exact:
@@ -431,6 +765,10 @@ class SourceEvaluator:
 
         return words
 
+    @staticmethod
+    def _loop_words_need_exact_replacement(node: ForLoop):
+        return '$(' in node.words_text or '`' in node.words_text
+
     def _loop_raw_words(self, node: ForLoop):
         try:
             return tuple(parse_shell_words_preserving_quotes(node.words_text))
@@ -442,7 +780,7 @@ class SourceEvaluator:
             return [word]
 
         if '$(' in word or '`' in word:
-            raise self._unsupported_loop_words(node, "loop word list is runtime-dynamic")
+            return self._resolve_command_substitution_loop_word(word, raw_word, node, state)
 
         array_match = ARRAY_EXPANSION_PATTERN.match(word)
         if array_match:
@@ -498,6 +836,147 @@ class SourceEvaluator:
 
         return [word]
 
+    def _resolve_command_substitution_loop_word(self, word: str, raw_word: str, node, state: EvaluationState):
+        if '`' in raw_word or '`' in word:
+            raise self._unsupported_loop_words(node, "loop word list uses backticks")
+
+        expression = raw_word if '$(' in raw_word else word
+        try:
+            inner_command = extract_exact_command_substitution(expression)
+        except UnsupportedSourceError as exc:
+            raise self._unsupported_loop_words(node, str(exc)) from exc
+        if not inner_command:
+            raise self._unsupported_loop_words(node, "loop word list is runtime-dynamic")
+
+        if '$(' in inner_command or '`' in inner_command:
+            raise self._unsupported_loop_words(node, "loop word list uses nested command substitution")
+
+        try:
+            output = self._evaluate_safe_word_list_command(inner_command, node, state)
+        except UnsupportedSourceError as exc:
+            raise self._unsupported_loop_words(node, str(exc)) from exc
+
+        if self._raw_word_is_double_quoted(raw_word):
+            stripped_output = output.rstrip('\n')
+            if not stripped_output:
+                return []
+            if '\n' in stripped_output:
+                raise self._unsupported_loop_words(node, "quoted command substitution produced multiple lines")
+            return [stripped_output]
+
+        return self._split_word_list_output(output, node, state)
+
+    def _split_word_list_output(self, output: str, node, state: EvaluationState):
+        self._ensure_default_ifs_for_node(node, state)
+        words = []
+        for field in output.split():
+            if has_unquoted_glob(field):
+                try:
+                    words.extend(
+                        match.word
+                        for match in expand_glob_word(field, state.resolver_context(), node.text, raw_pattern=field)
+                    )
+                except UnsupportedSourceError as exc:
+                    raise self._unsupported_loop_words(node, str(exc)) from exc
+            else:
+                words.append(field)
+        return words
+
+    def _evaluate_safe_word_list_command(self, inner_command: str, node, state: EvaluationState):
+        if has_unsupported_shell_operator(inner_command):
+            raise self._unsupported_loop_words(node, "unsupported command substitution syntax")
+
+        words = parse_shell_words_preserving_quotes(inner_command)
+        if not words:
+            raise self._unsupported_loop_words(node, "empty command substitution")
+
+        command_name = strip_shell_word_quotes(words[0])
+        if command_name == "cat":
+            return self._evaluate_cat_word_list(words, node, state)
+        if command_name == "find":
+            return self._evaluate_find_word_list(words, node, state)
+        if command_name == "printf":
+            return self._evaluate_printf_word_list(words, node, state)
+        raise self._unsupported_loop_words(node, f"unsupported command substitution: {command_name}")
+
+    def _evaluate_cat_word_list(self, words: list[str], node, state: EvaluationState):
+        if len(words) < 2:
+            raise self._unsupported_loop_words(node, "unsupported cat command substitution")
+        output = []
+        for raw_path in words[1:]:
+            path_word = strip_shell_word_quotes(raw_path)
+            if path_word.startswith("-"):
+                raise self._unsupported_loop_words(node, "unsupported cat command substitution option")
+            path = self._word_list_path(path_word, node, state)
+            if not path.is_file():
+                raise self._unsupported_loop_words(node, "unsupported cat command substitution path")
+            output.append(path.read_text())
+        return ''.join(output)
+
+    def _evaluate_find_word_list(self, words: list[str], node, state: EvaluationState):
+        stripped_words = [strip_shell_word_quotes(word) for word in words]
+        try:
+            parsed_find = SOURCE_RESOLVER.parse_find_command(stripped_words, state.resolver_context())
+        except UnsupportedSourceError as exc:
+            raise self._unsupported_loop_words(node, str(exc)) from exc
+        if not parsed_find:
+            raise self._unsupported_loop_words(node, "unsupported find command substitution")
+
+        roots, filters = parsed_find
+        matches = SOURCE_RESOLVER.find_candidate_matches(roots, filters, state.resolver_context())
+        relative_matches = []
+        for match in matches:
+            relative = os.path.relpath(match, state.cwd)
+            relative_matches.append(f"./{relative}" if not relative.startswith(os.pardir) else match)
+        return "\n".join(relative_matches)
+
+    def _evaluate_printf_word_list(self, words: list[str], node, state: EvaluationState):
+        if len(words) < 2:
+            raise self._unsupported_loop_words(node, "unsupported printf command substitution")
+        format_word = strip_shell_word_quotes(words[1])
+        if format_word not in {"%s\\n", "%s\n"}:
+            raise self._unsupported_loop_words(node, "unsupported printf command substitution format")
+        values = [
+            self._resolve_exact_runtime_word(strip_shell_word_quotes(word), node, state, "loop word list")
+            for word in words[2:]
+        ]
+        return "\n".join(values)
+
+    def _word_list_path(self, word: str, node, state: EvaluationState):
+        resolved = self._resolve_exact_runtime_word(word, node, state, "loop word list")
+        path = Path(resolved)
+        if not path.is_absolute():
+            path = state.cwd / path
+        return path.resolve()
+
+    @staticmethod
+    def _resolve_exact_runtime_word(word: str, node, state: EvaluationState, label: str):
+        for match in SCALAR_REFERENCE_PATTERN.finditer(word):
+            variable_name = match.group(1) or match.group(2)
+            if variable_name in state.ambiguous_variables:
+                raise unsupported_source_error(
+                    str(node.location.path),
+                    node.location.line - 1,
+                    node.text,
+                    node.text,
+                    "unsupported.source.loop-word-list",
+                    f"unsupported {label} references branch-dependent variable: {variable_name}",
+                    "Use exact values before source-aware loop evaluation.",
+                )
+        resolved = resolve_variable_references(word, state.runtime_context())
+        resolved = os.path.expandvars(resolved)
+        if "$" in resolved:
+            raise unsupported_source_error(
+                str(node.location.path),
+                node.location.line - 1,
+                node.text,
+                node.text,
+                "unsupported.source.loop-word-list",
+                f"unsupported {label} contains unresolved scalar expansion",
+                "Use exact values before source-aware loop evaluation.",
+            )
+        return strip_shell_word_quotes(resolved)
+
     def _split_scalar_loop_word(self, resolved_word: str, node: ForLoop, state: EvaluationState):
         self._ensure_default_ifs(node, state)
         words = []
@@ -516,6 +995,10 @@ class SourceEvaluator:
 
     @staticmethod
     def _ensure_default_ifs(node: ForLoop, state: EvaluationState):
+        SourceEvaluator._ensure_default_ifs_for_node(node, state)
+
+    @staticmethod
+    def _ensure_default_ifs_for_node(node, state: EvaluationState):
         if 'IFS' not in state.runtime_variables:
             return
         if state.runtime_variables['IFS'] == DEFAULT_IFS:
@@ -541,7 +1024,7 @@ class SourceEvaluator:
         return len(stripped) >= 2 and stripped[0] == stripped[-1] == '"'
 
     @staticmethod
-    def _unsupported_loop_words(node: ForLoop, message: str):
+    def _unsupported_loop_words(node, message: str):
         if "loop word" not in message:
             message = f"unsupported loop word list: {message}"
         return unsupported_source_error(
@@ -551,7 +1034,19 @@ class SourceEvaluator:
             node.text,
             "unsupported.source.loop-word-list",
             message,
-            "Use a literal finite list, known scalar variables, or an exact ${array[@]} expansion.",
+            "Use a literal finite list, known scalar variables, exact command substitutions, or an exact ${array[@]} expansion.",
+        )
+
+    @staticmethod
+    def _unsupported_loop_condition(node: WhileLoop, message: str):
+        return unsupported_source_error(
+            str(node.location.path),
+            node.location.line - 1,
+            node.text,
+            node.text,
+            "unsupported.source.loop-condition",
+            message,
+            "while/until loops must have exact bounded conditions or a supported read redirection.",
         )
 
     def _apply_if_block(self, node: IfBlock, state: EvaluationState, stack: tuple[Path, ...]):
@@ -1064,6 +1559,13 @@ class SourceEvaluator:
             target.ambiguous_arrays,
             [state.ambiguous_arrays for state in possible_states],
         )
+        SourceEvaluator._merge_state_mapping(
+            target.associative_arrays,
+            [state.associative_arrays for state in possible_states],
+            target.ambiguous_arrays,
+            [state.ambiguous_arrays for state in possible_states],
+            clear_ambiguous=False,
+        )
         SourceEvaluator._merge_function_state(target, possible_states)
 
         first_shell_options = first.shell_options
@@ -1164,7 +1666,16 @@ class SourceEvaluator:
         if isinstance(node, Assignment):
             return ("assignment", node.name, node.value, node.prefix)
         if isinstance(node, ArrayAssignment):
-            return ("array", node.name, node.values, node.is_exact)
+            return (
+                "array",
+                node.name,
+                node.values,
+                node.is_exact,
+                node.operation,
+                node.index,
+                node.associative_values,
+                node.raw_values,
+            )
         if isinstance(node, CdCommand):
             return ("cd", node.path_expression)
         if isinstance(node, SetCommand):
@@ -1178,6 +1689,15 @@ class SourceEvaluator:
                 node.words,
                 node.words_text,
                 node.is_exact,
+                tuple(SourceEvaluator._node_signature(child) for child in node.body),
+            )
+        if isinstance(node, WhileLoop):
+            return (
+                "while",
+                node.keyword,
+                node.condition,
+                node.trailing,
+                node.end_location.line if node.end_location else None,
                 tuple(SourceEvaluator._node_signature(child) for child in node.body),
             )
         if isinstance(node, IfBlock):
@@ -1407,7 +1927,11 @@ class SourceEvaluator:
         if not words:
             raise UnsupportedSourceError(f"unsupported empty if condition: {condition}")
 
-        command_name = strip_matching_quotes(words[0])
+        command_name = strip_shell_word_quotes(words[0])
+        if command_name in {":", "true"} and len(words) == 1:
+            return "true"
+        if command_name == "false" and len(words) == 1:
+            return "false"
         if command_name == "grep":
             return self._evaluate_grep_condition(words, state, condition)
         raise UnsupportedSourceError(f"unsupported command if condition: {condition}")
@@ -1416,7 +1940,7 @@ class SourceEvaluator:
         options = set()
         index = 1
         while index < len(words):
-            option = strip_matching_quotes(words[index])
+            option = strip_shell_word_quotes(words[index])
             if option == "--":
                 index += 1
                 break
@@ -1743,11 +2267,20 @@ class SourceEvaluator:
         if self._apply_function_call(node, state, stack):
             return
 
+        if self._apply_loop_control(node, state):
+            return
+
         if state.function_call_stack and self._raw_function_return_command(node):
             raise FunctionReturnSignal(self._function_return_status(node, state), node)
 
         if state.function_call_stack and self._raw_function_shift_command(node):
             self._apply_function_shift(node, state)
+            return
+
+        if self._apply_array_population_command(node, state):
+            return
+
+        if self._apply_arithmetic_command(node, state):
             return
 
         exact_status = self._raw_exact_status_command(node)
@@ -1929,7 +2462,7 @@ class SourceEvaluator:
 
     def _resolve_function_name(self, word: str, node: RawCommand, state: EvaluationState):
         if "$" not in word:
-            return strip_matching_quotes(word), True
+            return strip_shell_word_quotes(word), True
 
         try:
             return self._resolve_function_exact_word(
@@ -1942,7 +2475,7 @@ class SourceEvaluator:
                 "Function dispatch must resolve to a known local function before source-aware evaluation.",
             ), True
         except UnsupportedSourceError:
-            return strip_matching_quotes(word), False
+            return strip_shell_word_quotes(word), False
 
     def _state_has_source_relevant_functions(self, state: EvaluationState):
         return any(
@@ -2110,7 +2643,7 @@ class SourceEvaluator:
         if index >= len(words):
             return 0
 
-        command_name = strip_matching_quotes(words[index])
+        command_name = strip_shell_word_quotes(words[index])
         if command_name in {":", "true"}:
             return 0
         if command_name == "false":
@@ -2204,6 +2737,181 @@ class SourceEvaluator:
             "Function return/shift semantics must be exact for source-aware lowering.",
         )
 
+    def _apply_loop_control(self, node: RawCommand, state: EvaluationState):
+        try:
+            words = parse_shell_words_preserving_quotes(node.text.strip())
+        except UnsupportedSourceError:
+            return False
+        if not words:
+            return False
+
+        command = strip_shell_word_quotes(words[0])
+        if command not in {"break", "continue"}:
+            return False
+        if len(words) > 2 or (len(words) == 2 and strip_shell_word_quotes(words[1]) != "1"):
+            raise unsupported_source_error(
+                str(node.location.path),
+                node.location.line - 1,
+                node.text,
+                node.text,
+                "unsupported.source.loop-control",
+                f"unsupported {command} depth",
+                "Only local break/continue control is modeled.",
+            )
+        if state.loop_depth <= 0:
+            state.last_status = 1
+            return True
+        if command == "break":
+            raise LoopBreakSignal()
+        raise LoopContinueSignal()
+
+    def _apply_array_population_command(self, node: RawCommand, state: EvaluationState):
+        stripped = node.text.strip()
+        if not re.match(r'^(?:mapfile|readarray)\b', stripped):
+            return False
+
+        try:
+            words = parse_shell_words_preserving_quotes(stripped)
+        except UnsupportedSourceError as exc:
+            raise self._unsupported_array_population(node, "unsupported array population syntax") from exc
+
+        if not words or strip_shell_word_quotes(words[0]) not in {"mapfile", "readarray"}:
+            return False
+
+        strip_newline = False
+        index = 1
+        while index < len(words) and words[index].startswith("-"):
+            option = strip_shell_word_quotes(words[index])
+            if option == "-t":
+                strip_newline = True
+                index += 1
+                continue
+            raise self._unsupported_array_population(node, f"unsupported array population option: {option}")
+
+        if not strip_newline:
+            raise self._unsupported_array_population(node, "mapfile/readarray without -t is unsupported")
+        if index >= len(words) or not re.fullmatch(r'[a-zA-Z_]\w*', strip_shell_word_quotes(words[index])):
+            raise self._unsupported_array_population(node, "unsupported array population target")
+
+        name = strip_shell_word_quotes(words[index])
+        index += 1
+        if index != len(words) - 2 or words[index] != "<":
+            raise self._unsupported_array_population(node, "unsupported array population redirection")
+
+        input_path = self._word_list_path(strip_shell_word_quotes(words[index + 1]), node, state)
+        if not input_path.is_file():
+            raise self._unsupported_array_population(node, "unsupported array population input path")
+
+        values = tuple(input_path.read_text().splitlines())
+        if self.mode == "executable":
+            self._record_line_replacement(
+                node.location,
+                node.text,
+                f"{name}=({self._shell_quote_words(values)})",
+            )
+
+        state.arrays[name] = values
+        state.associative_arrays.pop(name, None)
+        state.ambiguous_arrays.discard(name)
+        state.last_status = 0
+        return True
+
+    @staticmethod
+    def _unsupported_array_population(node: RawCommand, message: str):
+        return unsupported_source_error(
+            str(node.location.path),
+            node.location.line - 1,
+            node.text,
+            node.text,
+            "unsupported.source.array-population",
+            message,
+            "Use mapfile/readarray -t ARRAY < exact_file for modeled dynamic arrays.",
+        )
+
+    def _apply_arithmetic_command(self, node: RawCommand, state: EvaluationState):
+        stripped = node.text.strip()
+        if not stripped.startswith("((") or not stripped.endswith("))"):
+            return False
+
+        expression = stripped[2:-2].strip()
+        if self._apply_arithmetic_mutation(expression, node, state):
+            return True
+
+        value = self._evaluate_arithmetic_expression(expression, state, stripped)
+        if value is None:
+            raise self._unsupported_arithmetic_command(node)
+        state.last_status = 0 if value else 1
+        return True
+
+    def _apply_arithmetic_mutation(self, expression: str, node: RawCommand, state: EvaluationState):
+        expression = expression.strip()
+        if match := re.fullmatch(r'([a-zA-Z_]\w*)(\+\+|--)', expression):
+            name, operator = match.groups()
+            current = self._arithmetic_name_value(name, state, node.text)
+            if current is None:
+                raise self._unsupported_arithmetic_command(node)
+            state.runtime_variables[name] = str(current + (1 if operator == "++" else -1))
+            state.variables[name] = state.runtime_variables[name]
+            state.ambiguous_variables.discard(name)
+            state.last_status = 0 if current else 1
+            return True
+
+        if match := re.fullmatch(r'(\+\+|--)([a-zA-Z_]\w*)', expression):
+            operator, name = match.groups()
+            current = self._arithmetic_name_value(name, state, node.text)
+            if current is None:
+                raise self._unsupported_arithmetic_command(node)
+            new_value = current + (1 if operator == "++" else -1)
+            state.runtime_variables[name] = str(new_value)
+            state.variables[name] = state.runtime_variables[name]
+            state.ambiguous_variables.discard(name)
+            state.last_status = 0 if new_value else 1
+            return True
+
+        if match := re.fullmatch(r'([a-zA-Z_]\w*)\s*([+\-*/%]?=)\s*(.+)', expression):
+            name, operator, rhs_expression = match.groups()
+            current = self._arithmetic_name_value(name, state, node.text)
+            rhs = self._evaluate_arithmetic_expression(rhs_expression, state, node.text)
+            if current is None or rhs is None:
+                raise self._unsupported_arithmetic_command(node)
+            if operator == "=":
+                new_value = rhs
+            elif operator == "+=":
+                new_value = current + rhs
+            elif operator == "-=":
+                new_value = current - rhs
+            elif operator == "*=":
+                new_value = current * rhs
+            elif operator == "/=":
+                if rhs == 0:
+                    raise self._unsupported_arithmetic_command(node)
+                new_value = int(current / rhs)
+            elif operator == "%=":
+                if rhs == 0:
+                    raise self._unsupported_arithmetic_command(node)
+                new_value = current % rhs
+            else:
+                raise self._unsupported_arithmetic_command(node)
+            state.runtime_variables[name] = str(new_value)
+            state.variables[name] = state.runtime_variables[name]
+            state.ambiguous_variables.discard(name)
+            state.last_status = 0 if new_value else 1
+            return True
+
+        return False
+
+    @staticmethod
+    def _unsupported_arithmetic_command(node: RawCommand):
+        return unsupported_source_error(
+            str(node.location.path),
+            node.location.line - 1,
+            node.text,
+            node.text,
+            "unsupported.source.arithmetic",
+            "unsupported arithmetic command",
+            "Arithmetic loop mutations must resolve exactly.",
+        )
+
     @staticmethod
     def _apply_shopt(node: RawCommand, state: EvaluationState):
         stripped_text = node.text.strip()
@@ -2256,6 +2964,39 @@ class SourceEvaluator:
             condition=state.condition_context,
         ))
 
+    def _record_read_loop_replacements(self, node: WhileLoop, read_words: list[tuple[str, str]]):
+        if node.end_location is None:
+            return
+        variable = read_words[0][0]
+        values = tuple(value for _, value in read_words)
+        inline_do = bool(re.search(r';\s*do\s*$', node.text))
+        self._record_line_replacement(
+            node.location,
+            node.text,
+            (
+                f"for {variable} in {self._shell_quote_words(values)}; do"
+                if inline_do
+                else f"for {variable} in {self._shell_quote_words(values)}"
+            ),
+        )
+        if node.trailing:
+            self._record_line_replacement(
+                node.end_location,
+                f"done {node.trailing}",
+                "done",
+            )
+
+    def _record_line_replacement(self, location: SourceLocation, old: str, new: str):
+        self.line_replacements.append(LineReplacement(location, old.strip(), new.strip()))
+
+    @staticmethod
+    def _shell_quote_words(words: tuple[str, ...]):
+        return " ".join(SourceEvaluator._shell_quote(word) for word in words)
+
+    @staticmethod
+    def _shell_quote(value: str):
+        return "'" + value.replace("'", "'\"'\"'") + "'"
+
     def _disable_unreachable_sources(self, nodes, condition: str):
         for node in nodes:
             if isinstance(node, SourceSite):
@@ -2279,6 +3020,8 @@ class SourceEvaluator:
                 self._disable_unreachable_sources(node.body, condition)
             elif isinstance(node, ForLoop):
                 self._disable_unreachable_sources(node.body, condition)
+            elif isinstance(node, WhileLoop):
+                self._disable_unreachable_sources(node.body, condition)
             elif isinstance(node, IfBlock):
                 for branch in node.branches:
                     self._disable_unreachable_sources(branch.body, branch.condition or "else")
@@ -2301,6 +3044,8 @@ class SourceEvaluator:
             if isinstance(node, FunctionDef) and self._node_list_may_source(node.body):
                 return True
             if isinstance(node, ForLoop) and self._node_list_may_source(node.body):
+                return True
+            if isinstance(node, WhileLoop) and self._node_list_may_source(node.body):
                 return True
             if isinstance(node, IfBlock):
                 if any(self._node_list_may_source(branch.body) for branch in node.branches):
@@ -2400,7 +3145,7 @@ class SourceEvaluator:
                 "Assign the same source-relevant value on every branch before sourcing it.",
             )
 
-        array_names = {match.group(1) for match in ARRAY_INDEX_PATTERN.finditer(source_expression)}
+        array_names = {match.group(1) for match in ARRAY_ANY_INDEX_PATTERN.finditer(source_expression)}
         ambiguous_arrays = sorted(array_names & state.ambiguous_arrays)
         if ambiguous_arrays:
             raise unsupported_source_error(
@@ -2437,8 +3182,34 @@ class SourceEvaluator:
     def _expand_array_indexes(source_expression: str, node: SourceSite, state: EvaluationState):
         def replace(match):
             name, index_text = match.groups()
+            if index_text == "@":
+                raise unsupported_source_error(
+                    str(node.location.path),
+                    node.location.line - 1,
+                    node.text,
+                    node.text,
+                    "unsupported.source.array-index",
+                    "unsupported array source expression",
+                    "Only exact array indexes can be resolved by the IR evaluator.",
+                )
+
+            associative_values = state.associative_arrays.get(name)
+            if associative_values is not None:
+                key = SourceEvaluator._resolve_array_key(index_text, node, state)
+                if key not in associative_values:
+                    raise unsupported_source_error(
+                        str(node.location.path),
+                        node.location.line - 1,
+                        node.text,
+                        node.text,
+                        "unsupported.source.array-index",
+                        "unsupported associative array source expression",
+                        "Associative array source indexes must resolve to existing exact keys.",
+                    )
+                return associative_values[key]
+
             values = state.arrays.get(name)
-            index = int(index_text)
+            index = SourceEvaluator._resolve_array_index(index_text, node, state)
             if values is None or index >= len(values):
                 raise unsupported_source_error(
                     str(node.location.path),
@@ -2451,7 +3222,24 @@ class SourceEvaluator:
                 )
             return values[index]
 
-        return ARRAY_INDEX_PATTERN.sub(replace, source_expression)
+        return ARRAY_ANY_INDEX_PATTERN.sub(replace, source_expression)
+
+    @staticmethod
+    def _resolve_array_key(index_expression: str, node, state: EvaluationState):
+        index_expression = strip_matching_quotes(index_expression.strip())
+        resolved = resolve_variable_references(index_expression, state.runtime_context())
+        resolved = os.path.expandvars(strip_matching_quotes(resolved))
+        if "$" in resolved:
+            raise unsupported_source_error(
+                str(node.location.path),
+                node.location.line - 1,
+                node.text,
+                node.text,
+                "unsupported.source.array-index",
+                "unsupported associative array source expression",
+                "Associative array indexes must resolve to exact keys.",
+            )
+        return resolved
 
     @staticmethod
     def _source_runtime_value(source_expression: str, state: EvaluationState):

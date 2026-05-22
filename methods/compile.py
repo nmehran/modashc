@@ -343,6 +343,26 @@ def apply_line_replacements(line: str, replacements):
     return ''.join(output)
 
 
+def replace_exact_line_fragments(line: str, line_replacements):
+    if not line_replacements:
+        return line
+
+    replacements = []
+    occupied_spans = []
+    for line_replacement in line_replacements:
+        old = line_replacement.old
+        start = line.find(old)
+        if start < 0:
+            raise ValueError(f"Could not replace resolved line fragment: {old}")
+        span = (start, start + len(old))
+        if any(spans_overlap(span, occupied_span) for occupied_span in occupied_spans):
+            raise ValueError(f"Overlapping line replacements in line: {line.strip()}")
+        replacements.append((*span, line_replacement.new))
+        occupied_spans.append(span)
+
+    return apply_line_replacements(line, replacements)
+
+
 def replace_source_site_declarations(line: str, source_declarations, render_source):
     if not source_declarations:
         return line
@@ -436,6 +456,10 @@ def render_executable_script(entry_point: str, context: dict):
                 if not stripped_line or stripped_line.startswith("#"):
                     continue
 
+                line = replace_exact_line_fragments(
+                    line,
+                    context.get('line_replacements', {}).get(filepath, {}).get(num, []),
+                )
                 source_declarations = source_context.get(num, [])
                 unsupported_sources = [
                     source_declaration for source_declaration in source_declarations
@@ -503,8 +527,9 @@ def render_context_files(ordered_dependencies: list[str], entry_point: str, cont
     return output
 
 
-def context_from_source_events(events, disabled_sources=()):
+def context_from_source_events(events, disabled_sources=(), line_replacements=()):
     source_declarations = defaultdict(lambda: defaultdict(list))
+    line_replacement_context = defaultdict(lambda: defaultdict(list))
 
     for event in events:
         source_declarations[str(event.location.path)][event.location.line - 1].append(ResolvedSource(
@@ -531,7 +556,23 @@ def context_from_source_events(events, disabled_sources=()):
             condition=disabled_source.condition,
         ))
 
-    return {'source_declarations': source_declarations}
+    for line_replacement in line_replacements:
+        replacements = line_replacement_context[str(line_replacement.location.path)][line_replacement.location.line - 1]
+        for existing in replacements:
+            if existing.old == line_replacement.old and existing.new != line_replacement.new:
+                raise UnsupportedSourceError(
+                    f"conflicting exact line replacement for {line_replacement.old}: "
+                    f"{existing.new} != {line_replacement.new}"
+                )
+            if existing == line_replacement:
+                break
+        else:
+            replacements.append(line_replacement)
+
+    return {
+        'source_declarations': source_declarations,
+        'line_replacements': line_replacement_context,
+    }
 
 
 def context_paths_from_source_events(entry_point: str, events):
@@ -566,7 +607,7 @@ def compile_sources(entry_point: str, output_file: str, mode: str = "context"):
 
     entry_point = os.path.abspath(entry_point)
     evaluation = SourceEvaluator(mode=mode).evaluate(entry_point)
-    context = context_from_source_events(evaluation.events, evaluation.disabled_sources)
+    context = context_from_source_events(evaluation.events, evaluation.disabled_sources, evaluation.line_replacements)
     if mode == "executable":
         output = render_executable_script(entry_point, context)
     else:

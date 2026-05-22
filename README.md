@@ -60,10 +60,17 @@ safe to lower, compilation fails before writing or overwriting the output file.
 - safe deterministic `find` sources with one matching file
 - safe `eval` payloads that resolve to exactly one source command
 - exact indexed array source paths, such as `source "${deps[0]}"`
+- computed exact indexed and associative array source paths, such as
+  `source "${deps[$i]}"` and `source "${by_env[$ENV]}"`
+- exact array append, indexed assignment, command-substitution array assignment,
+  and `mapfile` / `readarray -t` population from exact files
 - exact finite `for` loops over literal words, known scalar path variables,
-  default-IFS scalar word lists, or `${array[@]}` expansions
+  default-IFS scalar word lists, `${array[@]}` expansions, or safe
+  `cat` / `find` / `printf` command-substitution word lists
 - deterministic finite `for` loops over ordinary file globs, such as
   `for dep in ./plugins/*.sh; do source "$dep"; done`
+- bounded `while` / `until` loops with exact conditions, arithmetic mutations,
+  local `break` / `continue`, and `while read` file enumeration
 - option-aware finite loop globs for `nullglob`, `dotglob`, `globstar`,
   `nocaseglob`, practical `GLOBIGNORE` filtering, and brace expansion
 - direct source globs only when the glob resolves to exactly one file
@@ -86,15 +93,16 @@ Unsupported or ambiguous dynamic forms fail closed in executable mode. This
 includes direct source globs with multiple matches, unmatched or quoted globs,
 `extglob` patterns, `set -f` / `noglob`, `failglob` unmatched globs,
 `GLOBIGNORE` patterns that remove every source match, custom-IFS word
-splitting, unsupported command or glob-bearing file/bracket conditional
-predicates, unsupported case subjects or arm patterns, process substitution,
-unknown runtime-dynamic or recursive function dispatch, non-equivalent
-branch-defined functions, branch-dependent function returns, nested dynamic
-substitutions, and multi-result `cat` or `find` output.
+splitting outside modeled `read` loops, unsupported command or glob-bearing
+file/bracket conditional predicates, unsupported case subjects or arm patterns,
+process substitution, unknown runtime-dynamic or recursive function dispatch,
+non-equivalent branch-defined functions, branch-dependent function returns,
+nested dynamic substitutions, and multi-result `cat` or `find` output where a
+single source path is required.
 
-Control-flow evaluation beyond exact finite loops, modeled `if` blocks, and
-exact `case` blocks is intentionally fail-closed until broader glob,
-conditional, case, and function semantics are modeled. See
+Control-flow evaluation beyond exact finite loops, bounded `while` / `until`,
+modeled `if` blocks, and exact `case` blocks is intentionally fail-closed until
+broader glob, conditional, case, and function semantics are modeled. See
 [Dynamic Source Resolution](docs/dynamic-source-resolution.md) for the current
 resolver contract and [Evaluator And IR Plan](docs/evaluator-ir-plan.md) for
 the remaining pattern families.

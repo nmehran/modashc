@@ -8,8 +8,11 @@ variable/env-expanded paths, path command substitutions such as `dirname`,
 safe `cat`, safe `find`, safe `eval source`, and context-only `bash -c source`
 classification. The source-effect evaluator also supports exact finite `for`
 loops over literal words, known scalar path variables, default-IFS scalar word
-lists, and exact `${array[@]}` expansions, plus deterministic ordinary file
-globs in finite loop word lists.
+lists, exact `${array[@]}` expansions, safe command-substitution word lists,
+and deterministic ordinary file globs in finite loop word lists. Exact indexed,
+associative, appended, command-substitution, and file-populated arrays are
+modeled, as are bounded `while` / `until` loops and `while read` file
+enumeration.
 Direct source globs are accepted only when they resolve to exactly one file.
 Modeled `if` / `elif` / `else` blocks can lower source sites inside branches
 when branch predicates are side-effect-free and branch state is exact enough for
@@ -327,6 +330,61 @@ Currently rejected glob-affecting state includes `set -f`, `extglob`, direct
 source globs with multiple matches, and cases where `GLOBIGNORE` removes every
 matched source path.
 
+### Command-Substitution Word Lists
+
+Target loop forms:
+
+```bash
+for dep in $(cat deps.txt); do
+  source "$dep"
+done
+
+for dep in $(find ./plugins -type f -name '*.sh' -print); do
+  source "$dep"
+done
+
+deps=($(cat deps.txt))
+for dep in "${deps[@]}"; do
+  source "$dep"
+done
+```
+
+Accept only when the command substitution is a single safe producer:
+
+- `cat` with exact readable file operands
+- deterministic `find` with the existing safe predicate subset
+- `printf '%s\n' ...` with exact arguments
+
+Unquoted command-substitution output is split with default IFS. Quoted command
+substitution is accepted only when it produces exactly one non-empty line.
+Pipes, command separators, nested substitutions, backticks, and nondefault IFS
+word splitting remain fail-closed.
+
+### Bounded `while` / `until` And Read Loops
+
+Target forms:
+
+```bash
+i=0
+while (( i < 2 )); do
+  source "./deps/$i.sh"
+  ((i++))
+done
+
+while IFS= read -r dep; do
+  source "$dep"
+done < deps.txt
+```
+
+The evaluator models exact `while` / `until` conditions, exact arithmetic
+assignment and increment/decrement mutations, local `break` / `continue`, and a
+bounded iteration limit. It also models `while read` file enumeration, including
+the common `IFS= read -r` form for paths containing spaces.
+
+Unknown loop conditions, unsupported read options, multi-level loop control,
+and loops exceeding the modeled iteration limit fail before executable output is
+written.
+
 ### `bash -c "source ..."`
 
 Target forms:
@@ -355,10 +413,11 @@ boundary rather than inline the file into the parent shell.
 These still need separate specs before implementation:
 
 - Broader glob semantics beyond ordinary deterministic file globs.
-- Custom-IFS scalar word-list splitting.
+- Custom-IFS scalar word-list splitting outside modeled `read` loops.
 - Conditional predicates outside the modeled side-effect-free subset.
 - Broader case pattern and fallthrough semantics.
-- Complex array/list-based source paths.
+- Complex array/list-based source paths outside exact indexed, associative,
+  append, command-substitution, and file-populated arrays.
 - Broader user-defined function semantics, including runtime-dynamic dispatch,
   recursive calls, non-equivalent branch-defined functions, and
   branch-dependent returns.

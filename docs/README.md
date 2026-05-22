@@ -25,7 +25,10 @@ The intended approach is captured in the
 [Next-Generation Evaluator And IR Plan](evaluator-ir-plan.md):
 
 - Broader conditional predicate support
-- Complex array/list iteration
+- Remaining array/list iteration outside exact indexed, associative,
+  command-substitution, and file-populated arrays
+- Remaining loop forms outside exact `for`, bounded `while` / `until`, and
+  modeled `while read` file enumeration
 - Remaining glob semantics: `extglob`, direct source glob arguments, and full
   `GLOBIGNORE` edge behavior
 - Broader case pattern and fallthrough semantics

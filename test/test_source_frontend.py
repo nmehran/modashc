@@ -13,6 +13,7 @@ from methods.source_effects import (
     RawCommand,
     SetCommand,
     SourceSite,
+    WhileLoop,
 )
 from methods.source_frontend import LineParserFrontend
 
@@ -304,6 +305,28 @@ class LineParserFrontendTestCase(unittest.TestCase):
         self.assertEqual(loop.variable, "dep")
         self.assertEqual(loop.words, ("./a.sh", "./b.sh"))
         self.assertEqual([site.source_expression for site in loop.body if isinstance(site, SourceSite)], ['"$dep"'])
+
+    def test_parses_while_and_until_loop_nodes(self):
+        ir = self.parse("""\
+            while (( i < 2 )); do
+              source "./deps/$i.sh"
+              ((i++))
+            done
+            until false; do source ./once.sh; break; done
+            while IFS= read -r dep; do
+              source "$dep"
+            done < deps.txt
+            """)
+
+        self.assertEqual([type(node) for node in ir.nodes], [WhileLoop, WhileLoop, WhileLoop])
+        self.assertEqual([node.keyword for node in ir.nodes], ["while", "until", "while"])
+        self.assertEqual([node.condition for node in ir.nodes], ["(( i < 2 ))", "false", "IFS= read -r dep"])
+        self.assertEqual(ir.nodes[2].trailing, "< deps.txt")
+        self.assertEqual([site.source_expression for site in ir.source_sites], [
+            '"./deps/$i.sh"',
+            "./once.sh",
+            '"$dep"',
+        ])
 
     def test_marks_unparseable_for_loop_words_as_not_exact(self):
         ir = self.parse('for dep in "./unterminated; do source "$dep"; done\n')

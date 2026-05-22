@@ -914,6 +914,141 @@ class CompileRegressionTestCase(unittest.TestCase):
 
             project.assert_compiled_matches(self, "main.sh")
 
+    def test_command_substitution_loop_word_lists_match_bash(self):
+        with ScriptProject() as project:
+            project.write("a.sh", 'echo "a"\n')
+            project.write("b.sh", 'echo "b"\n')
+            project.write("deps.txt", "./a.sh\n./b.sh\n")
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in $(cat deps.txt); do
+                  source "$dep"
+                done
+                echo done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            self.assertNotIn("$(cat deps.txt)", project.path("compiled.sh").read_text())
+
+        with ScriptProject() as project:
+            project.write("plugins/b.sh", 'echo "b"\n')
+            project.write("plugins/a.sh", 'echo "a"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in $(find ./plugins -type f -name '*.sh' -print); do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            self.assertNotIn("$(find ./plugins", project.path("compiled.sh").read_text())
+
+        with ScriptProject() as project:
+            project.write("plugins/a.sh", 'echo "a"\n')
+            project.write("plugins/b.sh", 'echo "b"\n')
+            project.write("deps.txt", "./plugins/*.sh\n")
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in $(cat deps.txt); do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            self.assertNotIn("$(cat deps.txt)", project.path("compiled.sh").read_text())
+
+        with ScriptProject() as project:
+            project.write("deps dir#tag/a dep.sh", 'echo "special loop dep"\n')
+            project.write("dep-path.txt", "./deps dir#tag/a dep.sh\n")
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in "$(cat dep-path.txt)"; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            self.assertNotIn("$(cat dep-path.txt)", project.path("compiled.sh").read_text())
+
+    def test_while_until_and_read_loops_match_bash(self):
+        with ScriptProject() as project:
+            project.write("deps/0.sh", 'echo "zero:$i"\n')
+            project.write("deps/1.sh", 'echo "one:$i"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                i=0
+                while (( i < 2 )); do
+                  source "./deps/$i.sh"
+                  ((i++))
+                done
+                echo "i=$i"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            self.assertNotIn("deps.txt", project.path("compiled.sh").read_text())
+
+        with ScriptProject() as project:
+            project.write("deps/0.sh", 'echo "zero:$i"\n')
+            project.write("deps/1.sh", 'echo "one:$i"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                i=0
+                until (( i == 2 )); do
+                  source "./deps/$i.sh"
+                  ((i++))
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            self.assertNotIn("mapfile", project.path("compiled.sh").read_text())
+
+        with ScriptProject() as project:
+            project.write("deps dir#tag/a dep.sh", 'echo "special read dep"\n')
+            project.write("regular.sh", 'echo "regular read dep"\n')
+            project.write("deps.txt", "./deps dir#tag/a dep.sh\n./regular.sh\n")
+            project.write("main.sh", textwrap.dedent("""\
+                while IFS= read -r dep; do
+                  source "$dep"
+                done < deps.txt
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            self.assertNotIn("$(cat deps.txt)", project.path("compiled.sh").read_text())
+
+    def test_richer_array_sources_match_bash(self):
+        with ScriptProject() as project:
+            project.write("a.sh", 'echo "a"\n')
+            project.write("c.sh", 'echo "c"\n')
+            project.write("prod.sh", 'echo "prod"\n')
+            project.write("mapped.sh", 'echo "mapped"\n')
+            project.write("deps.txt", "./mapped.sh\n")
+            project.write("main.sh", textwrap.dedent("""\
+                deps=(./a.sh)
+                deps+=(./b.sh)
+                i=2
+                deps[$i]=./c.sh
+                source "${deps[0]}"
+                source "${deps[$i]}"
+                declare -A by_env=([prod]=./prod.sh)
+                ENV=prod
+                source "${by_env[$ENV]}"
+                mapfile -t loaded < deps.txt
+                source "${loaded[0]}"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            compiled = project.path("compiled.sh").read_text()
+            self.assertNotIn("mapfile", compiled)
+            self.assertNotIn("deps.txt", compiled)
+            self.assertIn("loaded=('./mapped.sh')", compiled)
+
+        with ScriptProject() as project:
+            project.write("a.sh", 'echo "a"\n')
+            project.write("b.sh", 'echo "b"\n')
+            project.write("deps.txt", "./a.sh\n./b.sh\n")
+            project.write("main.sh", textwrap.dedent("""\
+                project_deps=($(cat deps.txt))
+                for dep in "${project_deps[@]}"; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
     def test_heredoc_source_text_is_not_treated_as_dependency(self):
         with ScriptProject() as project:
             project.write("dep.sh", 'echo "dep should not run"\n')
@@ -1351,6 +1486,14 @@ class CompileRegressionTestCase(unittest.TestCase):
             "nondefault ifs scalar word-list loop": (
                 'IFS=:\nDEPS="./plugins/a.sh:./plugins/b.sh"\nfor file in $DEPS; do source "$file"; done\n',
                 'for file in $DEPS; do source "$file"; done',
+            ),
+            "unsupported command substitution loop pipeline": (
+                'for file in $(cat deps.txt | sort); do source "$file"; done\n',
+                'for file in $(cat deps.txt | sort); do source "$file"; done',
+            ),
+            "unknown while condition source": (
+                'while [[ -n "$LOAD_DEP" ]]; do\n  source ./dep.sh\n  break\n done\n',
+                'while [[ -n "$LOAD_DEP" ]]',
             ),
             "unmatched glob loop": (
                 'for file in ./missing/*.sh; do source "$file"; done\n',

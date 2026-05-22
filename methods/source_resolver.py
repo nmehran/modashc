@@ -1,7 +1,6 @@
 import glob
 import os
 import re
-import shlex
 from dataclasses import dataclass
 from fnmatch import fnmatch, fnmatchcase
 
@@ -159,10 +158,36 @@ def is_heredoc_end(line: str, heredoc: HeredocDelimiter):
 
 
 def parse_shell_words(command: str):
-    try:
-        return shlex.split(command, posix=True)
-    except ValueError as exc:
-        raise UnsupportedSourceError(f"unsupported source command syntax: {command.strip()} ({exc})") from exc
+    return [strip_shell_word_quotes(word) for word in parse_shell_words_preserving_quotes(command)]
+
+
+def strip_shell_word_quotes(word: str):
+    output = []
+    in_single_quote = False
+    in_double_quote = False
+    escaped = False
+
+    for char in word:
+        if escaped:
+            output.append(char)
+            escaped = False
+            continue
+
+        if char == '\\' and not in_single_quote:
+            escaped = True
+            continue
+
+        if char == "'" and not in_double_quote:
+            in_single_quote = not in_single_quote
+            continue
+
+        if char == '"' and not in_single_quote:
+            in_double_quote = not in_double_quote
+            continue
+
+        output.append(char)
+
+    return ''.join(output)
 
 
 def parse_shell_words_preserving_quotes(command: str):
@@ -171,42 +196,79 @@ def parse_shell_words_preserving_quotes(command: str):
     in_single_quote = False
     in_double_quote = False
     escaped = False
+    index = 0
+    current_started = False
 
-    for char in command:
+    while index < len(command):
+        char = command[index]
         if escaped:
             current.append(char)
             escaped = False
+            current_started = True
+            index += 1
             continue
 
         if char == '\\' and not in_single_quote:
             current.append(char)
             escaped = True
+            current_started = True
+            index += 1
             continue
 
         if char == "'" and not in_double_quote:
             in_single_quote = not in_single_quote
             current.append(char)
+            current_started = True
+            index += 1
             continue
 
         if char == '"' and not in_single_quote:
             in_double_quote = not in_double_quote
             current.append(char)
+            current_started = True
+            index += 1
+            continue
+
+        if not in_single_quote and command.startswith('$(', index):
+            body, end_index = _read_balanced_body(command, index + 2)
+            if end_index is None:
+                raise UnsupportedSourceError(
+                    f"unsupported source command syntax: {command.strip()} (unterminated command substitution)"
+                )
+            current.append(f"$({body})")
+            current_started = True
+            index = end_index + 1
+            continue
+
+        if not in_single_quote and char == '`':
+            body, end_index = _read_backtick_body(command, index + 1)
+            if body is None:
+                raise UnsupportedSourceError(
+                    f"unsupported source command syntax: {command.strip()} (unterminated backtick substitution)"
+                )
+            current.append(f"`{body}`")
+            current_started = True
+            index = end_index + 1
             continue
 
         if char.isspace() and not in_single_quote and not in_double_quote:
             word = ''.join(current).strip()
-            if word:
+            if current_started:
                 words.append(word)
             current = []
+            current_started = False
+            index += 1
             continue
 
         current.append(char)
+        current_started = True
+        index += 1
 
     if escaped or in_single_quote or in_double_quote:
         raise UnsupportedSourceError(f"unsupported source command syntax: {command.strip()} (unterminated quote)")
 
     word = ''.join(current).strip()
-    if word:
+    if current_started:
         words.append(word)
 
     return words

@@ -6,17 +6,20 @@ Partially implemented. The compiler now has a source-effect IR frontend,
 structured unsupported-source diagnostics, and an abstract evaluator that drives
 both executable and context rendering for the supported subset. Exact finite
 `for` loops over literal words, known scalar path variables, default-IFS scalar
-word lists, and exact `${array[@]}` expansions are implemented, along with
-deterministic ordinary file-glob loop expansion. Branch-aware `if` / `elif` /
-`else` lowering is implemented for the current side-effect-free predicate
-subset, including compound logical predicates, arithmetic predicates, regex
-and pattern matching, and safe `grep -q` file checks. Exact `case` blocks are
-implemented for known subjects and the modeled pattern subset. Bounded local
-function calls are implemented when the definition is known, arguments are
-exact, and source-relevant body effects are modeled. It remains fail-closed for
-broader glob semantics, custom-IFS word splitting, unsupported command
-predicates, broader case pattern semantics, broader function control flow,
-dynamic function dispatch, and runtime dispatch.
+word lists, exact `${array[@]}` expansions, safe command-substitution word
+lists, and deterministic file globs are implemented. Exact indexed,
+associative, appended, command-substitution, and file-populated arrays are
+modeled. Bounded `while` / `until` and `while read` file enumeration are also
+implemented. Branch-aware `if` / `elif` / `else` lowering is implemented for
+the current side-effect-free predicate subset, including compound logical
+predicates, arithmetic predicates, regex and pattern matching, and safe
+`grep -q` file checks. Exact `case` blocks are implemented for known subjects
+and the modeled pattern subset. Bounded local function calls are implemented
+when the definition is known, arguments are exact, and source-relevant body
+effects are modeled. It remains fail-closed for broader glob semantics,
+custom-IFS word splitting outside read loops, unsupported command predicates,
+broader case pattern semantics, recursive functions, runtime-dynamic function
+dispatch, and child-shell runtime dispatch.
 
 ## Problem
 
@@ -219,13 +222,18 @@ deps=(./a.sh "./b path.sh")
 source "${deps[0]}"
 ```
 
-Supported forms can include:
+Supported forms include:
 
 - `${array[0]}`
+- `${array[$index]}` when the index is exact
+- `${assoc[$key]}` when the key is exact
 - `${array[@]}` in loop word lists
-- simple indexed assignment, such as `deps[1]=./b.sh`
+- append and indexed assignment, such as `deps+=(./b.sh)` and
+  `deps[1]=./b.sh`
+- command-substitution array assignment, such as `deps=($(cat deps.txt))`
+- `mapfile` / `readarray -t` population from an exact file
 
-Associative arrays and computed indexes should be deferred unless exact.
+Associative arrays and computed indexes remain fail-closed unless exact.
 
 ### Shell Options
 
@@ -279,6 +287,14 @@ done
 for file in ./plugins/*.sh; do
   source "$file"
 done
+
+for file in $(cat deps.txt); do
+  source "$file"
+done
+
+while IFS= read -r file; do
+  source "$file"
+done < deps.txt
 ```
 
 The evaluator lowers these by proving the finite values, recording source events
@@ -290,17 +306,20 @@ original source site. Supported word inputs are:
 - known scalar path variables that expand to a single word
 - known scalar values that split under default `IFS`
 - deterministic ordinary file globs
+- safe `cat`, `find`, and `printf` command-substitution word lists
+- modeled `while read` file enumeration
+- bounded `while` / `until` conditions with exact arithmetic mutations
 
 Deferred word inputs are:
 
-- broader glob semantics under shell options such as `nullglob`, `dotglob`,
-  `globstar`, `extglob`, and `GLOBIGNORE`
-- scalar values that require custom `IFS` splitting
-- safe `find` output only if modeled as a word-list producer
-- command substitution word lists
+- broader glob semantics under shell options such as `extglob` and full
+  `GLOBIGNORE`
+- scalar values that require custom `IFS` splitting outside modeled read loops
+- command-substitution word lists outside the safe producer subset
+- loops whose conditions or mutations cannot be proven exact
 
-Iteration limits should be explicit before broader multi-result producers are
-added. Exceeding the limit should produce a structured unsupported diagnostic.
+Iteration limits are explicit. Exceeding the limit produces a structured
+unsupported diagnostic.
 
 ### Conditionals
 
@@ -490,12 +509,18 @@ new surface area.
 
 ### Phase 5: Exact Arrays And Finite Loops
 
-Implemented for the current exact subset. Direct exact indexed array source
-paths are supported:
+Implemented for the current exact subset. Direct exact indexed, computed
+indexed, and associative array source paths are supported:
 
 ```bash
 deps=(./a.sh ./b.sh)
 source "${deps[1]}"
+
+i=1
+source "${deps[$i]}"
+
+declare -A by_env=([prod]=./prod.sh)
+source "${by_env[$ENV]}"
 ```
 
 Exact finite loop source sites are also supported:
@@ -507,11 +532,14 @@ for dep in "${deps[@]}"; do
 done
 ```
 
-The supported loop forms include `for ...; do ... done` and newline-`do`
+The supported `for` forms include `for ...; do ... done` and newline-`do`
 variants. Word lists may contain literal words, known scalar path variables,
-default-IFS scalar word lists, exact `${array[@]}` expansion, or deterministic
-ordinary file globs. Custom-IFS splitting and `extglob` semantics remain
-unsupported until their semantics are modeled explicitly.
+default-IFS scalar word lists, exact `${array[@]}` expansion, safe
+`cat` / `find` / `printf` command-substitution word lists, or deterministic
+ordinary file globs. Array population supports exact append/index assignment,
+command-substitution array assignment, and `mapfile` / `readarray -t` from
+exact files. Custom-IFS splitting outside modeled `read` loops and `extglob`
+semantics remain unsupported until their semantics are modeled explicitly.
 
 ### Phase 6: Deterministic Globs
 
@@ -559,7 +587,16 @@ branch-defined functions, and function-call status for chained source sites are
 modeled. Recursive calls, branch-dependent returns, non-equivalent branch
 definitions, and runtime-dynamic dispatch remain unsupported until bounded.
 
-### Phase 10: Child-Shell Lowering
+### Phase 10: Bounded While/Until And Read Loops
+
+Implemented for exact source-aware loops. The evaluator models `while` /
+`until` loops when conditions resolve through the existing predicate evaluator
+and loop mutations are exact arithmetic commands or assignments. It also models
+`while read` file enumeration, including `IFS= read -r` paths with spaces.
+Loops have an explicit modeled iteration limit and fail closed when the
+condition, read redirection, loop control, or mutation cannot be proven exact.
+
+### Phase 11: Child-Shell Lowering
 
 If needed, add explicit child-shell rendering for executable mode. This should
 not be implemented by parent-shell inlining.
