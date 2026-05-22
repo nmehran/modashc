@@ -81,10 +81,10 @@ class ScriptProject:
         output_path = self.compile(entry, env=env, mode=mode)
         return self.run(output_path, cwd=cwd, env=env)
 
-    def sources(self, entry):
+    def sources(self, entry, mode="executable"):
         original_cwd = os.getcwd()
         try:
-            discovered, _ = get_sources(str(self.path(entry)))
+            discovered, _ = get_sources(str(self.path(entry)), mode=mode)
         finally:
             os.chdir(original_cwd)
         return [Path(path) for path in discovered]

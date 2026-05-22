@@ -103,8 +103,15 @@ def format_context_path(filepath: str, entry_point: str):
     return relative_path
 
 
-def construct_context_source_comment(source_expression: str, resolved_path: str, entry_point: str):
-    return f"# modashc: source {source_expression.strip()} -> {format_context_path(resolved_path, entry_point)}"
+def construct_context_source_comment(source_declaration, entry_point: str):
+    if source_declaration.execution_model == "parent-source":
+        source_label = f"source {source_declaration.source_expression.strip()}"
+        suffix = ""
+    else:
+        source_label = source_declaration.source_site.strip()
+        suffix = f" ({source_declaration.execution_model})"
+
+    return f"# modashc: {source_label} -> {format_context_path(source_declaration.path, entry_point)}{suffix}"
 
 
 def read_file(filepath):
@@ -115,6 +122,25 @@ def read_file(filepath):
 def write_output(filename, content):
     with open(filename, 'w') as file:
         file.write(content)
+
+
+def render_source_block(filepath: str, render_source, indent: str):
+    rendered_source = indent_block(render_source(filepath), indent)
+    return f"{{\n{rendered_source}\n{indent}}}"
+
+
+def replace_command_source_sites(line: str, source_declarations, render_source):
+    for source_declaration in source_declarations:
+        source_site = source_declaration.source_site.strip()
+        source_index = line.find(source_site)
+        if source_index < 0:
+            raise ValueError(f"Could not replace resolved source command: {source_site}")
+
+        indent = re.match(r'\s*', line[:source_index]).group(0)
+        replacement = render_source_block(source_declaration.path, render_source, indent)
+        line = line[:source_index] + replacement + line[source_index + len(source_site):]
+
+    return line
 
 
 def render_executable_script(entry_point: str, context: dict):
@@ -143,8 +169,25 @@ def render_executable_script(entry_point: str, context: dict):
                 if not stripped_line or stripped_line.startswith("#"):
                     continue
 
+                source_declarations = source_context.get(num, [])
+                unsupported_sources = [
+                    source_declaration for source_declaration in source_declarations
+                    if source_declaration.execution_model != "parent-source"
+                ]
+                if unsupported_sources:
+                    source_site = unsupported_sources[0].source_site
+                    raise NotImplementedError(f"unsupported non-parent source in executable mode: {source_site}")
+
                 line = replace_runtime_source_references(line, filepath, entry_point)
-                source_paths = [source_path for source_path, _ in source_context.get(num, [])]
+                command_sources = [
+                    source_declaration for source_declaration in source_declarations
+                    if source_declaration.replacement_kind == "command"
+                ]
+                line = replace_command_source_sites(line, command_sources, render_file)
+                source_paths = [
+                    source_declaration.path for source_declaration in source_declarations
+                    if source_declaration.replacement_kind == "source"
+                ]
                 line = replace_source_sites(line, source_paths, render_file)
                 output.append(line)
 
@@ -176,8 +219,8 @@ def render_context_files(ordered_dependencies: list[str], entry_point: str, cont
         output.append(construct_file_separator(filepath, entry_point))
 
         for num, line in enumerate(read_file(filepath).splitlines()):
-            for resolved_path, source_expression in source_context.get(num, []):
-                output.append(construct_context_source_comment(source_expression, resolved_path, entry_point))
+            for source_declaration in source_context.get(num, []):
+                output.append(construct_context_source_comment(source_declaration, entry_point))
             output.append(line)
 
         output.append('')
@@ -195,7 +238,7 @@ def compile_sources(entry_point: str, output_file: str, mode: str = "context"):
     if not os.path.isfile(entry_point):
         raise OSError(f"Error: entry point must be a file - {entry_point}")
 
-    sources, context = get_sources(os.path.abspath(entry_point))
+    sources, context = get_sources(os.path.abspath(entry_point), mode=mode)
     if mode == "executable":
         output = render_executable_script(entry_point, context)
     else:

@@ -2,10 +2,11 @@
 
 ## Status
 
-Draft. This spec defines the intended design for future implementation. The
-current compiler supports static sources, variable/env-expanded paths, and a
-small set of path command substitutions such as `dirname`, `basename`, and
-`realpath`. Other runtime-dynamic forms currently fail closed.
+Initial implementation. The compiler supports static sources,
+variable/env-expanded paths, path command substitutions such as `dirname`,
+`basename`, and `realpath`, plus the first Python-only dynamic resolver subset:
+safe `cat`, safe `find`, safe `eval source`, and context-only `bash -c source`
+classification. Unsupported forms fail closed.
 
 ## Goal
 
@@ -128,7 +129,7 @@ source "$(dirname "$BASH_SOURCE")/dep.sh"
 source "$(realpath ./dep.sh)"
 ```
 
-## Candidate Resolvers
+## Implemented Resolver Subset
 
 ### Safe `cat`
 
@@ -291,6 +292,9 @@ Regression tests should use real temporary shell projects through
 
 ## Implementation Plan
 
+The initial resolver layer now covers steps 1 through 7. Remaining work should
+keep extending the resolver registry in small, tested increments.
+
 1. Introduce a resolver result type and unsupported diagnostic type.
 2. Move current source-expression handling behind a resolver registry.
 3. Port existing literal, variable, env, `dirname`, `basename`, and `realpath`
@@ -299,6 +303,7 @@ Regression tests should use real temporary shell projects through
 5. Add safe `find`.
 6. Add safe `eval source`.
 7. Add `bash -c source` classification and mode-specific handling.
-8. Update context output to show execution-model annotations when needed.
+8. Continue refining context output execution-model annotations as new
+   non-parent-source dependency classes are added.
 
 Each step should keep the full test suite green and avoid broad parser rewrites.

@@ -71,6 +71,31 @@ class ContextModeTestCase(unittest.TestCase):
         self.assertIn('# modashc: source "./dir with spaces/dep.sh" -> dir with spaces/dep.sh', content)
         self.assertIn('source "./dir with spaces/dep.sh"', content)
 
+    def test_context_output_resolves_safe_cat_source(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "dep body"\n')
+            project.write("dep-path.txt", "./dep.sh\n")
+            project.write("main.sh", 'source "$(cat dep-path.txt)"\necho "main body"\n')
+
+            output = project.compile("main.sh")
+            content = output.read_text()
+
+        self.assertIn('echo "dep body"', content)
+        self.assertIn('# modashc: source "$(cat dep-path.txt)" -> dep.sh', content)
+        self.assertIn('source "$(cat dep-path.txt)"', content)
+
+    def test_context_output_classifies_bash_c_source_as_child_shell(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "dep body"\n')
+            project.write("main.sh", 'bash -c "source ./dep.sh"\necho "main body"\n')
+
+            output = project.compile("main.sh")
+            content = output.read_text()
+
+        self.assertIn('echo "dep body"', content)
+        self.assertIn('# modashc: bash -c "source ./dep.sh" -> dep.sh (child-shell)', content)
+        self.assertIn('bash -c "source ./dep.sh"', content)
+
     def test_context_mode_is_not_runtime_parity_mode(self):
         with ScriptProject() as project:
             project.write("dep.sh", 'echo "dep body"\n')

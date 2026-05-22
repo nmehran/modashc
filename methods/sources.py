@@ -1,6 +1,9 @@
 import os
 import re
+import shlex
 from collections import defaultdict
+from dataclasses import dataclass
+from fnmatch import fnmatch
 
 from methods.regex.utilities import extract_bash_commands, strip_matching_quotes, replace_substring
 from methods.regex.patterns import (
@@ -15,6 +18,20 @@ from methods.regex.patterns import (
 )
 
 RECURSION_LIMIT = 2
+
+
+class UnsupportedSourceError(NotImplementedError):
+    pass
+
+
+@dataclass(frozen=True)
+class ResolvedSource:
+    path: str
+    source_expression: str
+    source_site: str
+    execution_model: str = "parent-source"
+    confidence: str = "exact"
+    replacement_kind: str = "source"
 
 
 def validate_path(path):
@@ -291,7 +308,316 @@ def is_unsupported_dynamic_source(command: str, source_path: str | None = None):
     return False
 
 
-def extract_sources_and_variables(script_path, context, sources, seen_sources: dict, references=None):
+def parse_shell_words(command: str):
+    try:
+        return shlex.split(command, posix=True)
+    except ValueError as exc:
+        raise UnsupportedSourceError(f"unsupported source command syntax: {command.strip()} ({exc})") from exc
+
+
+def has_unsupported_shell_operator(command: str):
+    return bool(re.search(r'(?<!\\)(?:[|;&<>]|\n)', command))
+
+
+def extract_exact_command_substitution(source_expression: str):
+    expression = strip_matching_quotes(source_expression.strip())
+    if not expression.startswith('$(') or not expression.endswith(')'):
+        return None
+
+    inner_command = expression[2:-1].strip()
+    if not inner_command:
+        raise UnsupportedSourceError(f"unsupported empty source command substitution: {source_expression.strip()}")
+
+    if '$(' in inner_command or '`' in inner_command:
+        raise UnsupportedSourceError(f"unsupported nested source command substitution: {source_expression.strip()}")
+
+    return inner_command
+
+
+def resolve_safe_cat_source(inner_command: str, source_expression: str, source_site: str, context: dict,
+                            execution_model: str, replacement_kind: str):
+    if has_unsupported_shell_operator(inner_command):
+        raise UnsupportedSourceError(f"unsupported cat source command syntax: {source_site.strip()}")
+
+    words = parse_shell_words(inner_command)
+    if len(words) != 2 or words[0] != 'cat' or words[1].startswith('-'):
+        raise UnsupportedSourceError(f"unsupported cat source command: {source_site.strip()}")
+
+    path_file = resolve_path(words[1], context)
+    if not path_file or not os.path.isfile(path_file):
+        raise UnsupportedSourceError(f"unsupported cat source path file: {words[1]}")
+
+    with open(path_file, 'r') as file:
+        lines = file.read().splitlines()
+
+    if len(lines) != 1 or not lines[0].strip():
+        raise UnsupportedSourceError(f"ambiguous cat source output: {source_site.strip()}")
+
+    resolved_path = resolve_path(lines[0].strip(), context)
+    if not resolved_path:
+        raise UnsupportedSourceError(f"unsupported cat-resolved source path: {lines[0].strip()}")
+
+    return ResolvedSource(
+        path=resolved_path,
+        source_expression=source_expression.strip(),
+        source_site=source_site.strip(),
+        execution_model=execution_model,
+        replacement_kind=replacement_kind,
+    )
+
+
+def parse_find_command(words: list[str], context: dict):
+    if not words or words[0] != 'find':
+        return None
+
+    roots = []
+    index = 1
+    while index < len(words) and not words[index].startswith('-'):
+        roots.append(words[index])
+        index += 1
+
+    if not roots:
+        roots = ['.']
+
+    resolved_roots = []
+    for root in roots:
+        resolved_root = resolve_path(root, context)
+        if not resolved_root or not os.path.isdir(resolved_root):
+            raise UnsupportedSourceError(f"unsupported find source root: {root}")
+        resolved_roots.append(resolved_root)
+
+    filters = {
+        'name': [],
+        'path': [],
+        'maxdepth': None,
+        'mindepth': 0,
+    }
+
+    while index < len(words):
+        token = words[index]
+        if token == '-name':
+            index += 1
+            if index >= len(words):
+                raise UnsupportedSourceError("unsupported find source command: missing -name pattern")
+            filters['name'].append(words[index])
+        elif token == '-path':
+            index += 1
+            if index >= len(words):
+                raise UnsupportedSourceError("unsupported find source command: missing -path pattern")
+            filters['path'].append(words[index])
+        elif token == '-type':
+            index += 1
+            if index >= len(words) or words[index] != 'f':
+                raise UnsupportedSourceError("unsupported find source command: only -type f is supported")
+        elif token == '-maxdepth':
+            index += 1
+            if index >= len(words) or not words[index].isdigit():
+                raise UnsupportedSourceError("unsupported find source command: invalid -maxdepth")
+            filters['maxdepth'] = int(words[index])
+        elif token == '-mindepth':
+            index += 1
+            if index >= len(words) or not words[index].isdigit():
+                raise UnsupportedSourceError("unsupported find source command: invalid -mindepth")
+            filters['mindepth'] = int(words[index])
+        elif token in {'-print', '-quit'}:
+            pass
+        else:
+            raise UnsupportedSourceError(f"unsupported find source predicate: {token}")
+        index += 1
+
+    return resolved_roots, filters
+
+
+def find_candidate_matches(roots: list[str], filters: dict, context: dict):
+    matches = []
+    current_directory = context['current_directory']
+
+    for root in roots:
+        for directory, dirnames, filenames in os.walk(root):
+            dirnames.sort()
+            filenames.sort()
+
+            relative_directory = os.path.relpath(directory, root)
+            directory_depth = 0 if relative_directory == os.curdir else len(relative_directory.split(os.sep))
+            maxdepth = filters['maxdepth']
+            if maxdepth is not None and directory_depth >= maxdepth:
+                dirnames[:] = []
+
+            for filename in filenames:
+                candidate = os.path.join(directory, filename)
+                candidate_depth = directory_depth + 1
+                if candidate_depth < filters['mindepth']:
+                    continue
+                if maxdepth is not None and candidate_depth > maxdepth:
+                    continue
+                if not os.path.isfile(candidate):
+                    continue
+                if filters['name'] and not any(fnmatch(filename, pattern) for pattern in filters['name']):
+                    continue
+
+                relative_to_current = os.path.relpath(candidate, current_directory)
+                path_variants = {
+                    candidate,
+                    relative_to_current,
+                    f"./{relative_to_current}" if not relative_to_current.startswith(os.pardir) else relative_to_current,
+                }
+                if filters['path'] and not any(
+                    fnmatch(path_variant, pattern)
+                    for pattern in filters['path']
+                    for path_variant in path_variants
+                ):
+                    continue
+
+                matches.append(os.path.abspath(candidate))
+
+    return sorted(set(matches))
+
+
+def resolve_safe_find_source(inner_command: str, source_expression: str, source_site: str, context: dict,
+                             execution_model: str, replacement_kind: str):
+    if has_unsupported_shell_operator(inner_command):
+        raise UnsupportedSourceError(f"unsupported find source command syntax: {source_site.strip()}")
+
+    words = parse_shell_words(inner_command)
+    parsed_find = parse_find_command(words, context)
+    if not parsed_find:
+        return None
+
+    roots, filters = parsed_find
+    matches = find_candidate_matches(roots, filters, context)
+    if len(matches) != 1:
+        raise UnsupportedSourceError(f"ambiguous find source output: {source_site.strip()}")
+
+    return ResolvedSource(
+        path=matches[0],
+        source_expression=source_expression.strip(),
+        source_site=source_site.strip(),
+        execution_model=execution_model,
+        replacement_kind=replacement_kind,
+    )
+
+
+def resolve_source_expression(source_expression: str, source_site: str, context: dict,
+                              execution_model: str = "parent-source", replacement_kind: str = "source"):
+    if '`' in source_expression:
+        raise UnsupportedSourceError(f"unsupported backtick source command: {source_site.strip()}")
+
+    if resolved_path := resolve_path(source_expression, context):
+        return ResolvedSource(
+            path=resolved_path,
+            source_expression=source_expression.strip(),
+            source_site=source_site.strip(),
+            execution_model=execution_model,
+            replacement_kind=replacement_kind,
+        )
+
+    inner_command = extract_exact_command_substitution(source_expression)
+    if inner_command:
+        words = parse_shell_words(inner_command)
+        if not words:
+            raise UnsupportedSourceError(f"unsupported empty source command substitution: {source_site.strip()}")
+
+        resolver = SOURCE_COMMAND_SUBSTITUTION_RESOLVERS.get(words[0])
+        if resolver:
+            return resolver(
+                inner_command, source_expression, source_site, context, execution_model, replacement_kind
+            )
+        raise UnsupportedSourceError(f"unsupported source command substitution: {source_site.strip()}")
+
+    if is_unsupported_dynamic_source(source_site, source_expression):
+        raise UnsupportedSourceError(f"unsupported dynamic source command: {source_site.strip()}")
+
+    return None
+
+
+def resolve_single_source_payload(payload: str, source_site: str, context: dict,
+                                  execution_model: str, replacement_kind: str):
+    if '$(' in payload or '`' in payload:
+        raise UnsupportedSourceError(f"unsupported nested dynamic source command: {source_site.strip()}")
+    if has_unsupported_shell_operator(payload):
+        raise UnsupportedSourceError(f"unsupported source command syntax: {source_site.strip()}")
+
+    payload_commands = get_commands(payload)
+    if len(payload_commands) != 1:
+        raise UnsupportedSourceError(f"unsupported multi-command source payload: {source_site.strip()}")
+
+    source_matches = SOURCE_PATTERN.findall(payload_commands[0])
+    if len(source_matches) != 1:
+        raise UnsupportedSourceError(f"unsupported source payload: {source_site.strip()}")
+
+    _, _, nested_source_expression = source_matches[0]
+    return resolve_source_expression(
+        nested_source_expression,
+        source_site,
+        context,
+        execution_model=execution_model,
+        replacement_kind=replacement_kind,
+    )
+
+
+SOURCE_COMMAND_SUBSTITUTION_RESOLVERS = {
+    'cat': resolve_safe_cat_source,
+    'find': resolve_safe_find_source,
+}
+
+
+def resolve_eval_source_command(command: str, context: dict, _mode: str):
+    stripped_command = command.strip()
+    if not re.match(r'^eval\b', stripped_command):
+        return None
+
+    words = parse_shell_words(stripped_command)
+    if len(words) != 2 or words[0] != 'eval':
+        raise UnsupportedSourceError(f"unsupported eval source command: {stripped_command}")
+
+    payload = os.path.expandvars(resolve_variable_references(words[1], context))
+    return resolve_single_source_payload(
+        payload,
+        stripped_command,
+        context,
+        execution_model="parent-source",
+        replacement_kind="command",
+    )
+
+
+def resolve_bash_c_source_command(command: str, context: dict, mode: str):
+    stripped_command = command.strip()
+    if not re.match(r'^(?:bash|/bin/bash|/usr/bin/bash)\b', stripped_command):
+        return None
+
+    words = parse_shell_words(stripped_command)
+    if len(words) != 3 or words[1] != '-c':
+        return None
+
+    if mode != "context":
+        raise UnsupportedSourceError(f"unsupported child-shell source command in executable mode: {stripped_command}")
+
+    payload = os.path.expandvars(resolve_variable_references(words[2], context))
+    return resolve_single_source_payload(
+        payload,
+        stripped_command,
+        context,
+        execution_model="child-shell",
+        replacement_kind="context",
+    )
+
+
+def resolve_command_level_source(command: str, context: dict, mode: str):
+    for resolver in COMMAND_LEVEL_SOURCE_RESOLVERS:
+        resolved_source = resolver(command, context, mode)
+        if resolved_source:
+            return resolved_source
+
+    return None
+
+
+COMMAND_LEVEL_SOURCE_RESOLVERS = (
+    resolve_eval_source_command,
+    resolve_bash_c_source_command,
+)
+
+
+def extract_sources_and_variables(script_path, context, sources, seen_sources: dict, references=None, mode="executable"):
     """Extract source statements and global variables from a shell script."""
 
     if not validate_path(script_path):
@@ -335,21 +661,31 @@ def extract_sources_and_variables(script_path, context, sources, seen_sources: d
                         resolved_command, _ = resolve_command(var_value, context)
                         context['vars'][var_name] = resolved_command
 
+                    resolved_sources = []
+
                     # Match source statements
                     source_matches = SOURCE_PATTERN.findall(command)
-                    if not source_matches and is_unsupported_dynamic_source(command):
-                        raise NotImplementedError(f"unsupported dynamic source command: {command.strip()}")
+                    for _, source_command, source_path in source_matches:
+                        source_site = f"{source_command} {source_path.strip()}"
+                        resolved_source = resolve_source_expression(source_path, source_site, context)
+                        if resolved_source:
+                            resolved_sources.append(resolved_source)
 
-                    for _, _, source_path in source_matches:
-                        resolved_path = resolve_path(source_path, context)
-                        if resolved_path:
-                            context['source_declarations'][script_path][num].append((resolved_path, source_path))
-                            extract_sources_and_variables(resolved_path, context, sources, seen_sources, references)
-                            context['vars']['BASH_SOURCE'] = os.path.abspath(script_path)
-                            if seen_sources[resolved_path][script_path] == 1:
-                                sources.append(resolved_path)
-                        elif is_unsupported_dynamic_source(command, source_path):
-                            raise NotImplementedError(f"unsupported dynamic source command: {command.strip()}")
+                    if not source_matches:
+                        resolved_source = resolve_command_level_source(command, context, mode)
+                        if resolved_source:
+                            resolved_sources.append(resolved_source)
+                        elif is_unsupported_dynamic_source(command):
+                            raise UnsupportedSourceError(f"unsupported dynamic source command: {command.strip()}")
+
+                    for resolved_source in resolved_sources:
+                        context['source_declarations'][script_path][num].append(resolved_source)
+                        extract_sources_and_variables(
+                            resolved_source.path, context, sources, seen_sources, references, mode=mode
+                        )
+                        context['vars']['BASH_SOURCE'] = os.path.abspath(script_path)
+                        if seen_sources[resolved_source.path][script_path] == 1:
+                            sources.append(resolved_source.path)
     finally:
         if previous_bash_source is None:
             context['vars'].pop('BASH_SOURCE', None)
@@ -359,7 +695,7 @@ def extract_sources_and_variables(script_path, context, sources, seen_sources: d
     return sources
 
 
-def get_sources(entrypoint):
+def get_sources(entrypoint, mode="executable"):
     sources = []
 
     # Initialize context with the entry point
@@ -370,6 +706,6 @@ def get_sources(entrypoint):
         'source_declarations': {}}
     change_directory(current_directory, context)
 
-    extract_sources_and_variables(entrypoint, context, sources, seen_sources={})
+    extract_sources_and_variables(entrypoint, context, sources, seen_sources={}, mode=mode)
     sources.append(entrypoint)
     return sources, context

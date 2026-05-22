@@ -111,6 +111,34 @@ class CompileRegressionTestCase(unittest.TestCase):
 
             project.assert_compiled_matches(self, "main.sh", env={"DEP_PATH": dep})
 
+    def test_safe_cat_dynamic_source_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "dep from cat"\n')
+            project.write("dep-path.txt", "./dep.sh\n")
+            project.write("main.sh", 'source "$(cat dep-path.txt)"\necho "main"\n')
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_safe_find_dynamic_source_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("plugins/init.sh", 'echo "dep from find"\n')
+            project.write("main.sh", 'source "$(find ./plugins -type f -name init.sh -print -quit)"\necho "main"\n')
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_safe_eval_source_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "dep from eval"\n')
+            project.write("main.sh", 'eval "source ./dep.sh"\necho "main"\n')
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            dep = project.write("dep.sh", 'echo "dep from eval var"\n')
+            project.write("main.sh", 'DEP_PATH="{0}"\neval ". \\"$DEP_PATH\\""\necho "main"\n'.format(dep))
+
+            project.assert_compiled_matches(self, "main.sh")
+
     def test_parent_variables_are_available_before_sourced_file_runs(self):
         with ScriptProject() as project:
             project.write("dep.sh", 'echo "dep:${FOO:-missing}"\n')
@@ -169,21 +197,37 @@ class CompileRegressionTestCase(unittest.TestCase):
 
     def test_runtime_dynamic_sources_raise_clear_diagnostic(self):
         cases = {
-            "find": 'source "$(find . -name dep.sh)"\n',
-            "cat": 'source "$(cat dep-path.txt)"\n',
-            "eval": 'eval "source ./dep.sh"\n',
-            "bash c": 'bash -c "source ./dep.sh"\n',
+            "cat multiple operands": 'source "$(cat dep-path.txt other.txt)"\n',
+            "cat multiple lines": 'source "$(cat dep-path.txt)"\n',
+            "cat pipe": 'source "$(cat dep-path.txt | head -1)"\n',
+            "find multiple matches": 'source "$(find . -name dep.sh)"\n',
+            "find exec": 'source "$(find . -name dep.sh -exec echo {} \\;)"\n',
+            "eval extra command": 'eval "source ./dep.sh; echo unsafe"\n',
+            "eval nested dynamic": 'eval "source $(cat dep-path.txt)"\n',
             "backticks": "source `cat dep-path.txt`\n",
         }
 
         for name, content in cases.items():
             with self.subTest(name=name), ScriptProject() as project:
                 project.write("dep.sh", 'echo "dep"\n')
-                project.write("dep-path.txt", "./dep.sh\n")
+                project.write("nested/dep.sh", 'echo "nested dep"\n')
+                if name == "cat multiple lines":
+                    project.write("dep-path.txt", "./dep.sh\n./nested/dep.sh\n")
+                else:
+                    project.write("dep-path.txt", "./dep.sh\n")
+                project.write("other.txt", "./nested/dep.sh\n")
                 project.write("main.sh", content)
 
-                with self.assertRaisesRegex((ValueError, NotImplementedError), "unsupported|dynamic|source"):
+                with self.assertRaisesRegex((ValueError, NotImplementedError), "unsupported|ambiguous|dynamic|source"):
                     project.compile("main.sh")
+
+    def test_bash_c_source_is_rejected_for_executable_mode(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "dep"\n')
+            project.write("main.sh", 'bash -c "source ./dep.sh"\n')
+
+            with self.assertRaisesRegex(NotImplementedError, "child-shell|unsupported"):
+                project.compile("main.sh", mode="executable")
 
 
 if __name__ == "__main__":
