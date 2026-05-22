@@ -7,9 +7,11 @@ structured unsupported-source diagnostics, and an abstract evaluator that drives
 both executable and context rendering for the supported subset. Exact finite
 `for` loops over literal words, known scalar path variables, and exact
 `${array[@]}` expansions are implemented, along with deterministic ordinary
-file-glob loop expansion. It remains fail-closed for broader glob semantics,
-scalar word-list splitting, conditionals, case statements, modeled functions,
-and runtime dispatch.
+file-glob loop expansion. Branch-aware `if` / `elif` / `else` lowering is
+implemented for the current side-effect-free predicate subset. It remains
+fail-closed for broader glob semantics, scalar word-list splitting, unsupported
+conditional predicates, case statements, modeled functions, and runtime
+dispatch.
 
 ## Problem
 
@@ -29,8 +31,9 @@ esac
 ```
 
 Supporting those safely requires continuing the compiler model, not adding more
-ad hoc source regexes. The next steps are branch-aware conditional and case
-evaluation, then modeled function calls.
+ad hoc source regexes. Branch-aware `if` lowering is implemented for the first
+predicate subset. The next steps are case evaluation, broader practical
+conditional predicates, then modeled function calls.
 
 ## Goals
 
@@ -284,19 +287,33 @@ added. Exceeding the limit should produce a structured unsupported diagnostic.
 
 ### Conditionals
 
-Conditionals need two modes:
+Conditionals now use two modes:
 
-- **Provable condition**: evaluate only the reachable branch.
-- **Unknown condition**: context mode may record conditional dependencies;
-  executable mode should reject unless a lowering strategy preserves Bash
-  behavior.
+- **Exact condition**: evaluate the selected branch state when the predicate is
+  known from modeled variables.
+- **Unknown side-effect-free condition**: preserve the original branch in
+  executable output, replace only modeled source sites inside it, and merge
+  branch state only when source-relevant state converges.
 
-Safe provable conditions can include:
+Implemented predicates include:
 
 - `[[ -f path ]]`
 - `[[ -d path ]]`
+- `[[ -e path ]]`
 - `[[ -n "$KNOWN" ]]`
+- `[[ -z "$KNOWN" ]]`
 - exact string equality
+- `[ -f path ]`, `[ -d path ]`, `[ -e path ]`
+- `test -f path`, `test -d path`, `test -e path`
+
+Unsupported but practical predicates to track:
+
+- compound predicates with `&&` or `||`
+- command predicates such as `grep -q`
+- arithmetic predicates using `(( ... ))`
+- pattern or regex predicates such as `=~`
+- nested branch semantics that exceed the current line frontend
+- divergent branch state followed by later state-dependent source resolution
 
 ### Case Statements
 
@@ -463,17 +480,28 @@ Remaining glob work:
 - recursive `**`
 - brace expansion
 
-### Phase 7: Provable Conditionals And Cases
+### Phase 7: Branch-Aware Conditionals
 
-Support file tests and exact string comparisons. Context mode may gain
-conditional provenance; executable mode should remain strict.
+Implemented for `if` / `elif` / `else` blocks with the current side-effect-free
+predicate subset. Executable mode preserves the original branch structure and
+replaces modeled source sites inside branches. Context mode annotates
+conditional and mutually exclusive provenance.
 
-### Phase 8: Modeled Functions
+Branch state merges only when exact. Divergent branch cwd, variables, arrays, or
+shell options are allowed until a later source-relevant operation depends on
+that divergent state; then executable mode fails before output.
+
+### Phase 8: Case Statements
+
+Support exact subjects and mutually exclusive source arms. Reuse the branch
+state merge model from `if` blocks.
+
+### Phase 9: Modeled Functions
 
 Evaluate known local functions whose source-relevant behavior is fully modeled.
 Reject recursive or runtime-dynamic function dispatch unless bounded.
 
-### Phase 9: Child-Shell Lowering
+### Phase 10: Child-Shell Lowering
 
 If needed, add explicit child-shell rendering for executable mode. This should
 not be implemented by parent-shell inlining.
@@ -512,10 +540,6 @@ Representative fixtures should include:
 
 ## Open Questions
 
-- Should context mode include conditional dependency metadata in comments, such
-  as `# modashc: if [[ -f ./local.sh ]] source ./local.sh -> local.sh`?
-- Should executable mode ever lower unknown conditionals by preserving the
-  original branch and replacing only the source inside it?
 - What iteration limit should loop unrolling use by default?
 - Should a real Bash parser be adopted before Phase 3, or only after the IR
   interface is stable?

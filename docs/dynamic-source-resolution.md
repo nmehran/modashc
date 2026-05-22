@@ -10,6 +10,9 @@ classification. The source-effect evaluator also supports exact finite `for`
 loops over literal words, known scalar path variables, and exact `${array[@]}`
 expansions, plus deterministic ordinary file globs in finite loop word lists.
 Direct source globs are accepted only when they resolve to exactly one file.
+Modeled `if` / `elif` / `else` blocks can lower source sites inside branches
+when branch predicates are side-effect-free and branch state is exact enough for
+later source resolution.
 Unsupported forms fail closed.
 
 ## Goal
@@ -150,6 +153,16 @@ for dep in ./plugins/*.sh; do
 done
 
 source ./single-plugin/*.sh
+
+if [[ -f ./optional.sh ]]; then
+  source ./optional.sh
+fi
+
+if [[ "$MODE" == prod ]]; then
+  source ./prod.sh
+else
+  source ./dev.sh
+fi
 ```
 
 ## Implemented Resolver Subset
@@ -336,16 +349,25 @@ These still need separate specs before implementation:
     source "$file"
   done
   ```
-- Conditional sources:
-  ```bash
-  if [[ -f ./local.sh ]]; then
-    source ./local.sh
-  fi
-  ```
 - Case-driven source selection.
 - Complex array/list-based source paths.
 - User-defined functions that compute source paths.
 - Process substitution and generated source streams.
+
+### Unsupported But Practical
+
+These are intentionally tracked as practical future work, not permanently
+unsupported forms:
+
+- Compound conditional predicates such as `[[ -f ./a.sh && -n "$LOAD" ]]`.
+- Command predicates such as `if grep -q enabled config; then ...`.
+- Arithmetic predicates such as `if (( COUNT > 0 )); then ...`.
+- Pattern/regex predicates such as `[[ "$MODE" =~ ^prod ]]`.
+- Nested modeled control flow inside branch bodies when the current line
+  frontend cannot preserve exact nested locations.
+- Branch-divergent cwd, variables, arrays, or shell options followed by later
+  source resolution that depends on that divergent state.
+- Case-driven source selection.
 
 These are not merely more dynamic resolvers. They require control-flow and
 multi-result semantics, and they should be designed separately.
@@ -385,6 +407,8 @@ scope:
   scalar path variables, and exact `${array[@]}` expansion.
 - Deterministic ordinary file-glob loop lowering is implemented, and direct
   source globs are implemented for one-match cases only.
+- Branch-aware `if` / `elif` / `else` source lowering is implemented for the
+  side-effect-free predicate subset and fail-closed branch-state merge.
 - Executable mode fails before output when unsupported source forms would leave
   live runtime `source` commands.
 
@@ -392,7 +416,7 @@ Structured diagnostic objects are implemented for unsupported source failures.
 Current diagnostics are raised as explicit `UnsupportedSourceError` instances
 with stable codes, source locations, rejected fragments, messages, and hints.
 
-Future resolver increments should stay small, tested, and fail-closed.
-Conditional, case, complex array, broader glob, and runtime-dispatch support
+Future resolver increments should stay small, tested, and fail-closed. Case,
+complex array, broader conditional, broader glob, and runtime-dispatch support
 should not be added as one-off resolver patches; those belong in the
 evaluator/IR design.
