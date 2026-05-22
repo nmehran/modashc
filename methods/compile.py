@@ -3,6 +3,7 @@ import re
 from collections import defaultdict
 
 from methods.regex.patterns import SOURCE_PATTERN
+from methods.shell_line import get_commands
 from methods.source_evaluator import SourceEvaluator
 from methods.source_resolver import (
     ResolvedSource,
@@ -335,10 +336,16 @@ def assert_no_unresolved_source_sites(content: str):
         stripped_line = line.strip()
         if not stripped_line or stripped_line.startswith("#"):
             continue
-        if SOURCE_PATTERN.findall(line) or contains_source_command(line) or contains_nested_source_command(line):
+        if line_contains_unresolved_source(line):
             raise UnsupportedSourceError(f"unresolved source remained in executable output: {stripped_line}")
 
         active_heredocs.extend(extract_heredoc_delimiters(line))
+
+
+def line_contains_unresolved_source(line: str):
+    if SOURCE_PATTERN.findall(line) or contains_nested_source_command(line):
+        return True
+    return any(contains_source_command(command) for command in get_commands(line))
 
 
 def render_executable_script(entry_point: str, context: dict):

@@ -216,6 +216,25 @@ class CompileRegressionTestCase(unittest.TestCase):
 
             project.assert_compiled_matches(self, "main.sh")
 
+    def test_empty_scalar_for_loop_sources_match_bash_without_live_source(self):
+        with ScriptProject() as project:
+            project.write("a.sh", 'echo "should not run"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                dep=./a.sh
+                DEPS=""
+                for dep in $DEPS; do source "$dep"; done
+                echo "done:$dep"
+                """))
+
+            output = project.compile("main.sh", mode="executable")
+            expected = project.run("main.sh")
+            actual = project.run(output)
+            compiled_content = output.read_text()
+
+        self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
+        self.assertEqual(actual.stdout, expected.stdout)
+        self.assertNotIn('source "$dep"', compiled_content)
+
     def test_exact_for_loop_repeated_same_line_sources_match_bash(self):
         with ScriptProject() as project:
             project.write("a.sh", 'echo "repeat:a"\n')

@@ -361,6 +361,10 @@ class SourceEvaluator:
                 return
             raise
 
+        if not words:
+            self._disable_unreachable_sources(node.body, f"for {node.variable} in {node.words_text}")
+            return
+
         for word in words:
             state.variables[node.variable] = word
             state.runtime_variables[node.variable] = word

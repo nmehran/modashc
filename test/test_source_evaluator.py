@@ -540,6 +540,19 @@ class SourceEvaluatorTestCase(unittest.TestCase):
         self.assertEqual([event.path for event in result.events], [dep])
         self.assertEqual([event.source_value for event in result.events], ["./deps dir#tag/a dep.sh"])
 
+    def test_empty_scalar_for_loop_sources_are_disabled(self):
+        with ScriptProject() as project:
+            entry = project.write("main.sh", textwrap.dedent("""\
+                DEPS=""
+                for dep in $DEPS; do source "$dep"; done
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual(result.events, ())
+        self.assertEqual([disabled.source_site for disabled in result.disabled_sources], ['source "$dep"'])
+        self.assertEqual(result.disabled_sources[0].condition, "for dep in $DEPS")
+
     def test_exact_glob_for_loop_sources_are_evaluated(self):
         with ScriptProject() as project:
             second = project.write("plugins/b.sh", 'echo "b"\n')
