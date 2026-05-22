@@ -16,9 +16,9 @@ when branch predicates are side-effect-free and branch state is exact enough for
 later source resolution. Executable mode neutralizes source sites in statically
 unreachable branches instead of resolving or preserving them as live runtime
 sources. The current modeled condition subset includes exact file/string tests,
-compound logical predicates, arithmetic predicates, regex matching, and safe
-`grep -q` file checks. Exact `case` blocks can lower source sites for known
-scalar subjects and modeled arm patterns, with non-matching arm sources
+compound logical predicates, arithmetic predicates, regex and pattern matching,
+and safe `grep -q` file checks. Exact `case` blocks can lower source sites for
+known scalar subjects and modeled arm patterns, with non-matching arm sources
 neutralized in executable output. Bounded local function calls can lower sources
 when the function definition is known, arguments are exact, and source-relevant
 function body effects are modeled.

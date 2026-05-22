@@ -10,13 +10,13 @@ word lists, and exact `${array[@]}` expansions are implemented, along with
 deterministic ordinary file-glob loop expansion. Branch-aware `if` / `elif` /
 `else` lowering is implemented for the current side-effect-free predicate
 subset, including compound logical predicates, arithmetic predicates, regex
-matching, and safe `grep -q` file checks. Exact `case` blocks are implemented
-for known subjects and the modeled pattern subset. Bounded local function calls
-are implemented when the definition is known, arguments are exact, and
-source-relevant body effects are modeled. It remains fail-closed for broader
-glob semantics, custom-IFS word splitting, unsupported command predicates,
-broader case pattern semantics, broader function control flow, dynamic function
-dispatch, and runtime dispatch.
+and pattern matching, and safe `grep -q` file checks. Exact `case` blocks are
+implemented for known subjects and the modeled pattern subset. Bounded local
+function calls are implemented when the definition is known, arguments are
+exact, and source-relevant body effects are modeled. It remains fail-closed for
+broader glob semantics, custom-IFS word splitting, unsupported command
+predicates, broader case pattern semantics, broader function control flow,
+dynamic function dispatch, and runtime dispatch.
 
 ## Problem
 
@@ -318,6 +318,8 @@ Implemented predicates include:
 - `[[ -n "$KNOWN" ]]`
 - `[[ -z "$KNOWN" ]]`
 - exact string equality
+- `[[ "$KNOWN" == pattern* ]]` and `[[ "$KNOWN" == $KNOWN_PATTERN ]]`
+  pattern predicates
 - compound `[[ ... && ... ]]`, `[[ ... || ... ]]`, and `!` predicates when
   each atom is modeled
 - integer tests such as `[[ "$COUNT" -gt 1 ]]`

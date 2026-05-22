@@ -78,6 +78,8 @@ CONDITION_BINARY_OPERATORS = (
 )
 GREP_LITERAL_META_PATTERN = re.compile(r'[.\[\\*^$]')
 POSIX_CLASS_PATTERN = re.compile(r'\[\[:[a-zA-Z_]+:\]\]')
+PYTHON_ONLY_REGEX_PATTERN = re.compile(r'\(\?|\\[AbBdDsSwWZ]')
+LAZY_REGEX_QUANTIFIER_PATTERN = re.compile(r'(?:[*+?]|\{[0-9]+(?:,[0-9]*)?\})\?')
 
 
 @dataclass
@@ -1101,11 +1103,14 @@ class SourceEvaluator:
     def _evaluate_condition_binary(self, left_token: str, operator: str, right_token: str,
                                    state: EvaluationState, condition: str):
         if operator in CONDITION_STRING_OPERATORS:
+            is_double_bracket = condition.strip().startswith("[[")
+            if not is_double_bracket and (has_unquoted_glob(left_token) or has_unquoted_glob(right_token)):
+                raise UnsupportedSourceError(f"unsupported glob if condition: {condition}")
             left = self._condition_value(left_token, state)
             right = self._condition_value(right_token, state)
             if left is None or right is None:
                 return "unknown"
-            if operator in {"=", "=="} and condition.strip().startswith("[[") and has_unquoted_glob(right_token):
+            if is_double_bracket and self._condition_rhs_is_pattern(right_token, right):
                 result = fnmatchcase(left, right)
             else:
                 result = left == right
@@ -1134,6 +1139,14 @@ class SourceEvaluator:
             return self._evaluate_condition_regex(left_token, right_token, state, condition)
 
         raise UnsupportedSourceError(f"unsupported if condition: {condition}")
+
+    @staticmethod
+    def _condition_rhs_is_pattern(raw_token: str, resolved_value: str):
+        if has_unquoted_glob(raw_token):
+            return True
+        if SourceEvaluator._raw_word_is_single_quoted(raw_token) or SourceEvaluator._raw_word_is_double_quoted(raw_token):
+            return False
+        return has_unquoted_glob(resolved_value)
 
     @staticmethod
     def _condition_and(left: str, right: str):
@@ -1166,8 +1179,7 @@ class SourceEvaluator:
             return "unknown"
         if self._raw_word_is_single_quoted(right_token) or self._raw_word_is_double_quoted(right_token):
             pattern = re.escape(pattern)
-        if POSIX_CLASS_PATTERN.search(pattern):
-            raise UnsupportedSourceError(f"unsupported POSIX regex if condition: {condition}")
+        self._ensure_supported_regex_pattern(pattern, condition)
         try:
             return "true" if re.search(pattern, left) else "false"
         except re.error as exc:
@@ -1216,22 +1228,38 @@ class SourceEvaluator:
         if not path.is_file():
             return "false"
 
-        content = path.read_text(errors="ignore")
         if "F" in options:
-            matched = pattern in content
+            matched = self._file_contains_literal(path, pattern)
         elif "E" in options:
-            if POSIX_CLASS_PATTERN.search(pattern):
-                raise UnsupportedSourceError(f"unsupported grep regex in if condition: {condition}")
+            self._ensure_supported_regex_pattern(pattern, condition, "grep regex")
             try:
-                matched = bool(re.search(pattern, content, re.MULTILINE))
+                regex = re.compile(pattern)
             except re.error as exc:
                 raise UnsupportedSourceError(f"unsupported grep regex in if condition: {condition} ({exc})") from exc
+            matched = self._file_matches_regex(path, regex)
         else:
             if GREP_LITERAL_META_PATTERN.search(pattern):
                 raise UnsupportedSourceError(f"unsupported basic-regex grep if condition: {condition}")
-            matched = pattern in content
+            matched = self._file_contains_literal(path, pattern)
 
         return "true" if matched else "false"
+
+    @staticmethod
+    def _ensure_supported_regex_pattern(pattern: str, condition: str, label: str = "regex"):
+        if POSIX_CLASS_PATTERN.search(pattern):
+            raise UnsupportedSourceError(f"unsupported POSIX {label} in if condition: {condition}")
+        if PYTHON_ONLY_REGEX_PATTERN.search(pattern) or LAZY_REGEX_QUANTIFIER_PATTERN.search(pattern):
+            raise UnsupportedSourceError(f"unsupported Python-specific {label} in if condition: {condition}")
+
+    @staticmethod
+    def _file_contains_literal(path: Path, needle: str):
+        with path.open('r', errors='ignore') as file:
+            return any(needle in line for line in file)
+
+    @staticmethod
+    def _file_matches_regex(path: Path, regex):
+        with path.open('r', errors='ignore') as file:
+            return any(regex.search(line) for line in file)
 
     def _evaluate_arithmetic_condition(self, expression: str, state: EvaluationState, condition: str):
         if not expression:

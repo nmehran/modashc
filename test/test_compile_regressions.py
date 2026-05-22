@@ -406,18 +406,35 @@ class CompileRegressionTestCase(unittest.TestCase):
         with ScriptProject() as project:
             project.write("dep.sh", 'echo "compound dep"\n')
             project.write("fallback.sh", 'echo "fallback dep"\n')
+            project.write("mismatch.sh", 'echo "should not be inlined"\n')
+            project.write("variable-pattern.sh", 'echo "variable pattern dep"\n')
             project.write("main.sh", textwrap.dedent("""\
                 LOAD_DEP=1
+                MODE=prod-eu
+                PATTERN=prod*
                 if [[ -f ./dep.sh && -n "$LOAD_DEP" ]]; then
                   source ./dep.sh
                 fi
                 if [[ -f ./missing.sh || "$LOAD_DEP" == 1 ]]; then
                   source ./fallback.sh
                 fi
+                if [[ "$MODE" != prod* ]]; then
+                  source ./mismatch.sh
+                fi
+                if [[ "$MODE" == $PATTERN ]]; then
+                  source ./variable-pattern.sh
+                fi
                 echo "main"
                 """))
 
-            project.assert_compiled_matches(self, "main.sh")
+            output = project.compile("main.sh", mode="executable")
+            expected = project.run("main.sh")
+            actual = project.run(output)
+            compiled_content = output.read_text()
+
+        self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
+        self.assertEqual(actual.stdout, expected.stdout)
+        self.assertNotIn("should not be inlined", compiled_content)
 
     def test_arithmetic_regex_and_grep_if_predicates_match_bash(self):
         with ScriptProject() as project:
@@ -1074,6 +1091,10 @@ class CompileRegressionTestCase(unittest.TestCase):
                 'if [ -f ./plugins/*.sh ]; then\n  source ./dep.sh\nfi\n',
                 '[ -f ./plugins/*.sh ]',
             ),
+            "unsupported bracket string glob predicate": (
+                'MODE=prod\nif [ "$MODE" = prod* ]; then\n  source ./dep.sh\nfi\n',
+                '[ "$MODE" = prod* ]',
+            ),
             "unsupported grep basic regex predicate": (
                 'if grep -q "enabled.*" config; then\n  source ./dep.sh\nfi\n',
                 'grep -q "enabled.*" config',
@@ -1081,6 +1102,14 @@ class CompileRegressionTestCase(unittest.TestCase):
             "unsupported POSIX regex predicate": (
                 'MODE=5\nif [[ "$MODE" =~ [[:digit:]] ]]; then\n  source ./dep.sh\nfi\n',
                 '[[ "$MODE" =~ [[:digit:]] ]]',
+            ),
+            "unsupported Python regex predicate": (
+                'MODE=5\nif [[ "$MODE" =~ \\d+ ]]; then\n  source ./dep.sh\nfi\n',
+                '[[ "$MODE" =~ \\d+ ]]',
+            ),
+            "unsupported grep Python regex predicate": (
+                'if grep -Eq "\\d+" config; then\n  source ./dep.sh\nfi\n',
+                'grep -Eq "\\d+" config',
             ),
             "divergent if branch state": (
                 'if [[ -n "$USE_A" ]]; then\n  DEP=./a.sh\nelse\n  DEP=./b.sh\nfi\nsource "$DEP"\n',

@@ -246,8 +246,12 @@ class SourceEvaluatorTestCase(unittest.TestCase):
     def test_if_block_compound_condition_is_evaluated(self):
         with ScriptProject() as project:
             dep = project.write("dep.sh", 'echo "dep"\n')
+            mismatch = project.write("mismatch.sh", 'echo "mismatch"\n')
+            variable_pattern = project.write("variable-pattern.sh", 'echo "variable pattern"\n')
             entry = project.write("main.sh", textwrap.dedent("""\
                 LOAD_DEP=1
+                MODE=prod-eu
+                PATTERN=prod*
                 if [[ -f ./dep.sh && -n "$LOAD_DEP" ]]; then
                   source ./dep.sh
                 fi
@@ -257,11 +261,21 @@ class SourceEvaluatorTestCase(unittest.TestCase):
                 if [[ ! -f ./missing.sh ]]; then
                   source ./dep.sh
                 fi
+                if [[ "$MODE" != prod* ]]; then
+                  source ./mismatch.sh
+                fi
+                if [[ "$MODE" != dev* ]]; then
+                  source ./mismatch.sh
+                fi
+                if [[ "$MODE" == $PATTERN ]]; then
+                  source ./variable-pattern.sh
+                fi
                 """))
 
             result = SourceEvaluator().evaluate(entry)
 
-        self.assertEqual([event.path for event in result.events], [dep, dep, dep])
+        self.assertEqual([event.path for event in result.events], [dep, dep, dep, mismatch, variable_pattern])
+        self.assertEqual([disabled.source_site for disabled in result.disabled_sources], ["source ./mismatch.sh"])
 
     def test_if_block_arithmetic_regex_and_grep_conditions_are_evaluated(self):
         with ScriptProject() as project:

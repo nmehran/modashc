@@ -66,8 +66,8 @@ safe to lower, compilation fails before writing or overwriting the output file.
   `for dep in ./plugins/*.sh; do source "$dep"; done`
 - direct source globs only when the glob resolves to exactly one file
 - branch-aware `if` / `elif` / `else` blocks with side-effect-free file,
-  non-empty, empty, exact string, compound logical, arithmetic, regex, and
-  safe `grep -q` predicates
+  non-empty, empty, exact string, pattern, compound logical, arithmetic,
+  regex, and safe `grep -q` predicates
 - exact `case` blocks over known scalar subjects, with literal, alternate,
   default, quoted literal, and ordinary glob arm patterns without mixed quoting,
   backslash escapes, or POSIX character classes
@@ -80,10 +80,11 @@ safe to lower, compilation fails before writing or overwriting the output file.
 Unsupported or ambiguous dynamic forms fail closed in executable mode. This
 includes direct source globs with multiple matches, unmatched or quoted globs,
 globstar/brace/extglob-style patterns, glob-affecting shell options,
-custom-IFS word splitting, unsupported command or glob-bearing conditional
-predicates, unsupported case subjects or arm patterns, process substitution,
-unknown or recursive function dispatch, function `return` / `shift` control
-flow, nested dynamic substitutions, and multi-result `cat` or `find` output.
+custom-IFS word splitting, unsupported command or glob-bearing file/bracket
+conditional predicates, unsupported case subjects or arm patterns, process
+substitution, unknown or recursive function dispatch, function `return` /
+`shift` control flow, nested dynamic substitutions, and multi-result `cat` or
+`find` output.
 
 Control-flow evaluation beyond exact finite loops, modeled `if` blocks, and
 exact `case` blocks is intentionally fail-closed until broader glob,
