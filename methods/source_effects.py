@@ -67,8 +67,18 @@ class SourceEvent:
 
 
 @dataclass(frozen=True)
+class DisabledSourceSite:
+    location: SourceLocation
+    source_expression: str
+    source_site: str
+    replacement_kind: str
+    condition: str | None = None
+
+
+@dataclass(frozen=True)
 class EvaluationResult:
     events: tuple[SourceEvent, ...]
+    disabled_sources: tuple[DisabledSourceSite, ...] = ()
     diagnostics: tuple[Diagnostic, ...] = ()
     final_state: StateSnapshot | None = None
 

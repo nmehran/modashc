@@ -338,6 +338,65 @@ class CompileRegressionTestCase(unittest.TestCase):
 
             project.assert_compiled_matches(self, "main.sh")
 
+    def test_exact_if_unreachable_sources_match_bash(self):
+        cases = {
+            "unreachable else source": textwrap.dedent("""\
+                MODE=prod
+                if [[ "$MODE" == prod ]]; then
+                  source ./prod.sh
+                else
+                  source ./missing.sh
+                fi
+                echo "main"
+                """),
+            "unreachable then source": textwrap.dedent("""\
+                MODE=dev
+                if [[ "$MODE" == prod ]]; then
+                  source ./missing.sh
+                else
+                  source ./dev.sh
+                fi
+                echo "main"
+                """),
+            "missing optional file guard": textwrap.dedent("""\
+                if [[ -f ./missing-optional.sh ]]; then
+                  source ./missing-optional.sh
+                fi
+                echo "main"
+                """),
+            "inline unreachable source": textwrap.dedent("""\
+                MODE=prod
+                if [[ "$MODE" == prod ]]; then source ./prod.sh; else source ./missing.sh; fi
+                echo "main"
+                """),
+            "unreachable command source": textwrap.dedent("""\
+                MODE=prod
+                if [[ "$MODE" == prod ]]; then
+                  echo "prod"
+                else
+                  eval "source ./missing.sh"
+                fi
+                echo "main"
+                """),
+            "unreachable command dot source": textwrap.dedent("""\
+                MODE=prod
+                if [[ "$MODE" == prod ]]; then
+                  echo "prod"
+                else
+                  eval ". ./missing.sh"
+                fi
+                echo "main"
+                """),
+        }
+
+        for name, content in cases.items():
+            with self.subTest(name=name), ScriptProject() as project:
+                project.write("prod.sh", 'echo "prod"\n')
+                project.write("dev.sh", 'echo "dev"\n')
+                project.write("main.sh", content)
+
+                project.assert_compiled_matches(self, "main.sh")
+
     def test_if_branch_local_state_matches_bash(self):
         with ScriptProject() as project:
             project.write("a.sh", 'echo "branch:a:$DEP"\n')
@@ -615,6 +674,10 @@ class CompileRegressionTestCase(unittest.TestCase):
             "unsupported if predicate": (
                 'if grep -q enabled config; then\n  source ./dep.sh\nfi\n',
                 'grep -q enabled config',
+            ),
+            "unsupported if glob predicate": (
+                'if [ -f ./plugins/*.sh ]; then\n  source ./dep.sh\nfi\n',
+                '[ -f ./plugins/*.sh ]',
             ),
             "divergent if branch state": (
                 'if [[ -n "$USE_A" ]]; then\n  DEP=./a.sh\nelse\n  DEP=./b.sh\nfi\nsource "$DEP"\n',

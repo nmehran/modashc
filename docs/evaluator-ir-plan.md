@@ -128,6 +128,7 @@ Evaluation produces source events, diagnostics, and final state:
 ```python
 EvaluationResult(
     events=[SourceEvent(...)],
+    disabled_sources=[DisabledSourceSite(...)],
     diagnostics=[Diagnostic(...)],
     final_state=EvaluationState(...),
 )
@@ -290,7 +291,8 @@ added. Exceeding the limit should produce a structured unsupported diagnostic.
 Conditionals now use two modes:
 
 - **Exact condition**: evaluate the selected branch state when the predicate is
-  known from modeled variables.
+  known from modeled variables or filesystem predicates, and neutralize source
+  sites in unreachable branches in executable output.
 - **Unknown side-effect-free condition**: preserve the original branch in
   executable output, replace only modeled source sites inside it, and merge
   branch state only when source-relevant state converges.
@@ -309,6 +311,7 @@ Implemented predicates include:
 Unsupported but practical predicates to track:
 
 - compound predicates with `&&` or `||`
+- glob-bearing file predicates such as `[ -f ./plugins/*.sh ]`
 - command predicates such as `grep -q`
 - arithmetic predicates using `(( ... ))`
 - pattern or regex predicates such as `=~`
@@ -484,8 +487,10 @@ Remaining glob work:
 
 Implemented for `if` / `elif` / `else` blocks with the current side-effect-free
 predicate subset. Executable mode preserves the original branch structure and
-replaces modeled source sites inside branches. Context mode annotates
-conditional and mutually exclusive provenance.
+replaces modeled source sites inside reachable branches. Source sites in
+statically unreachable branches are replaced with no-ops so executable output
+does not retain live unresolved source commands. Context mode annotates
+conditional and mutually exclusive provenance for readable source relationships.
 
 Branch state merges only when exact. Divergent branch cwd, variables, arrays, or
 shell options are allowed until a later source-relevant operation depends on

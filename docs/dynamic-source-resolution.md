@@ -12,7 +12,9 @@ expansions, plus deterministic ordinary file globs in finite loop word lists.
 Direct source globs are accepted only when they resolve to exactly one file.
 Modeled `if` / `elif` / `else` blocks can lower source sites inside branches
 when branch predicates are side-effect-free and branch state is exact enough for
-later source resolution.
+later source resolution. Executable mode neutralizes source sites in statically
+unreachable branches instead of resolving or preserving them as live runtime
+sources.
 Unsupported forms fail closed.
 
 ## Goal
@@ -360,6 +362,7 @@ These are intentionally tracked as practical future work, not permanently
 unsupported forms:
 
 - Compound conditional predicates such as `[[ -f ./a.sh && -n "$LOAD" ]]`.
+- Glob-bearing conditional predicates such as `[ -f ./plugins/*.sh ]`.
 - Command predicates such as `if grep -q enabled config; then ...`.
 - Arithmetic predicates such as `if (( COUNT > 0 )); then ...`.
 - Pattern/regex predicates such as `[[ "$MODE" =~ ^prod ]]`.

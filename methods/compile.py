@@ -200,7 +200,10 @@ def replace_command_source_sites(line: str, source_declarations, render_source):
             raise ValueError(f"Could not replace resolved source command: {source_site}")
 
         indent = re.match(r'\s*', line[:source_index]).group(0)
-        replacement = render_source_block(source_declaration.path, render_source, indent)
+        if source_declaration.replacement_kind == "noop-command":
+            replacement = ":"
+        else:
+            replacement = render_source_block(source_declaration.path, render_source, indent)
         line = line[:source_index] + replacement + line[source_index + len(source_site):]
         search_start = source_index + len(replacement)
 
@@ -216,7 +219,7 @@ def source_column_for_match(match):
     return match.start(2) + 1
 
 
-def pop_source_declarations_for_match(match, declarations_by_column):
+def pop_source_declarations_for_match(match, declarations_by_column, group_fallback=True):
     grouped_declarations = declarations_by_column.pop(source_column_for_match(match), [])
     if grouped_declarations:
         return grouped_declarations
@@ -224,6 +227,11 @@ def pop_source_declarations_for_match(match, declarations_by_column):
     match_source_site = source_site_for_match(match)
     for source_column, declarations in list(declarations_by_column.items()):
         if declarations and declarations[0].source_site == match_source_site:
+            if not group_fallback:
+                grouped_declarations = [declarations.pop(0)]
+                if not declarations:
+                    declarations_by_column.pop(source_column)
+                return grouped_declarations
             return declarations_by_column.pop(source_column)
 
     return []
@@ -242,20 +250,54 @@ def group_source_declarations_by_column(source_declarations):
     return declarations_by_column, fallback_declarations
 
 
+def render_source_site_replacement(separator: str, declarations, render_source, indent: str):
+    declaration = declarations[0]
+    if declaration.replacement_kind == "noop-source":
+        return f"{separator}:"
+
+    unique_paths = {source_declaration.path for source_declaration in declarations}
+    if len(declarations) > 1 and len(unique_paths) > 1:
+        return f"{separator}{render_source_dispatch(declaration.source_expression, declarations, render_source, indent)}"
+
+    rendered_source = indent_block(render_source(declaration.path), indent)
+    return f"{separator}{{\n{rendered_source}\n{indent}}}"
+
+
+def replace_source_site_substrings(line: str, source_declarations, render_source):
+    search_start = 0
+
+    for declaration in source_declarations:
+        source_site = declaration.source_site.strip()
+        source_index = find_unquoted_substring(line, source_site, search_start)
+        if source_index < 0:
+            raise ValueError(f"Could not replace resolved source declaration: {source_site}")
+
+        indent = re.match(r'\s*', line[:source_index]).group(0)
+        replacement = render_source_site_replacement("", [declaration], render_source, indent)
+        line = line[:source_index] + replacement + line[source_index + len(source_site):]
+        search_start = source_index + len(replacement)
+
+    return line
+
+
 def replace_source_site_declarations(line: str, source_declarations, render_source):
     if not source_declarations:
         return line
 
     matches = list(SOURCE_PATTERN.finditer(line))
     if not matches:
-        raise ValueError(f"Could not replace resolved source declarations: {line.strip()}")
+        return replace_source_site_substrings(line, source_declarations, render_source)
 
     declarations_by_column, fallback_declarations = group_source_declarations_by_column(source_declarations)
     updated_parts = []
     last_end = 0
 
     for match in matches:
-        grouped_declarations = pop_source_declarations_for_match(match, declarations_by_column)
+        grouped_declarations = pop_source_declarations_for_match(
+            match,
+            declarations_by_column,
+            group_fallback=len(matches) == 1,
+        )
         if not grouped_declarations and fallback_declarations:
             grouped_declarations.append(fallback_declarations.pop(0))
         if not grouped_declarations:
@@ -263,13 +305,7 @@ def replace_source_site_declarations(line: str, source_declarations, render_sour
 
         separator = match.group(1) or ''
         indent = re.match(r'\s*', separator).group(0) if separator else ''
-        declaration = grouped_declarations[0]
-        unique_paths = {source_declaration.path for source_declaration in grouped_declarations}
-        if len(grouped_declarations) > 1 and len(unique_paths) > 1:
-            replacement = f"{separator}{render_source_dispatch(declaration.source_expression, grouped_declarations, render_source, indent)}"
-        else:
-            rendered_source = indent_block(render_source(declaration.path), indent)
-            replacement = f"{separator}{{\n{rendered_source}\n{indent}}}"
+        replacement = render_source_site_replacement(separator, grouped_declarations, render_source, indent)
 
         updated_parts.append(line[last_end:match.start()])
         updated_parts.append(replacement)
@@ -334,12 +370,12 @@ def render_executable_script(entry_point: str, context: dict):
                 line = replace_runtime_source_references(line, filepath, entry_point)
                 command_sources = [
                     source_declaration for source_declaration in source_declarations
-                    if source_declaration.replacement_kind == "command"
+                    if source_declaration.replacement_kind in {"command", "noop-command"}
                 ]
                 line = replace_command_source_sites(line, command_sources, render_file)
                 source_site_declarations = [
                     source_declaration for source_declaration in source_declarations
-                    if source_declaration.replacement_kind == "source"
+                    if source_declaration.replacement_kind in {"source", "noop-source"}
                 ]
                 if source_site_declarations:
                     line = replace_source_site_declarations(
@@ -389,7 +425,7 @@ def render_context_files(ordered_dependencies: list[str], entry_point: str, cont
     return output
 
 
-def context_from_source_events(events):
+def context_from_source_events(events, disabled_sources=()):
     source_declarations = defaultdict(lambda: defaultdict(list))
 
     for event in events:
@@ -403,6 +439,18 @@ def context_from_source_events(events):
             source_column=event.location.column,
             occurrence_model=event.occurrence_model.value,
             condition=event.condition,
+        ))
+
+    for disabled_source in disabled_sources:
+        source_declarations[str(disabled_source.location.path)][disabled_source.location.line - 1].append(ResolvedSource(
+            path="",
+            source_expression=disabled_source.source_expression,
+            source_site=disabled_source.source_site,
+            execution_model="parent-source",
+            replacement_kind=f"noop-{disabled_source.replacement_kind}",
+            source_column=disabled_source.location.column,
+            occurrence_model="once",
+            condition=disabled_source.condition,
         ))
 
     return {'source_declarations': source_declarations}
@@ -440,7 +488,7 @@ def compile_sources(entry_point: str, output_file: str, mode: str = "context"):
 
     entry_point = os.path.abspath(entry_point)
     evaluation = SourceEvaluator(mode=mode).evaluate(entry_point)
-    context = context_from_source_events(evaluation.events)
+    context = context_from_source_events(evaluation.events, evaluation.disabled_sources)
     if mode == "executable":
         output = render_executable_script(entry_point, context)
     else:

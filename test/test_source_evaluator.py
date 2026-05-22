@@ -117,6 +117,29 @@ class SourceEvaluatorTestCase(unittest.TestCase):
         self.assertEqual(result.events[0].occurrence_model, OccurrenceModel.CONDITIONAL)
         self.assertEqual(result.events[0].condition, "[[ -f ./dep.sh ]]")
 
+    def test_if_block_unreachable_sources_are_disabled(self):
+        with ScriptProject() as project:
+            prod = project.write("prod.sh", 'echo "prod"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                MODE=prod
+                if [[ "$MODE" == prod ]]; then
+                  source ./prod.sh
+                else
+                  source ./missing.sh
+                fi
+                if [[ -f ./missing-optional.sh ]]; then
+                  source ./missing-optional.sh
+                fi
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [prod])
+        self.assertEqual(
+            [disabled.source_site for disabled in result.disabled_sources],
+            ["source ./missing.sh", "source ./missing-optional.sh"],
+        )
+
     def test_if_block_unsupported_condition_raises_structured_diagnostic(self):
         with ScriptProject() as project:
             project.write("dep.sh", 'echo "dep"\n')

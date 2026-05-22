@@ -12,6 +12,7 @@ from methods.source_effects import (
     ArrayAssignment,
     Assignment,
     CdCommand,
+    DisabledSourceSite,
     EvaluationResult,
     ExecutionModel,
     ForLoop,
@@ -150,6 +151,7 @@ class SourceEvaluator:
         self.frontend = frontend or LineParserFrontend()
         self.mode = mode
         self.events: list[SourceEvent] = []
+        self.disabled_sources: list[DisabledSourceSite] = []
 
     def evaluate(self, entrypoint: str | Path):
         entrypoint = Path(entrypoint).resolve()
@@ -160,9 +162,11 @@ class SourceEvaluator:
             bash_source_stack=(entrypoint,),
         )
         self.events = []
+        self.disabled_sources = []
         self._evaluate_file(entrypoint, state, ())
         return EvaluationResult(
             events=self._with_occurrence_models(self.events),
+            disabled_sources=tuple(self.disabled_sources),
             final_state=state.snapshot(),
         )
 
@@ -390,14 +394,26 @@ class SourceEvaluator:
                     "unsupported.source.if-condition",
                 ) from exc
 
+        if self.mode == "context":
+            self._apply_context_if_block(node, state, stack, statuses)
+            state.occurrence_context = outer_occurrence_context
+            state.condition_context = outer_condition_context
+            return
+
         base_state = state.child_shell_copy()
         branch_states = []
+        branch_reachability = self._if_branch_reachability(statuses)
         occurrence_model = (
             OccurrenceModel.MUTUALLY_EXCLUSIVE
             if len(node.branches) > 1
             else OccurrenceModel.CONDITIONAL
         )
-        for branch in node.branches:
+        for branch, is_reachable in zip(node.branches, branch_reachability):
+            if not is_reachable:
+                self._disable_unreachable_sources(branch.body, branch.condition or "else")
+                branch_states.append(base_state.child_shell_copy())
+                continue
+
             branch_state = state.child_shell_copy()
             branch_state.occurrence_context = occurrence_model
             branch_state.condition_context = branch.condition or "else"
@@ -408,6 +424,46 @@ class SourceEvaluator:
         self._merge_possible_states(state, possible_states)
         state.occurrence_context = outer_occurrence_context
         state.condition_context = outer_condition_context
+
+    def _apply_context_if_block(
+        self,
+        node: IfBlock,
+        state: EvaluationState,
+        stack: tuple[Path, ...],
+        statuses: list[str],
+    ):
+        branch_states = []
+        occurrence_model = (
+            OccurrenceModel.MUTUALLY_EXCLUSIVE
+            if len(node.branches) > 1
+            else OccurrenceModel.CONDITIONAL
+        )
+
+        for branch in node.branches:
+            branch_state = state.child_shell_copy()
+            branch_state.occurrence_context = occurrence_model
+            branch_state.condition_context = branch.condition or "else"
+            self._evaluate_nodes(branch.body, branch_state, stack)
+            branch_states.append(branch_state)
+
+        possible_states = self._possible_if_states(statuses, state.child_shell_copy(), branch_states)
+        self._merge_possible_states(state, possible_states)
+
+    @staticmethod
+    def _if_branch_reachability(statuses: list[str]):
+        reachable = []
+        fallthrough_possible = True
+
+        for status in statuses:
+            if not fallthrough_possible or status == "false":
+                reachable.append(False)
+                continue
+
+            reachable.append(True)
+            if status in {"true", "else"}:
+                fallthrough_possible = False
+
+        return reachable
 
     @staticmethod
     def _possible_if_states(statuses: list[str], base_state: EvaluationState, branch_states: list[EvaluationState]):
@@ -530,8 +586,17 @@ class SourceEvaluator:
             raise UnsupportedSourceError(f"unsupported dynamic if condition: {condition}")
 
         if len(words) == 2 and words[0] in {"-e", "-f", "-d"}:
-            self._condition_path(words[1], state, condition)
-            return "unknown"
+            if has_unquoted_glob(words[1]):
+                raise UnsupportedSourceError(f"unsupported glob if condition: {condition}")
+            path = self._condition_path(words[1], state, condition)
+            if path is None:
+                return "unknown"
+            result = path.exists()
+            if words[0] == "-f":
+                result = path.is_file()
+            elif words[0] == "-d":
+                result = path.is_dir()
+            return "true" if result else "false"
 
         if len(words) == 2 and words[0] in {"-n", "-z"}:
             value = self._condition_value(words[1], state)
@@ -788,6 +853,38 @@ class SourceEvaluator:
             state_before=state.snapshot(),
             condition=state.condition_context,
         ))
+
+    def _disable_unreachable_sources(self, nodes, condition: str):
+        for node in nodes:
+            if isinstance(node, SourceSite):
+                self.disabled_sources.append(DisabledSourceSite(
+                    location=node.location,
+                    source_expression=node.source_expression.strip(),
+                    source_site=f"{node.command_name} {node.source_expression.strip()}".strip(),
+                    replacement_kind="source",
+                    condition=condition,
+                ))
+            elif isinstance(node, RawCommand):
+                if self._raw_command_may_source(node.text):
+                    self.disabled_sources.append(DisabledSourceSite(
+                        location=node.location,
+                        source_expression=node.text.strip(),
+                        source_site=node.text.strip(),
+                        replacement_kind="command",
+                        condition=condition,
+                    ))
+            elif isinstance(node, ForLoop):
+                self._disable_unreachable_sources(node.body, condition)
+            elif isinstance(node, IfBlock):
+                for branch in node.branches:
+                    self._disable_unreachable_sources(branch.body, branch.condition or "else")
+
+    @staticmethod
+    def _raw_command_may_source(command: str):
+        return bool(
+            contains_source_command(command)
+            or re.search(r'\b(?:eval|bash|/bin/bash|/usr/bin/bash)\b.*(?:\bsource\b|(?:^|[\s;&|])\.)', command)
+        )
 
     @staticmethod
     def _ensure_source_state_can_resolve(node, source_expression: str, state: EvaluationState):
