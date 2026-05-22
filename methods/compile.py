@@ -275,8 +275,9 @@ def render_context_files(ordered_dependencies: list[str], entry_point: str, cont
         output.append(construct_file_separator(filepath, entry_point))
 
         for num, line in enumerate(read_file(filepath).splitlines()):
+            line_indent = re.match(r'\s*', line).group(0)
             for source_declaration in source_context.get(num, []):
-                output.append(construct_context_source_comment(source_declaration, entry_point))
+                output.append(f"{line_indent}{construct_context_source_comment(source_declaration, entry_point)}")
             output.append(line)
 
         output.append('')

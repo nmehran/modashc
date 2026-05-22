@@ -120,6 +120,20 @@ class ContextModeTestCase(unittest.TestCase):
         self.assertIn('# modashc: bash -c "source ./dep.sh" -> dep.sh (child-shell)', content)
         self.assertIn('bash -c "source ./dep.sh"', content)
 
+    def test_context_output_indents_source_relationship_comments(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "dep body"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                helper() {
+                  source ./dep.sh
+                }
+                """))
+
+            output = project.compile("main.sh")
+            content = output.read_text()
+
+        self.assertIn("  # modashc: source ./dep.sh -> dep.sh\n  source ./dep.sh", content)
+
     def test_context_output_does_not_resolve_heredoc_source_text(self):
         with ScriptProject() as project:
             project.write("dep.sh", 'echo "dep body"\n')
