@@ -119,6 +119,12 @@ class SetCommand(IRNode):
 
 
 @dataclass(frozen=True)
+class FunctionDef(IRNode):
+    name: str
+    body: tuple[IRNode, ...]
+
+
+@dataclass(frozen=True)
 class ForLoop(IRNode):
     variable: str
     words: tuple[str, ...]
@@ -173,6 +179,8 @@ class ScriptIR:
             for node in nodes:
                 if isinstance(node, SourceSite):
                     sites.append(node)
+                elif isinstance(node, FunctionDef):
+                    sites.extend(collect(node.body))
                 elif isinstance(node, ForLoop):
                     sites.extend(collect(node.body))
                 elif isinstance(node, IfBlock):

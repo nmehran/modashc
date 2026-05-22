@@ -10,9 +10,11 @@ both executable and context rendering for the supported subset. Exact finite
 file-glob loop expansion. Branch-aware `if` / `elif` / `else` lowering is
 implemented for the current side-effect-free predicate subset, and exact
 `case` blocks are implemented for known subjects and the modeled pattern
-subset. It remains fail-closed for broader glob semantics, scalar word-list
-splitting, unsupported conditional predicates, broader case pattern semantics,
-modeled functions, and runtime dispatch.
+subset. Bounded local function calls are implemented when the definition is
+known, arguments are exact, and source-relevant body effects are modeled. It
+remains fail-closed for broader glob semantics, scalar word-list splitting,
+unsupported conditional predicates, broader case pattern semantics, broader
+function control flow, dynamic function dispatch, and runtime dispatch.
 
 ## Problem
 
@@ -33,9 +35,10 @@ esac
 ```
 
 Supporting those safely requires continuing the compiler model, not adding more
-ad hoc source regexes. Branch-aware `if` lowering and exact `case` lowering are
-implemented for their first subsets. The next steps are broader practical
-conditional predicates, broader case patterns, then modeled function calls.
+ad hoc source regexes. Branch-aware `if` lowering, exact `case` lowering, and
+bounded function calls are implemented for their first subsets. The next steps
+are broader practical conditional predicates, broader case patterns, and
+broader function control-flow semantics.
 
 ## Goals
 
@@ -236,16 +239,21 @@ should preserve option state before each source event.
 
 ### Functions
 
-Functions should be parsed into `FunctionDef` nodes and stored in state. A
-function call is evaluable only when:
+Functions are parsed into `FunctionDef` nodes and stored in state. A function
+call is evaluable only when:
 
 - the function definition is known
 - arguments are exact or unused by source-relevant expressions
 - the function body contains only supported constructs
-- recursion is bounded and explicit
+- recursion is absent
 
 Function calls that mutate cwd or variables must update parent state, matching
-Bash function semantics.
+Bash function semantics. The current subset supports exact positional
+arguments such as `$1`, source-relevant scalar `local` assignments, cwd and
+variable mutation in parent state, exact assignment prefixes, and functions
+defined by sourced files. Recursive calls, dynamic dispatch, `return`, `shift`,
+and nested control flow inside function bodies remain fail-closed until
+explicitly modeled.
 
 ## Control-Flow Semantics
 
@@ -528,8 +536,10 @@ non-matching arms are replaced with no-ops in executable output.
 
 ### Phase 9: Modeled Functions
 
-Evaluate known local functions whose source-relevant behavior is fully modeled.
-Reject recursive or runtime-dynamic function dispatch unless bounded.
+Implemented for the first bounded subset. Known local functions are evaluated
+when arguments are exact and the body contains modeled source-relevant
+constructs. Recursive calls, runtime-dynamic dispatch, `return`, `shift`, and
+broader nested function-body control flow remain unsupported until bounded.
 
 ### Phase 10: Child-Shell Lowering
 

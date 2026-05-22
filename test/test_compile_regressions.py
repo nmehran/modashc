@@ -746,6 +746,136 @@ class CompileRegressionTestCase(unittest.TestCase):
 
             project.assert_compiled_matches(self, "main.sh")
 
+    def test_source_inside_compact_function_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("runtime.sh", 'echo "runtime"\n')
+            project.write("main.sh", 'helper(){ echo "before"; source ./runtime.sh; echo "after"; }\nhelper\n')
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("runtime.sh", 'echo "runtime keyword"\n')
+            project.write("main.sh", 'function helper { source ./runtime.sh; }\nhelper\n')
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("runtime.sh", 'echo "runtime split brace"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                helper()
+                {
+                  source ./runtime.sh
+                }
+                helper
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_function_source_argument_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("a.sh", 'echo "a:$1"\n')
+            project.write("b.sh", 'echo "b:$1"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                load_dep() {
+                  source "$1"
+                }
+
+                load_dep ./a.sh
+                load_dep ./b.sh
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("deps dir#tag/a dep.sh", 'echo "special function arg:$1"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                load_dep() {
+                  source "$1"
+                }
+
+                load_dep "./deps dir#tag/a dep.sh"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_function_defined_by_sourced_file_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("lib.sh", textwrap.dedent("""\
+                load_dep() {
+                  source "$1"
+                }
+                """))
+            project.write("dep.sh", 'echo "dep from sourced function"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                source ./lib.sh
+                load_dep ./dep.sh
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_function_source_state_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("deps/inside.sh", 'echo "inside:$DEP:$PWD"\n')
+            project.write("outside.sh", 'echo "outside:$DEP:$PWD"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                DEP=./outside.sh
+                load_inside() {
+                  local DEP=./inside.sh
+                  cd deps
+                  source "$DEP"
+                }
+
+                load_inside
+                cd ..
+                source "$DEP"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("deps/inside.sh", 'echo "expanded local:$DEP"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                ROOT=./deps
+                load_inside() {
+                  local DEP="${ROOT}/inside.sh"
+                  source "$DEP"
+                }
+
+                load_inside
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("deps/inside.sh", 'echo "inside prefix:$DEP"\n')
+            project.write("outside.sh", 'echo "outside restored:$DEP"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                DEP=./outside.sh
+                load_dep() {
+                  source "$DEP"
+                }
+
+                DEP="./deps/inside.sh" load_dep
+                source "$DEP"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("outer.sh", 'echo "outer arg:$DEP"\n')
+            project.write("inner.sh", 'echo "inner prefix:$DEP"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                DEP=./outer.sh
+                load_dep() {
+                  source "$1"
+                  source "$DEP"
+                }
+
+                DEP=./inner.sh load_dep "$DEP"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
     def test_duplicate_sources_execute_each_time_bash_would_execute_them(self):
         with ScriptProject() as project:
             project.write("dep.sh", 'echo "dep"\n')
@@ -900,6 +1030,10 @@ class CompileRegressionTestCase(unittest.TestCase):
                 'echo `case "$ENV" in prod) . ./dep.sh ;; esac`\n',
                 'echo `case "$ENV" in prod) . ./dep.sh ;; esac`',
             ),
+            "function return before source": (
+                'load_dep() { return 0; source ./dep.sh; }\nload_dep\n',
+                'return 0',
+            ),
             "command builtin source": (
                 'command source ./dep.sh\n',
                 'command source ./dep.sh',
@@ -919,14 +1053,6 @@ class CompileRegressionTestCase(unittest.TestCase):
             "assignment-prefixed command source": (
                 'FOO=bar command source ./dep.sh\n',
                 'FOO=bar command source ./dep.sh',
-            ),
-            "compact function source": (
-                'helper(){ source ./dep.sh; }\nhelper\n',
-                'helper(){ source ./dep.sh',
-            ),
-            "compact function keyword source": (
-                'function helper { source ./dep.sh; }\nhelper\n',
-                'function helper { source ./dep.sh',
             ),
         }
 

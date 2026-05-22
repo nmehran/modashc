@@ -16,7 +16,9 @@ later source resolution. Executable mode neutralizes source sites in statically
 unreachable branches instead of resolving or preserving them as live runtime
 sources. Exact `case` blocks can lower source sites for known scalar subjects
 and modeled arm patterns, with non-matching arm sources neutralized in
-executable output.
+executable output. Bounded local function calls can lower sources when the
+function definition is known, arguments are exact, and source-relevant function
+body effects are modeled.
 Unsupported forms fail closed.
 
 ## Goal
@@ -355,7 +357,8 @@ These still need separate specs before implementation:
   ```
 - Broader case pattern and fallthrough semantics.
 - Complex array/list-based source paths.
-- User-defined functions that compute source paths.
+- Broader user-defined function semantics, including dynamic dispatch,
+  recursive calls, `return`, `shift`, and nested modeled control flow.
 - Process substitution and generated source streams.
 
 ### Unsupported But Practical
@@ -421,6 +424,9 @@ scope:
   side-effect-free predicate subset and fail-closed branch-state merge.
 - Exact `case` source lowering is implemented for known scalar subjects,
   mutually exclusive arms, and no-op unreachable source sites.
+- Bounded local function source lowering is implemented for known definitions,
+  exact arguments, positional source expressions, parent-state mutations, and
+  exact assignment prefixes and scalar `local` assignments.
 - Executable mode fails before output when unsupported source forms would leave
   live runtime `source` commands.
 
@@ -429,6 +435,6 @@ Current diagnostics are raised as explicit `UnsupportedSourceError` instances
 with stable codes, source locations, rejected fragments, messages, and hints.
 
 Future resolver increments should stay small, tested, and fail-closed. Case,
-complex array, broader conditional, broader glob, and runtime-dispatch support
-should not be added as one-off resolver patches; those belong in the
-evaluator/IR design.
+complex array, broader conditional, broader glob, broader function control
+flow, and runtime-dispatch support should not be added as one-off resolver
+patches; those belong in the evaluator/IR design.

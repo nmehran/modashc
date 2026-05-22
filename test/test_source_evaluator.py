@@ -91,6 +91,109 @@ class SourceEvaluatorTestCase(unittest.TestCase):
         self.assertEqual(result.events[0].path, dep)
         self.assertEqual(result.events[0].source_site, 'eval "$COMMAND"')
 
+    def test_function_call_resolves_positional_source_argument(self):
+        with ScriptProject() as project:
+            dep = project.write("dep.sh", 'echo "dep"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                load_dep() {
+                  source "$1"
+                }
+                load_dep ./dep.sh
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [dep])
+        self.assertEqual(result.events[0].source_expression, '"$1"')
+        self.assertEqual(result.events[0].source_value, "./dep.sh")
+        self.assertEqual(result.events[0].location.line, 2)
+
+    def test_function_call_mutates_parent_state(self):
+        with ScriptProject() as project:
+            dep = project.write("deps/dep.sh", 'echo "dep"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                select_dep() {
+                  cd deps
+                  DEP=./dep.sh
+                }
+                select_dep
+                source "$DEP"
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [dep])
+        self.assertEqual(result.events[0].state_before.cwd, dep.parent)
+
+    def test_function_local_assignment_does_not_leak(self):
+        with ScriptProject() as project:
+            dep = project.write("inside.sh", 'echo "inside"\n')
+            outside = project.write("outside.sh", 'echo "outside"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                DEP=./outside.sh
+                load_dep() {
+                  local DEP=./inside.sh
+                  source "$DEP"
+                }
+                load_dep
+                source "$DEP"
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [dep, outside])
+
+    def test_function_assignment_prefix_is_temporary(self):
+        with ScriptProject() as project:
+            dep = project.write("inside.sh", 'echo "inside"\n')
+            outside = project.write("outside.sh", 'echo "outside"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                DEP=./outside.sh
+                load_dep() {
+                  source "$DEP"
+                }
+                DEP=./inside.sh load_dep
+                source "$DEP"
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [dep, outside])
+
+    def test_function_arguments_expand_before_assignment_prefixes(self):
+        with ScriptProject() as project:
+            outer = project.write("outer.sh", 'echo "outer"\n')
+            inner = project.write("inner.sh", 'echo "inner"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                DEP=./outer.sh
+                load_dep() {
+                  source "$1"
+                  source "$DEP"
+                }
+                DEP=./inner.sh load_dep "$DEP"
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [outer, inner])
+
+    def test_recursive_function_source_raises_structured_diagnostic(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "dep"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                load_dep() {
+                  load_dep
+                  source ./dep.sh
+                }
+                load_dep
+                """))
+
+            with self.assertRaisesRegex(NotImplementedError, "recursive function") as cm:
+                SourceEvaluator().evaluate(entry)
+
+        self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.function-recursion")
+        self.assertEqual(cm.exception.diagnostic.location.line, 2)
+
     def test_unknown_array_source_raises_structured_diagnostic(self):
         with ScriptProject() as project:
             entry = project.write("main.sh", 'source "${deps[0]}"\n')

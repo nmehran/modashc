@@ -252,12 +252,33 @@ class ContextModeTestCase(unittest.TestCase):
                 helper() {
                   source ./dep.sh
                 }
+                helper
                 """))
 
             output = project.compile("main.sh")
             content = output.read_text()
 
         self.assertIn("  # modashc: source ./dep.sh -> dep.sh\n  source ./dep.sh", content)
+
+    def test_context_output_resolves_function_source_arguments(self):
+        with ScriptProject() as project:
+            project.write("a.sh", 'echo "function a body"\n')
+            project.write("b.sh", 'echo "function b body"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                load_dep() {
+                  source "$1"
+                }
+                load_dep ./a.sh
+                load_dep ./b.sh
+                """))
+
+            output = project.compile("main.sh")
+            content = output.read_text()
+
+        self.assertIn('echo "function a body"', content)
+        self.assertIn('echo "function b body"', content)
+        self.assertIn('# modashc: source "$1" -> a.sh', content)
+        self.assertIn('# modashc: source "$1" -> b.sh', content)
 
     def test_context_output_does_not_resolve_heredoc_source_text(self):
         with ScriptProject() as project:

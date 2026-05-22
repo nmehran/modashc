@@ -17,6 +17,7 @@ from methods.source_effects import (
     DisabledSourceSite,
     EvaluationResult,
     ExecutionModel,
+    FunctionDef,
     ForLoop,
     IfBlock,
     OccurrenceModel,
@@ -47,7 +48,7 @@ from methods.regex.utilities import strip_matching_quotes
 
 ARRAY_INDEX_PATTERN = re.compile(r'\$\{([a-zA-Z_]\w*)\[(\d+)\]\}')
 ARRAY_EXPANSION_PATTERN = re.compile(r'^\$\{([a-zA-Z_]\w*)\[@\]\}$')
-SCALAR_REFERENCE_PATTERN = re.compile(r'\$(?:\{([a-zA-Z_]\w*)\}|([a-zA-Z_]\w*))')
+SCALAR_REFERENCE_PATTERN = re.compile(r'\$(?:\{([a-zA-Z_]\w*|[0-9]+)\}|([a-zA-Z_]\w*|[0-9]+))')
 ASSIGNMENT_WORD_PATTERN = re.compile(r'^[a-zA-Z_]\w*(?:\+)?=.*$')
 SHELL_OPTION_FLAGS = {
     'e': 'errexit',
@@ -71,6 +72,7 @@ class EvaluationState:
     variables: dict[str, str] = field(default_factory=dict)
     runtime_variables: dict[str, str] = field(default_factory=dict)
     arrays: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    functions: dict[str, FunctionDef] = field(default_factory=dict)
     shell_options: set[str] = field(default_factory=set)
     glob_options: set[str] = field(default_factory=set)
     bash_source_stack: tuple[Path, ...] = ()
@@ -79,8 +81,11 @@ class EvaluationState:
     ambiguous_cwd: bool = False
     ambiguous_variables: set[str] = field(default_factory=set)
     ambiguous_arrays: set[str] = field(default_factory=set)
+    ambiguous_functions: set[str] = field(default_factory=set)
     ambiguous_shell_options: bool = False
     ambiguous_glob_options: bool = False
+    function_call_stack: tuple[str, ...] = ()
+    local_scopes: list[dict[str, tuple[bool, str | None, bool, str | None, bool]]] = field(default_factory=list)
 
     def resolver_context(self):
         return {
@@ -114,6 +119,7 @@ class EvaluationState:
             variables=copy.deepcopy(self.variables),
             runtime_variables=copy.deepcopy(self.runtime_variables),
             arrays=copy.deepcopy(self.arrays),
+            functions=copy.deepcopy(self.functions),
             shell_options=set(self.shell_options),
             glob_options=set(self.glob_options),
             bash_source_stack=self.bash_source_stack,
@@ -122,8 +128,11 @@ class EvaluationState:
             ambiguous_cwd=self.ambiguous_cwd,
             ambiguous_variables=set(self.ambiguous_variables),
             ambiguous_arrays=set(self.ambiguous_arrays),
+            ambiguous_functions=set(self.ambiguous_functions),
             ambiguous_shell_options=self.ambiguous_shell_options,
             ambiguous_glob_options=self.ambiguous_glob_options,
+            function_call_stack=self.function_call_stack,
+            local_scopes=copy.deepcopy(self.local_scopes),
         )
 
     def conditional_copy(self):
@@ -136,6 +145,7 @@ class EvaluationState:
         self.variables = copy.deepcopy(other.variables)
         self.runtime_variables = copy.deepcopy(other.runtime_variables)
         self.arrays = copy.deepcopy(other.arrays)
+        self.functions = copy.deepcopy(other.functions)
         self.shell_options = set(other.shell_options)
         self.glob_options = set(other.glob_options)
         self.bash_source_stack = other.bash_source_stack
@@ -144,8 +154,11 @@ class EvaluationState:
         self.ambiguous_cwd = other.ambiguous_cwd
         self.ambiguous_variables = set(other.ambiguous_variables)
         self.ambiguous_arrays = set(other.ambiguous_arrays)
+        self.ambiguous_functions = set(other.ambiguous_functions)
         self.ambiguous_shell_options = other.ambiguous_shell_options
         self.ambiguous_glob_options = other.ambiguous_glob_options
+        self.function_call_stack = other.function_call_stack
+        self.local_scopes = copy.deepcopy(other.local_scopes)
 
 
 class SourceEvaluator:
@@ -213,6 +226,8 @@ class SourceEvaluator:
                 self._apply_cd(node, state)
             elif isinstance(node, SetCommand):
                 self._apply_set(node, state)
+            elif isinstance(node, FunctionDef):
+                self._apply_function_def(node, state)
             elif isinstance(node, ForLoop):
                 self._apply_for_loop(node, state, stack)
             elif isinstance(node, IfBlock):
@@ -226,6 +241,9 @@ class SourceEvaluator:
 
     @staticmethod
     def _apply_assignment(node: Assignment, state: EvaluationState):
+        if node.prefix == "local" and state.local_scopes:
+            SourceEvaluator._capture_local_variable(node.name, state)
+
         runtime_context = state.runtime_context()
         runtime_value = resolve_variable_references(node.value, runtime_context)
         runtime_value = os.path.expandvars(runtime_value)
@@ -240,10 +258,64 @@ class SourceEvaluator:
         state.ambiguous_variables.discard(node.name)
 
     @staticmethod
+    def _capture_local_variable(name: str, state: EvaluationState):
+        SourceEvaluator._capture_variable_in_scope(name, state.local_scopes[-1], state)
+
+    @staticmethod
+    def _capture_variable_in_scope(
+        name: str,
+        scope: dict[str, tuple[bool, str | None, bool, str | None, bool]],
+        state: EvaluationState,
+    ):
+        if name in scope:
+            return
+        has_value = name in state.variables
+        has_runtime_value = name in state.runtime_variables
+        scope[name] = (
+            has_value,
+            state.variables.get(name),
+            has_runtime_value,
+            state.runtime_variables.get(name),
+            name in state.ambiguous_variables,
+        )
+
+    @staticmethod
+    def _restore_local_scope(
+        local_scope: dict[str, tuple[bool, str | None, bool, str | None, bool]],
+        state: EvaluationState,
+    ):
+        for name, (
+            had_value,
+            previous_value,
+            had_runtime_value,
+            previous_runtime_value,
+            was_ambiguous,
+        ) in reversed(local_scope.items()):
+            if had_value and previous_value is not None:
+                state.variables[name] = previous_value
+            else:
+                state.variables.pop(name, None)
+
+            if had_runtime_value and previous_runtime_value is not None:
+                state.runtime_variables[name] = previous_runtime_value
+            else:
+                state.runtime_variables.pop(name, None)
+
+            if was_ambiguous:
+                state.ambiguous_variables.add(name)
+            else:
+                state.ambiguous_variables.discard(name)
+
+    @staticmethod
     def _apply_array_assignment(node: ArrayAssignment, state: EvaluationState):
         if node.is_exact:
             state.arrays[node.name] = node.values
             state.ambiguous_arrays.discard(node.name)
+
+    @staticmethod
+    def _apply_function_def(node: FunctionDef, state: EvaluationState):
+        state.functions[node.name] = node
+        state.ambiguous_functions.discard(node.name)
 
     @staticmethod
     def _apply_cd(node: CdCommand, state: EvaluationState):
@@ -817,6 +889,12 @@ class SourceEvaluator:
             target.ambiguous_arrays,
             [state.ambiguous_arrays for state in possible_states],
         )
+        SourceEvaluator._merge_state_mapping(
+            target.functions,
+            [state.functions for state in possible_states],
+            target.ambiguous_functions,
+            [state.ambiguous_functions for state in possible_states],
+        )
 
         first_shell_options = first.shell_options
         if any(state.ambiguous_shell_options for state in possible_states) or any(
@@ -1038,6 +1116,20 @@ class SourceEvaluator:
         )
 
     def _apply_raw_command(self, node: RawCommand, state: EvaluationState, stack: tuple[Path, ...]):
+        if self._apply_function_call(node, state, stack):
+            return
+
+        if state.function_call_stack and self._raw_function_control_command(node):
+            raise unsupported_source_error(
+                str(node.location.path),
+                node.location.line - 1,
+                node.text,
+                node.text,
+                "unsupported.source.function-control",
+                "unsupported function control command",
+                "Function return/shift semantics need explicit modeling before source-aware lowering.",
+            )
+
         self._apply_shopt(node, state)
 
         try:
@@ -1088,6 +1180,195 @@ class SourceEvaluator:
                 self._evaluate_file(source_path, state.child_shell_copy(), stack)
             else:
                 self._evaluate_file(source_path, state, stack)
+
+    def _apply_function_call(self, node: RawCommand, state: EvaluationState, stack: tuple[Path, ...]):
+        try:
+            words = parse_shell_words_preserving_quotes(node.text.strip())
+        except UnsupportedSourceError:
+            return False
+        if not words:
+            return False
+
+        index = 0
+        while index < len(words) and ASSIGNMENT_WORD_PATTERN.match(words[index]):
+            index += 1
+        if index >= len(words):
+            return False
+
+        function_name = strip_matching_quotes(words[index])
+        if function_name in state.ambiguous_functions:
+            raise unsupported_source_error(
+                str(node.location.path),
+                node.location.line - 1,
+                node.text,
+                node.text,
+                "unsupported.source.function-dispatch",
+                f"unsupported branch-dependent function call: {function_name}",
+                "Define source-relevant functions consistently before calling them.",
+            )
+        function_def = state.functions.get(function_name)
+        if function_def is None:
+            return False
+
+        if function_name in state.function_call_stack:
+            raise unsupported_source_error(
+                str(node.location.path),
+                node.location.line - 1,
+                node.text,
+                node.text,
+                "unsupported.source.function-recursion",
+                f"unsupported recursive function call: {function_name}",
+                "Recursive source effects need an explicit bounded recursion model.",
+            )
+
+        arguments = self._resolve_function_arguments(words[index + 1:], node, state)
+        prefix_scope = {}
+        self._apply_function_assignment_prefixes(words[:index], prefix_scope, node, state)
+        previous_positionals = self._push_function_positionals(arguments, state)
+        previous_call_stack = state.function_call_stack
+        state.function_call_stack = (*state.function_call_stack, function_name)
+        state.local_scopes.append({})
+        try:
+            self._evaluate_nodes(function_def.body, state, stack)
+        finally:
+            local_scope = state.local_scopes.pop()
+            self._restore_local_scope(local_scope, state)
+            self._restore_function_positionals(previous_positionals, len(arguments), state)
+            self._restore_local_scope(prefix_scope, state)
+            state.function_call_stack = previous_call_stack
+        return True
+
+    def _apply_function_assignment_prefixes(self, words: list[str], scope: dict, node: RawCommand,
+                                            state: EvaluationState):
+        for word in words:
+            match = re.match(r'^([a-zA-Z_]\w*)(\+?)=(.*)$', word, re.S)
+            if not match:
+                raise unsupported_source_error(
+                    str(node.location.path),
+                    node.location.line - 1,
+                    node.text,
+                    node.text,
+                    "unsupported.source.function-assignment",
+                    "unsupported function assignment prefix",
+                    "Function assignment prefixes must be exact scalar assignments.",
+                )
+            name, append_operator, value = match.groups()
+            self._capture_variable_in_scope(name, scope, state)
+            resolved = self._resolve_function_exact_word(
+                value,
+                node,
+                state,
+                "unsupported.source.function-assignment",
+                "unsupported dynamic function assignment prefix",
+                "unsupported unresolved function assignment prefix",
+                "Function assignment prefixes must be exact for source-aware function evaluation.",
+            )
+            if append_operator:
+                resolved = state.runtime_variables.get(name, "") + resolved
+            state.variables[name] = resolved
+            state.runtime_variables[name] = resolved
+            state.ambiguous_variables.discard(name)
+
+    @staticmethod
+    def _resolve_function_arguments(words: list[str], node: RawCommand, state: EvaluationState):
+        arguments = []
+        for word in words:
+            arguments.append(SourceEvaluator._resolve_function_exact_word(
+                word,
+                node,
+                state,
+                "unsupported.source.function-argument",
+                "unsupported dynamic function argument",
+                "unsupported unresolved function argument",
+                "Function arguments must be exact for source-aware function evaluation.",
+            ))
+        return tuple(arguments)
+
+    @staticmethod
+    def _resolve_function_exact_word(word: str, node: RawCommand, state: EvaluationState, code: str,
+                                     dynamic_message: str, unresolved_message: str, hint: str):
+        if '$(' in word or '`' in word:
+            raise unsupported_source_error(
+                str(node.location.path),
+                node.location.line - 1,
+                node.text,
+                node.text,
+                code,
+                dynamic_message,
+                hint,
+            )
+        resolved = resolve_variable_references(word, state.runtime_context())
+        resolved = os.path.expandvars(resolved)
+        if "$" in resolved:
+            raise unsupported_source_error(
+                str(node.location.path),
+                node.location.line - 1,
+                node.text,
+                node.text,
+                code,
+                unresolved_message,
+                hint,
+            )
+        return strip_matching_quotes(resolved)
+
+    @staticmethod
+    def _push_function_positionals(arguments: tuple[str, ...], state: EvaluationState):
+        positional_names = {str(index) for index in range(1, len(arguments) + 1)}
+        positional_names.update(
+            name
+            for mapping in (state.variables, state.runtime_variables)
+            for name in mapping
+            if name.isdigit()
+        )
+        previous = {
+            name: (
+                name in state.variables,
+                state.variables.get(name),
+                name in state.runtime_variables,
+                state.runtime_variables.get(name),
+                name in state.ambiguous_variables,
+            )
+            for name in positional_names
+        }
+        for index, argument in enumerate(arguments, start=1):
+            name = str(index)
+            state.variables[name] = argument
+            state.runtime_variables[name] = argument
+            state.ambiguous_variables.discard(name)
+        for name in positional_names - {str(index) for index in range(1, len(arguments) + 1)}:
+            state.variables.pop(name, None)
+            state.runtime_variables.pop(name, None)
+            state.ambiguous_variables.discard(name)
+        return previous
+
+    @staticmethod
+    def _restore_function_positionals(previous_positionals, argument_count: int, state: EvaluationState):
+        for index in range(1, argument_count + 1):
+            state.ambiguous_variables.discard(str(index))
+        for name, (
+            had_value,
+            previous_value,
+            had_runtime_value,
+            previous_runtime_value,
+            was_ambiguous,
+        ) in previous_positionals.items():
+            if had_value and previous_value is not None:
+                state.variables[name] = previous_value
+            else:
+                state.variables.pop(name, None)
+            if had_runtime_value and previous_runtime_value is not None:
+                state.runtime_variables[name] = previous_runtime_value
+            else:
+                state.runtime_variables.pop(name, None)
+            if was_ambiguous:
+                state.ambiguous_variables.add(name)
+            else:
+                state.ambiguous_variables.discard(name)
+
+    @staticmethod
+    def _raw_function_control_command(node: RawCommand):
+        stripped = node.text.strip()
+        return bool(re.match(r'^(?:return|shift)(?:\s|$)', stripped))
 
     @staticmethod
     def _apply_shopt(node: RawCommand, state: EvaluationState):
@@ -1159,6 +1440,8 @@ class SourceEvaluator:
                         replacement_kind="command",
                         condition=condition,
                     ))
+            elif isinstance(node, FunctionDef):
+                self._disable_unreachable_sources(node.body, condition)
             elif isinstance(node, ForLoop):
                 self._disable_unreachable_sources(node.body, condition)
             elif isinstance(node, IfBlock):
@@ -1179,6 +1462,8 @@ class SourceEvaluator:
             if isinstance(node, SourceSite):
                 return True
             if isinstance(node, RawCommand) and self._raw_command_may_source(node.text):
+                return True
+            if isinstance(node, FunctionDef) and self._node_list_may_source(node.body):
                 return True
             if isinstance(node, ForLoop) and self._node_list_may_source(node.body):
                 return True

@@ -28,4 +28,4 @@ The intended approach is captured in the
 - Complex array/list iteration
 - Broader glob semantics
 - Broader case pattern and fallthrough semantics
-- Runtime dispatch and user-defined source-path functions
+- Runtime dispatch and broader user-defined function semantics

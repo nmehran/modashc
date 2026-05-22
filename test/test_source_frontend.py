@@ -7,6 +7,7 @@ from methods.source_effects import (
     Assignment,
     CaseBlock,
     CdCommand,
+    FunctionDef,
     ForLoop,
     IfBlock,
     RawCommand,
@@ -81,6 +82,50 @@ class LineParserFrontendTestCase(unittest.TestCase):
         self.assertEqual(site.source_expression, "./runtime.sh")
         self.assertEqual(site.location.line, 2)
         self.assertEqual(site.location.column, 3)
+
+    def test_parses_function_definitions_as_ir_nodes(self):
+        ir = self.parse("""\
+            load_dep() {
+              local dep="$1"
+              source "$dep"
+            }
+            function compact { source ./static.sh; }
+            """)
+
+        self.assertEqual([type(node) for node in ir.nodes], [FunctionDef, FunctionDef])
+        self.assertEqual([node.name for node in ir.nodes], ["load_dep", "compact"])
+        self.assertEqual([type(node) for node in ir.nodes[0].body], [Assignment, SourceSite])
+        self.assertEqual(ir.nodes[0].body[0].prefix, "local")
+        self.assertEqual(ir.nodes[1].body[0].source_expression, "./static.sh")
+
+    def test_parses_function_definitions_with_split_opening_brace(self):
+        ir = self.parse("""\
+            load_dep()
+            {
+              source "$1"
+            }
+            function compact
+            { source ./static.sh; }
+            """)
+
+        self.assertEqual([type(node) for node in ir.nodes], [FunctionDef, FunctionDef])
+        self.assertEqual([node.name for node in ir.nodes], ["load_dep", "compact"])
+        self.assertEqual(ir.nodes[0].body[0].source_expression, '"$1"')
+        self.assertEqual(ir.nodes[1].body[0].source_expression, "./static.sh")
+        self.assertEqual(ir.nodes[1].body[0].location.line, 6)
+
+    def test_function_body_parameter_expansion_is_not_a_closing_brace(self):
+        ir = self.parse("""\
+            helper() {
+              value="${ROOT}/dep.sh"
+              source "$value"
+            }
+            helper
+            """)
+
+        self.assertEqual([type(node) for node in ir.nodes], [FunctionDef, RawCommand])
+        self.assertEqual([type(node) for node in ir.nodes[0].body], [Assignment, SourceSite])
+        self.assertEqual(ir.nodes[0].body[0].value, '"${ROOT}/dep.sh"')
 
     def test_emits_raw_commands_for_non_source_fragments(self):
         ir = self.parse('cd subdir && echo ready && source ./dep.sh\n')

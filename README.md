@@ -70,19 +70,23 @@ safe to lower, compilation fails before writing or overwriting the output file.
 - exact `case` blocks over known scalar subjects, with literal, alternate,
   default, quoted literal, and ordinary glob arm patterns without mixed quoting,
   backslash escapes, or POSIX character classes
+- bounded local function calls when the function definition is known, arguments
+  are exact, and source-relevant body effects are modeled, including positional
+  source arguments, exact assignment prefixes, `local` scalar assignments, cwd
+  changes, and functions defined by sourced files
 - `bash -c "source ..."` classification in context mode
 
 Unsupported or ambiguous dynamic forms fail closed in executable mode. This
 includes direct source globs with multiple matches, unmatched or quoted globs,
 globstar/brace/extglob-style patterns, glob-affecting shell options,
 scalar word-list splitting, unsupported conditional predicates, unsupported
-case subjects or arm patterns, process substitution, user-defined source-path
-functions, nested dynamic substitutions, and multi-result `cat` or `find`
-output.
+case subjects or arm patterns, process substitution, unknown or recursive
+function dispatch, function `return` / `shift` control flow, nested dynamic
+substitutions, and multi-result `cat` or `find` output.
 
 Control-flow evaluation beyond exact finite loops, modeled `if` blocks, and
 exact `case` blocks is intentionally fail-closed until broader glob,
-conditional, and function semantics are modeled. See
+conditional, case, and function semantics are modeled. See
 [Dynamic Source Resolution](docs/dynamic-source-resolution.md) for the current
 resolver contract and [Evaluator And IR Plan](docs/evaluator-ir-plan.md) for
 the remaining pattern families.
@@ -142,7 +146,8 @@ Design notes live in [docs](docs/README.md).
 
 ## Current Roadmap
 
-- Modeled function calls whose source effects are bounded and exact.
+- Broader function semantics, including `return`, `shift`, dynamic dispatch,
+  and nested modeled control flow inside function bodies.
 - Broader conditional predicates, glob semantics, and case pattern semantics.
 
 ## Installation
