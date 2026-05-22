@@ -493,6 +493,53 @@ class SourceEvaluatorTestCase(unittest.TestCase):
 
         self.assertEqual([event.path for event in result.events], [first, second])
 
+        with ScriptProject() as project:
+            first = project.write("a.sh", 'echo "a"\n')
+            second = project.write("b.sh", 'echo "b"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                DEPS="./a.sh   ./b.sh"
+                for dep in $DEPS; do
+                  source "$dep"
+                done
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [first, second])
+        self.assertEqual([event.source_value for event in result.events], ["./a.sh", "./b.sh"])
+
+    def test_scalar_for_loop_glob_sources_are_evaluated(self):
+        with ScriptProject() as project:
+            second = project.write("plugins/b.sh", 'echo "b"\n')
+            first = project.write("plugins/a.sh", 'echo "a"\n')
+            project.write("plugins/readme.txt", 'echo "not sourced"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                DEPS="./plugins/*.sh"
+                for dep in $DEPS; do
+                  source "$dep"
+                done
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [first, second])
+        self.assertEqual([event.source_value for event in result.events], ["./plugins/a.sh", "./plugins/b.sh"])
+
+    def test_quoted_scalar_for_loop_preserves_single_word(self):
+        with ScriptProject() as project:
+            dep = project.write("deps dir#tag/a dep.sh", 'echo "special"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                DEP="./deps dir#tag/a dep.sh"
+                for dep in "$DEP"; do
+                  source "$dep"
+                done
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [dep])
+        self.assertEqual([event.source_value for event in result.events], ["./deps dir#tag/a dep.sh"])
+
     def test_exact_glob_for_loop_sources_are_evaluated(self):
         with ScriptProject() as project:
             second = project.write("plugins/b.sh", 'echo "b"\n')
@@ -523,8 +570,7 @@ class SourceEvaluatorTestCase(unittest.TestCase):
         cases = {
             "command substitution": 'for dep in $(cat deps.txt); do source "$dep"; done\n',
             "unknown scalar": 'for dep in "$DEP"; do source "$dep"; done\n',
-            "scalar word list": 'DEPS="./a.sh ./b.sh"\nfor dep in $DEPS; do source "$dep"; done\n',
-            "scalar glob": 'DEP="./plugins/*.sh"\nfor dep in $DEP; do source "$dep"; done\n',
+            "nondefault ifs scalar word list": 'IFS=:\nDEPS="./a.sh:./b.sh"\nfor dep in $DEPS; do source "$dep"; done\n',
             "unknown array": 'for dep in "${deps[@]}"; do source "$dep"; done\n',
             "unmatched glob": 'for dep in ./plugins/*.sh; do source "$dep"; done\n',
             "quoted glob": 'for dep in "./plugins/*.sh"; do source "$dep"; done\n',
@@ -541,7 +587,7 @@ class SourceEvaluatorTestCase(unittest.TestCase):
                     SourceEvaluator().evaluate(entry)
 
             self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.loop-word-list")
-            expected_line = 2 if name in {"scalar word list", "scalar glob", "nullglob"} else 1
+            expected_line = 3 if name == "nondefault ifs scalar word list" else 2 if name == "nullglob" else 1
             self.assertEqual(cm.exception.diagnostic.location.line, expected_line)
 
     def test_circular_source_raises_recursion_error(self):

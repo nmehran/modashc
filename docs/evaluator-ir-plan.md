@@ -5,14 +5,15 @@
 Partially implemented. The compiler now has a source-effect IR frontend,
 structured unsupported-source diagnostics, and an abstract evaluator that drives
 both executable and context rendering for the supported subset. Exact finite
-`for` loops over literal words, known scalar path variables, and exact
-`${array[@]}` expansions are implemented, along with deterministic ordinary
-file-glob loop expansion. Branch-aware `if` / `elif` / `else` lowering is
+`for` loops over literal words, known scalar path variables, default-IFS scalar
+word lists, and exact `${array[@]}` expansions are implemented, along with
+deterministic ordinary file-glob loop expansion. Branch-aware `if` / `elif` /
+`else` lowering is
 implemented for the current side-effect-free predicate subset, and exact
 `case` blocks are implemented for known subjects and the modeled pattern
 subset. Bounded local function calls are implemented when the definition is
 known, arguments are exact, and source-relevant body effects are modeled. It
-remains fail-closed for broader glob semantics, scalar word-list splitting,
+remains fail-closed for broader glob semantics, custom-IFS word splitting,
 unsupported conditional predicates, broader case pattern semantics, broader
 function control flow, dynamic function dispatch, and runtime dispatch.
 
@@ -283,13 +284,14 @@ original source site. Supported word inputs are:
 - literal words
 - exact array expansion
 - known scalar path variables that expand to a single word
+- known scalar values that split under default `IFS`
 - deterministic ordinary file globs
 
 Deferred word inputs are:
 
 - broader glob semantics under shell options such as `nullglob`, `dotglob`,
   `globstar`, `extglob`, and `GLOBIGNORE`
-- scalar values that require shell word splitting
+- scalar values that require custom `IFS` splitting
 - safe `find` output only if modeled as a word-list producer
 - command substitution word lists
 
@@ -494,9 +496,9 @@ done
 
 The supported loop forms include `for ...; do ... done` and newline-`do`
 variants. Word lists may contain literal words, known scalar path variables,
-exact `${array[@]}` expansion, or deterministic ordinary file globs. Scalar
-word-list splitting and broader glob semantics remain unsupported until their
-semantics are modeled explicitly.
+default-IFS scalar word lists, exact `${array[@]}` expansion, or deterministic
+ordinary file globs. Custom-IFS splitting and broader glob semantics remain
+unsupported until their semantics are modeled explicitly.
 
 ### Phase 6: Deterministic Globs
 

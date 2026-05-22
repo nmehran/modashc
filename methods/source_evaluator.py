@@ -49,7 +49,9 @@ from methods.regex.utilities import strip_matching_quotes
 ARRAY_INDEX_PATTERN = re.compile(r'\$\{([a-zA-Z_]\w*)\[(\d+)\]\}')
 ARRAY_EXPANSION_PATTERN = re.compile(r'^\$\{([a-zA-Z_]\w*)\[@\]\}$')
 SCALAR_REFERENCE_PATTERN = re.compile(r'\$(?:\{([a-zA-Z_]\w*|[0-9]+)\}|([a-zA-Z_]\w*|[0-9]+))')
+SCALAR_WORD_PATTERN = re.compile(r'^\$(?:\{([a-zA-Z_]\w*|[0-9]+)\}|([a-zA-Z_]\w*|[0-9]+))$')
 ASSIGNMENT_WORD_PATTERN = re.compile(r'^[a-zA-Z_]\w*(?:\+)?=.*$')
+DEFAULT_IFS = " \t\n"
 SHELL_OPTION_FLAGS = {
     'e': 'errexit',
     'E': 'errtrace',
@@ -386,6 +388,9 @@ class SourceEvaluator:
             raise self._unsupported_loop_words(node, "unsupported loop word list syntax") from exc
 
     def _expand_loop_word(self, word: str, raw_word: str, node: ForLoop, state: EvaluationState):
+        if self._raw_word_is_single_quoted(raw_word):
+            return [word]
+
         if '$(' in word or '`' in word:
             raise self._unsupported_loop_words(node, "loop word list is runtime-dynamic")
 
@@ -421,7 +426,14 @@ class SourceEvaluator:
 
         if '$' in word:
             resolved_word = resolve_variable_references(word, state.runtime_context())
-            if any(char.isspace() for char in resolved_word):
+
+            if "$" in resolved_word:
+                raise self._unsupported_loop_words(node, "loop word list contains unresolved scalar expansion")
+
+            if self._raw_word_is_unquoted_scalar(raw_word):
+                return self._split_scalar_loop_word(resolved_word, node, state)
+
+            if any(char.isspace() for char in resolved_word) and not self._raw_word_is_double_quoted(raw_word):
                 raise self._unsupported_loop_words(
                     node,
                     "unsupported loop word list contains whitespace after scalar expansion",
@@ -434,6 +446,48 @@ class SourceEvaluator:
             return [resolved_word]
 
         return [word]
+
+    def _split_scalar_loop_word(self, resolved_word: str, node: ForLoop, state: EvaluationState):
+        self._ensure_default_ifs(node, state)
+        words = []
+        for field in resolved_word.split():
+            if has_unquoted_glob(field):
+                try:
+                    words.extend(
+                        match.word
+                        for match in expand_glob_word(field, state.resolver_context(), node.text, raw_pattern=field)
+                    )
+                except UnsupportedSourceError as exc:
+                    raise self._unsupported_loop_words(node, str(exc)) from exc
+            else:
+                words.append(field)
+        return words
+
+    @staticmethod
+    def _ensure_default_ifs(node: ForLoop, state: EvaluationState):
+        if 'IFS' not in state.runtime_variables:
+            return
+        if state.runtime_variables['IFS'] == DEFAULT_IFS:
+            return
+        raise SourceEvaluator._unsupported_loop_words(
+            node,
+            "unsupported scalar loop word splitting with nondefault IFS",
+        )
+
+    @staticmethod
+    def _raw_word_is_unquoted_scalar(raw_word: str):
+        stripped = raw_word.strip()
+        return not stripped.startswith(('"', "'")) and bool(SCALAR_WORD_PATTERN.match(stripped))
+
+    @staticmethod
+    def _raw_word_is_single_quoted(raw_word: str):
+        stripped = raw_word.strip()
+        return len(stripped) >= 2 and stripped[0] == stripped[-1] == "'"
+
+    @staticmethod
+    def _raw_word_is_double_quoted(raw_word: str):
+        stripped = raw_word.strip()
+        return len(stripped) >= 2 and stripped[0] == stripped[-1] == '"'
 
     @staticmethod
     def _unsupported_loop_words(node: ForLoop, message: str):

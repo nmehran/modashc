@@ -7,8 +7,9 @@ variable/env-expanded paths, path command substitutions such as `dirname`,
 `basename`, and `realpath`, plus the first Python-only dynamic resolver subset:
 safe `cat`, safe `find`, safe `eval source`, and context-only `bash -c source`
 classification. The source-effect evaluator also supports exact finite `for`
-loops over literal words, known scalar path variables, and exact `${array[@]}`
-expansions, plus deterministic ordinary file globs in finite loop word lists.
+loops over literal words, known scalar path variables, default-IFS scalar word
+lists, and exact `${array[@]}` expansions, plus deterministic ordinary file
+globs in finite loop word lists.
 Direct source globs are accepted only when they resolve to exactly one file.
 Modeled `if` / `elif` / `else` blocks can lower source sites inside branches
 when branch predicates are side-effect-free and branch state is exact enough for
@@ -348,13 +349,7 @@ boundary rather than inline the file into the parent shell.
 These still need separate specs before implementation:
 
 - Broader glob semantics beyond ordinary deterministic file globs.
-- Scalar word-list splitting:
-  ```bash
-  DEPS="./a.sh ./b.sh"
-  for file in $DEPS; do
-    source "$file"
-  done
-  ```
+- Custom-IFS scalar word-list splitting.
 - Broader case pattern and fallthrough semantics.
 - Complex array/list-based source paths.
 - Broader user-defined function semantics, including dynamic dispatch,

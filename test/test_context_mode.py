@@ -145,6 +145,26 @@ class ContextModeTestCase(unittest.TestCase):
         self.assertIn('source "$dep"', content)
         self.assertEqual(content.count('echo "loop a body"'), 1)
 
+    def test_context_output_resolves_scalar_word_list_loop_sources(self):
+        with ScriptProject() as project:
+            project.write("deps/a.sh", 'echo "scalar loop a body"\n')
+            project.write("deps/b.sh", 'echo "scalar loop b body"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                DEPS="./deps/a.sh ./deps/b.sh"
+                for dep in $DEPS; do
+                  source "$dep"
+                done
+                echo "main body"
+                """))
+
+            output = project.compile("main.sh")
+            content = output.read_text()
+
+        self.assertIn('echo "scalar loop a body"', content)
+        self.assertIn('echo "scalar loop b body"', content)
+        self.assertIn('# modashc: source "$dep" -> deps/a.sh', content)
+        self.assertIn('# modashc: source "$dep" -> deps/b.sh', content)
+
     def test_context_output_resolves_glob_for_loop_sources(self):
         with ScriptProject() as project:
             project.write("plugins/b.sh", 'echo "glob b body"\n')

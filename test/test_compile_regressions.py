@@ -180,6 +180,42 @@ class CompileRegressionTestCase(unittest.TestCase):
 
             project.assert_compiled_matches(self, "main.sh")
 
+        with ScriptProject() as project:
+            project.write("deps/a.sh", 'echo "scalar wordlist:a:$dep"\n')
+            project.write("deps/b.sh", 'echo "scalar wordlist:b:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                DEPS="./deps/a.sh   ./deps/b.sh"
+                for dep in $DEPS; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("deps dir#tag/a dep.sh", 'echo "quoted scalar special:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                DEP="./deps dir#tag/a dep.sh"
+                for dep in "$DEP"; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("plugins/b.sh", 'echo "scalar glob:b:$dep"\n')
+            project.write("plugins/a.sh", 'echo "scalar glob:a:$dep"\n')
+            project.write("plugins/readme.txt", 'echo "not sourced"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                DEPS="./plugins/*.sh"
+                for dep in $DEPS; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
     def test_exact_for_loop_repeated_same_line_sources_match_bash(self):
         with ScriptProject() as project:
             project.write("a.sh", 'echo "repeat:a"\n')
@@ -923,8 +959,8 @@ class CompileRegressionTestCase(unittest.TestCase):
     def test_unsupported_source_families_fail_without_writing_output(self):
         cases = {
             "unknown scalar": ('source "$DEP"\n', 'source "$DEP"'),
-            "scalar word-list loop": (
-                'DEPS="./plugins/a.sh ./plugins/b.sh"\nfor file in $DEPS; do source "$file"; done\n',
+            "nondefault ifs scalar word-list loop": (
+                'IFS=:\nDEPS="./plugins/a.sh:./plugins/b.sh"\nfor file in $DEPS; do source "$file"; done\n',
                 'for file in $DEPS; do source "$file"; done',
             ),
             "unmatched glob loop": (

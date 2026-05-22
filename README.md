@@ -60,8 +60,8 @@ safe to lower, compilation fails before writing or overwriting the output file.
 - safe deterministic `find` sources with one matching file
 - safe `eval` payloads that resolve to exactly one source command
 - exact indexed array source paths, such as `source "${deps[0]}"`
-- exact finite `for` loops over literal words, known scalar path variables, or
-  `${array[@]}` expansions
+- exact finite `for` loops over literal words, known scalar path variables,
+  default-IFS scalar word lists, or `${array[@]}` expansions
 - deterministic finite `for` loops over ordinary file globs, such as
   `for dep in ./plugins/*.sh; do source "$dep"; done`
 - direct source globs only when the glob resolves to exactly one file
@@ -79,9 +79,9 @@ safe to lower, compilation fails before writing or overwriting the output file.
 Unsupported or ambiguous dynamic forms fail closed in executable mode. This
 includes direct source globs with multiple matches, unmatched or quoted globs,
 globstar/brace/extglob-style patterns, glob-affecting shell options,
-scalar word-list splitting, unsupported conditional predicates, unsupported
-case subjects or arm patterns, process substitution, unknown or recursive
-function dispatch, function `return` / `shift` control flow, nested dynamic
+custom-IFS word splitting, unsupported conditional predicates, unsupported case
+subjects or arm patterns, process substitution, unknown or recursive function
+dispatch, function `return` / `shift` control flow, nested dynamic
 substitutions, and multi-result `cat` or `find` output.
 
 Control-flow evaluation beyond exact finite loops, modeled `if` blocks, and
