@@ -1,3 +1,4 @@
+import subprocess
 import textwrap
 import unittest
 
@@ -7,6 +8,22 @@ from test.support import ScriptProject
 
 
 class SourceEvaluatorTestCase(unittest.TestCase):
+    @staticmethod
+    def _find_words(project, root, name):
+        completed = subprocess.run(
+            ["find", root, "-type", "f", "-name", name, "-print"],
+            cwd=project.root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=True,
+        )
+        return completed.stdout.splitlines()
+
+    @staticmethod
+    def _paths_for_words(project, words):
+        return [project.path(word).resolve() for word in words]
+
     def test_static_source_event_includes_state_before_source(self):
         with ScriptProject() as project:
             dep = project.write("dep.sh", 'echo "dep:$FOO"\n')
@@ -854,8 +871,10 @@ class SourceEvaluatorTestCase(unittest.TestCase):
         self.assertEqual([event.source_value for event in result.events], ["./a.sh", "./b.sh"])
 
         with ScriptProject() as project:
-            second = project.write("plugins/b.sh", 'echo "b"\n')
-            first = project.write("plugins/a.sh", 'echo "a"\n')
+            project.write("plugins/b.sh", 'echo "b"\n')
+            project.write("plugins/a.sh", 'echo "a"\n')
+            expected_words = self._find_words(project, "./plugins", "*.sh")
+            expected_paths = self._paths_for_words(project, expected_words)
             entry = project.write("main.sh", textwrap.dedent("""\
                 for dep in $(find ./plugins -type f -name '*.sh' -print); do
                   source "$dep"
@@ -864,7 +883,8 @@ class SourceEvaluatorTestCase(unittest.TestCase):
 
             result = SourceEvaluator().evaluate(entry)
 
-        self.assertEqual([event.path for event in result.events], [first, second])
+        self.assertEqual([event.path for event in result.events], expected_paths)
+        self.assertEqual([event.source_value for event in result.events], expected_words)
 
         with ScriptProject() as project:
             first = project.write("a.sh", 'echo "a"\n')
@@ -1033,8 +1053,9 @@ class SourceEvaluatorTestCase(unittest.TestCase):
 
     def test_producer_read_loop_sources_are_evaluated(self):
         with ScriptProject() as project:
-            first = project.write("plugins/a.sh", 'echo "a"\n')
-            second = project.write("plugins/b.sh", 'echo "b"\n')
+            project.write("plugins/a.sh", 'echo "a"\n')
+            project.write("plugins/b.sh", 'echo "b"\n')
+            expected_paths = self._paths_for_words(project, self._find_words(project, "./plugins", "*.sh"))
             entry = project.write("main.sh", textwrap.dedent("""\
                 find ./plugins -type f -name '*.sh' -print | while read -r dep; do
                   source "$dep"
@@ -1043,7 +1064,7 @@ class SourceEvaluatorTestCase(unittest.TestCase):
 
             result = SourceEvaluator().evaluate(entry)
 
-        self.assertEqual([event.path for event in result.events], [first, second])
+        self.assertEqual([event.path for event in result.events], expected_paths)
         self.assertNotIn("dep", result.final_state.variables)
 
         with ScriptProject() as project:
@@ -1076,8 +1097,10 @@ class SourceEvaluatorTestCase(unittest.TestCase):
         self.assertNotIn("VALUE", result.final_state.variables)
 
         with ScriptProject() as project:
-            first = project.write("generated/a.sh", 'echo "a"\n')
-            second = project.write("generated/b.sh", 'echo "b"\n')
+            project.write("generated/a.sh", 'echo "a"\n')
+            project.write("generated/b.sh", 'echo "b"\n')
+            expected_words = self._find_words(project, "./generated", "*.sh")
+            expected_paths = self._paths_for_words(project, expected_words)
             entry = project.write("main.sh", textwrap.dedent("""\
                 while read -r dep; do
                   source "$dep"
@@ -1086,8 +1109,8 @@ class SourceEvaluatorTestCase(unittest.TestCase):
 
             result = SourceEvaluator().evaluate(entry)
 
-        self.assertEqual([event.path for event in result.events], [first, second])
-        self.assertEqual(result.final_state.variables["dep"], "./generated/b.sh")
+        self.assertEqual([event.path for event in result.events], expected_paths)
+        self.assertEqual(result.final_state.variables["dep"], expected_words[-1])
 
     def test_practical_command_producer_loop_sources_are_evaluated(self):
         with ScriptProject() as project:
