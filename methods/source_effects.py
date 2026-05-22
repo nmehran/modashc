@@ -60,6 +60,7 @@ class SourceEvent:
     execution_model: ExecutionModel
     occurrence_model: OccurrenceModel
     replacement_kind: str = "source"
+    source_value: str | None = None
     state_before: StateSnapshot | None = None
     condition: str | None = None
 
@@ -107,6 +108,15 @@ class SetCommand(IRNode):
 
 
 @dataclass(frozen=True)
+class ForLoop(IRNode):
+    variable: str
+    words: tuple[str, ...]
+    body: tuple[IRNode, ...]
+    words_text: str
+    is_exact: bool = True
+
+
+@dataclass(frozen=True)
 class SourceSite(IRNode):
     command_name: str
     source_expression: str
@@ -122,4 +132,10 @@ class ScriptIR:
 
     @property
     def source_sites(self) -> tuple[SourceSite, ...]:
-        return tuple(node for node in self.nodes if isinstance(node, SourceSite))
+        sites = []
+        for node in self.nodes:
+            if isinstance(node, SourceSite):
+                sites.append(node)
+            elif isinstance(node, ForLoop):
+                sites.extend(body_node for body_node in node.body if isinstance(body_node, SourceSite))
+        return tuple(sites)

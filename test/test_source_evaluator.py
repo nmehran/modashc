@@ -138,6 +138,73 @@ class SourceEvaluatorTestCase(unittest.TestCase):
         ])
         self.assertNotIn("NEXT", result.final_state.variables)
 
+    def test_exact_literal_for_loop_sources_are_evaluated_in_order(self):
+        with ScriptProject() as project:
+            first = project.write("a.sh", 'echo "a"\n')
+            second = project.write("b.sh", 'echo "b"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                for dep in ./a.sh ./b.sh; do
+                  source "$dep"
+                done
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [first, second])
+        self.assertEqual([event.source_value for event in result.events], ["./a.sh", "./b.sh"])
+        self.assertEqual(result.final_state.variables["dep"], "./b.sh")
+
+    def test_exact_array_for_loop_sources_are_evaluated(self):
+        with ScriptProject() as project:
+            first = project.write("a.sh", 'echo "a"\n')
+            second = project.write("b.sh", 'echo "b"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                deps=(./a.sh ./b.sh)
+                for dep in "${deps[@]}"; do
+                  source "$dep"
+                done
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [first, second])
+
+    def test_exact_scalar_for_loop_sources_are_evaluated(self):
+        with ScriptProject() as project:
+            first = project.write("a.sh", 'echo "a"\n')
+            second = project.write("b.sh", 'echo "b"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                A=./a.sh
+                B=./b.sh
+                for dep in "$A" "$B"; do
+                  source "$dep"
+                done
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [first, second])
+
+    def test_unsupported_for_loop_words_raise_structured_diagnostic(self):
+        cases = {
+            "glob": 'for dep in ./plugins/*.sh; do source "$dep"; done\n',
+            "command substitution": 'for dep in $(cat deps.txt); do source "$dep"; done\n',
+            "unknown scalar": 'for dep in "$DEP"; do source "$dep"; done\n',
+            "scalar word list": 'DEPS="./a.sh ./b.sh"\nfor dep in $DEPS; do source "$dep"; done\n',
+            "unknown array": 'for dep in "${deps[@]}"; do source "$dep"; done\n',
+        }
+
+        for name, content in cases.items():
+            with self.subTest(name=name), ScriptProject() as project:
+                entry = project.write("main.sh", content)
+
+                with self.assertRaisesRegex(NotImplementedError, "loop word") as cm:
+                    SourceEvaluator().evaluate(entry)
+
+            self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.loop-word-list")
+            expected_line = 2 if name == "scalar word list" else 1
+            self.assertEqual(cm.exception.diagnostic.location.line, expected_line)
+
     def test_circular_source_raises_recursion_error(self):
         with ScriptProject() as project:
             entry = project.write("a.sh", "source ./b.sh\n")

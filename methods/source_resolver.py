@@ -39,6 +39,8 @@ class ResolvedSource:
     execution_model: str = "parent-source"
     confidence: str = "exact"
     replacement_kind: str = "source"
+    source_value: str | None = None
+    source_column: int | None = None
 
 
 @dataclass(frozen=True)

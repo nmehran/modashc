@@ -116,6 +116,85 @@ class CompileRegressionTestCase(unittest.TestCase):
 
             project.assert_compiled_matches(self, "main.sh")
 
+    def test_exact_literal_for_loop_sources_match_bash(self):
+        with ScriptProject() as project:
+            project.write("a.sh", 'echo "dep:a:$dep"\n')
+            project.write("b.sh", 'echo "dep:b:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in ./a.sh ./b.sh; do
+                  echo "before:$dep"
+                  source "$dep"
+                  echo "after:$dep"
+                done
+                echo "final:$dep"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_exact_array_for_loop_sources_match_bash(self):
+        with ScriptProject() as project:
+            project.write("deps/a.sh", 'echo "array:a"\n')
+            project.write("deps/b.sh", 'echo "array:b"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                deps=(./deps/a.sh ./deps/b.sh)
+                for dep in "${deps[@]}"; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_exact_newline_do_for_loop_sources_match_bash(self):
+        with ScriptProject() as project:
+            project.write("a.sh", 'echo "newline:a"\n')
+            project.write("b.sh", 'echo "newline:b"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in ./a.sh ./b.sh
+                do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_exact_scalar_for_loop_sources_match_bash(self):
+        with ScriptProject() as project:
+            project.write("deps/a.sh", 'echo "scalar:a"\n')
+            project.write("deps/b.sh", 'echo "scalar:b"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                FIRST=./deps/a.sh
+                SECOND=./deps/b.sh
+                for dep in "$FIRST" "$SECOND"; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_exact_for_loop_repeated_same_line_sources_match_bash(self):
+        with ScriptProject() as project:
+            project.write("a.sh", 'echo "repeat:a"\n')
+            project.write("b.sh", 'echo "repeat:b"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in ./a.sh ./b.sh; do
+                  source "$dep"; source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_exact_for_loop_special_paths_match_bash(self):
+        with ScriptProject() as project:
+            project.write("deps dir#tag/a dep.sh", 'echo "special:a:$dep"\n')
+            project.write("deps dir#tag/b dep.sh", 'echo "special:b:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in "./deps dir#tag/a dep.sh" "./deps dir#tag/b dep.sh"; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
     def test_environment_absolute_source_matches_bash(self):
         with ScriptProject() as project:
             dep = project.write("dep.sh", 'echo "dep from env"\n')
@@ -209,6 +288,13 @@ class CompileRegressionTestCase(unittest.TestCase):
 
             project.assert_compiled_matches(self, "main.sh")
 
+    def test_runtime_source_reference_before_source_on_same_line_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "dep after bash source"\n')
+            project.write("main.sh", 'echo "$BASH_SOURCE"; source ./dep.sh\n')
+
+            project.assert_compiled_matches(self, "main.sh")
+
     def test_heredoc_source_text_is_not_treated_as_dependency(self):
         with ScriptProject() as project:
             project.write("dep.sh", 'echo "dep should not run"\n')
@@ -289,6 +375,10 @@ class CompileRegressionTestCase(unittest.TestCase):
             "for loop": (
                 'for file in ./plugins/*.sh; do source "$file"; done\n',
                 'do source "$file"',
+            ),
+            "scalar word-list loop": (
+                'DEPS="./plugins/a.sh ./plugins/b.sh"\nfor file in $DEPS; do source "$file"; done\n',
+                'for file in $DEPS; do source "$file"; done',
             ),
             "if block": (
                 'if [[ -f ./dep.sh ]]; then\n  source ./dep.sh\nfi\n',

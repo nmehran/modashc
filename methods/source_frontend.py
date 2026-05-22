@@ -10,6 +10,7 @@ from methods.source_effects import (
     ArrayAssignment,
     Assignment,
     CdCommand,
+    ForLoop,
     RawCommand,
     ScriptIR,
     SetCommand,
@@ -30,6 +31,10 @@ from methods.source_resolver import (
 from methods.shell_line import get_commands
 
 ARRAY_ASSIGNMENT_PATTERN = re.compile(r'^(?:declare\s+-a\s+)?([a-zA-Z_]\w*)=\((.*)\)$')
+FOR_LOOP_PATTERN = re.compile(r'^\s*for\s+([a-zA-Z_]\w*)\s+in\s+(.+?)\s*;\s*do(?:\s*(.*))?$')
+FOR_HEADER_PATTERN = re.compile(r'^\s*for\s+([a-zA-Z_]\w*)\s+in\s+(.+?)\s*$')
+DO_LINE_PATTERN = re.compile(r'^\s*do\s*$')
+INLINE_DONE_PATTERN = re.compile(r'^(.*?)(?:;\s*)?done\s*$')
 
 
 class ParserFrontend(Protocol):
@@ -49,11 +54,16 @@ class LineParserFrontend:
         nodes = []
         active_heredocs = []
         control_depth = 0
+        lines = content.splitlines()
+        line_index = 0
 
-        for line_number, line in enumerate(content.splitlines(), start=1):
+        while line_index < len(lines):
+            line_number = line_index + 1
+            line = lines[line_index]
             if active_heredocs:
                 if is_heredoc_end(line, active_heredocs[0]):
                     active_heredocs.pop(0)
+                line_index += 1
                 continue
 
             code_line = remove_comments(
@@ -62,10 +72,18 @@ class LineParserFrontend:
                 exclusion_patterns=[r'\#\!.*'],
                 escape_exclusions=False,
             )
+
+            for_loop, next_line_index = self._parse_for_loop(script_path, line_number, code_line, lines, line_index)
+            if for_loop:
+                nodes.append(for_loop)
+                line_index = next_line_index
+                continue
+
             control_flow_source_ranges = self._control_flow_source_ranges(code_line, control_depth)
             nodes.extend(self._parse_line(script_path, line_number, code_line, control_flow_source_ranges))
             control_depth = self._next_control_depth(code_line, control_depth)
             active_heredocs.extend(extract_heredoc_delimiters(line))
+            line_index += 1
 
         return ScriptIR(path=script_path, nodes=tuple(nodes))
 
@@ -125,6 +143,100 @@ class LineParserFrontend:
             return set_command
 
         return RawCommand(location=location, text=command)
+
+    def _parse_for_loop(self, script_path: Path, line_number: int, code_line: str, lines: list[str], line_index: int):
+        match = FOR_LOOP_PATTERN.match(code_line)
+        do_line_index = line_index
+        if match:
+            variable, words_text, inline_body = match.groups()
+        else:
+            match = FOR_HEADER_PATTERN.match(code_line)
+            if not match or line_index + 1 >= len(lines):
+                return None, line_index + 1
+
+            do_line_index = line_index + 1
+            do_code_line = remove_comments(
+                lines[do_line_index],
+                ['#'],
+                exclusion_patterns=[r'\#\!.*'],
+                escape_exclusions=False,
+            )
+            do_match = DO_LINE_PATTERN.match(do_code_line)
+            if not do_match:
+                return None, line_index + 1
+
+            variable, words_text = match.groups()
+            inline_body = ""
+
+        if inline_body is None:
+            inline_body = ""
+
+        if inline_body.strip() == "":
+            body_start_index = do_line_index + 1
+        else:
+            body_start_index = do_line_index
+
+        if body_start_index <= line_index:
+            body_start_index = line_index + 1
+
+        body_lines = []
+        next_line_index = body_start_index
+
+        if inline_body is not None and inline_body.strip():
+            done_match = INLINE_DONE_PATTERN.match(inline_body.strip())
+            if not done_match:
+                return None, line_index + 1
+            body_lines.append((do_line_index + 1, done_match.group(1).strip()))
+            next_line_index = do_line_index + 1
+        else:
+            body_index = body_start_index
+            while body_index < len(lines):
+                body_line_number = body_index + 1
+                body_code_line = remove_comments(
+                    lines[body_index],
+                    ['#'],
+                    exclusion_patterns=[r'\#\!.*'],
+                    escape_exclusions=False,
+                )
+                if body_code_line.strip() == "done":
+                    next_line_index = body_index + 1
+                    break
+                body_lines.append((body_line_number, body_code_line))
+                body_index += 1
+            else:
+                return None, line_index + 1
+
+        loop_words, is_exact = self._parse_loop_words(words_text)
+        body = self._parse_loop_body(script_path, body_lines)
+        column = self._command_column(code_line, "for")
+
+        return ForLoop(
+            location=SourceLocation(script_path, line_number, column),
+            text=code_line.strip(),
+            variable=variable,
+            words=loop_words,
+            body=body,
+            words_text=words_text.strip(),
+            is_exact=is_exact,
+        ), next_line_index
+
+    @staticmethod
+    def _parse_loop_words(words_text: str):
+        try:
+            return tuple(parse_shell_words(words_text)), True
+        except UnsupportedSourceError:
+            return (), False
+
+    def _parse_loop_body(self, script_path: Path, body_lines):
+        nodes = []
+        control_depth = 0
+
+        for line_number, code_line in body_lines:
+            control_flow_source_ranges = self._control_flow_source_ranges(code_line, control_depth)
+            nodes.extend(self._parse_line(script_path, line_number, code_line, control_flow_source_ranges))
+            control_depth = self._next_control_depth(code_line, control_depth)
+
+        return tuple(nodes)
 
     @staticmethod
     def _command_column(line: str, command: str):

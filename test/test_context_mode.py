@@ -124,6 +124,27 @@ class ContextModeTestCase(unittest.TestCase):
         self.assertIn('# modashc: source "${deps[1]}" -> deps/feature.sh', content)
         self.assertIn('source "${deps[1]}"', content)
 
+    def test_context_output_resolves_exact_for_loop_sources(self):
+        with ScriptProject() as project:
+            project.write("deps/a.sh", 'echo "loop a body"\n')
+            project.write("deps/b.sh", 'echo "loop b body"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in ./deps/a.sh ./deps/b.sh; do
+                  source "$dep"
+                done
+                echo "main body"
+                """))
+
+            output = project.compile("main.sh")
+            content = output.read_text()
+
+        self.assertIn('echo "loop a body"', content)
+        self.assertIn('echo "loop b body"', content)
+        self.assertIn('# modashc: source "$dep" -> deps/a.sh', content)
+        self.assertIn('# modashc: source "$dep" -> deps/b.sh', content)
+        self.assertIn('source "$dep"', content)
+        self.assertEqual(content.count('echo "loop a body"'), 1)
+
     def test_context_output_preserves_unresolved_source_without_failing(self):
         with ScriptProject() as project:
             project.write("main.sh", 'source "$OPTIONAL_DEP"\necho "main body"\n')

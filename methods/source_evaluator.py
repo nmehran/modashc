@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import os
 import re
 from collections import Counter
 from dataclasses import dataclass, field
@@ -13,6 +14,7 @@ from methods.source_effects import (
     CdCommand,
     EvaluationResult,
     ExecutionModel,
+    ForLoop,
     OccurrenceModel,
     RawCommand,
     SetCommand,
@@ -22,10 +24,19 @@ from methods.source_effects import (
 )
 from methods.source_frontend import LineParserFrontend, ParserFrontend
 from methods.source_resolver import UnsupportedSourceError, contains_source_command
-from methods.sources import SOURCE_RESOLVER, change_directory, resolve_command, resolve_variable_references
+from methods.sources import (
+    SOURCE_RESOLVER,
+    change_directory,
+    resolve_command,
+    resolve_shell_path_commands,
+    resolve_variable_references,
+)
 from methods.regex.utilities import strip_matching_quotes
 
 ARRAY_INDEX_PATTERN = re.compile(r'\$\{([a-zA-Z_]\w*)\[(\d+)\]\}')
+ARRAY_EXPANSION_PATTERN = re.compile(r'^\$\{([a-zA-Z_]\w*)\[@\]\}$')
+SCALAR_REFERENCE_PATTERN = re.compile(r'\$(?:\{([a-zA-Z_]\w*)\}|([a-zA-Z_]\w*))')
+GLOB_CHAR_PATTERN = re.compile(r'(?<!\\)[*?\[]')
 SHELL_OPTION_FLAGS = {
     'e': 'errexit',
     'E': 'errtrace',
@@ -37,6 +48,7 @@ SHELL_OPTION_FLAGS = {
 class EvaluationState:
     cwd: Path
     variables: dict[str, str] = field(default_factory=dict)
+    runtime_variables: dict[str, str] = field(default_factory=dict)
     arrays: dict[str, tuple[str, ...]] = field(default_factory=dict)
     shell_options: set[str] = field(default_factory=set)
     bash_source_stack: tuple[Path, ...] = ()
@@ -45,6 +57,12 @@ class EvaluationState:
     def resolver_context(self):
         return {
             'vars': self.variables,
+            'current_directory': str(self.cwd),
+        }
+
+    def runtime_context(self):
+        return {
+            'vars': self.runtime_variables,
             'current_directory': str(self.cwd),
         }
 
@@ -61,6 +79,7 @@ class EvaluationState:
         return EvaluationState(
             cwd=self.cwd,
             variables=copy.deepcopy(self.variables),
+            runtime_variables=copy.deepcopy(self.runtime_variables),
             arrays=copy.deepcopy(self.arrays),
             shell_options=set(self.shell_options),
             bash_source_stack=self.bash_source_stack,
@@ -86,6 +105,7 @@ class SourceEvaluator:
         state = EvaluationState(
             cwd=entrypoint.parent,
             variables={'0': str(entrypoint), 'BASH_SOURCE': str(entrypoint)},
+            runtime_variables={'0': str(entrypoint), 'BASH_SOURCE': str(entrypoint)},
             bash_source_stack=(entrypoint,),
         )
         self.events = []
@@ -105,37 +125,55 @@ class SourceEvaluator:
         content = path.read_text()
         ir = self.frontend.parse(path, content)
         previous_bash_source = state.variables.get('BASH_SOURCE')
+        previous_runtime_bash_source = state.runtime_variables.get('BASH_SOURCE')
         previous_stack = state.bash_source_stack
         state.variables['BASH_SOURCE'] = str(path)
+        state.runtime_variables['BASH_SOURCE'] = str(path)
         state.bash_source_stack = (*previous_stack, path) if previous_stack[-1:] != (path,) else previous_stack
 
         try:
-            for node in ir.nodes:
-                if isinstance(node, Assignment):
-                    self._apply_assignment(node, state)
-                elif isinstance(node, ArrayAssignment):
-                    self._apply_array_assignment(node, state)
-                elif isinstance(node, CdCommand):
-                    self._apply_cd(node, state)
-                elif isinstance(node, SetCommand):
-                    self._apply_set(node, state)
-                elif isinstance(node, SourceSite):
-                    self._apply_source_site(node, state, current_stack)
-                elif isinstance(node, RawCommand):
-                    self._apply_raw_command(node, state, current_stack)
+            self._evaluate_nodes(ir.nodes, state, current_stack)
         finally:
             if previous_bash_source is None:
                 state.variables.pop('BASH_SOURCE', None)
             else:
                 state.variables['BASH_SOURCE'] = previous_bash_source
+            if previous_runtime_bash_source is None:
+                state.runtime_variables.pop('BASH_SOURCE', None)
+            else:
+                state.runtime_variables['BASH_SOURCE'] = previous_runtime_bash_source
             state.bash_source_stack = previous_stack
+
+    def _evaluate_nodes(self, nodes, state: EvaluationState, stack: tuple[Path, ...]):
+        for node in nodes:
+            if isinstance(node, Assignment):
+                self._apply_assignment(node, state)
+            elif isinstance(node, ArrayAssignment):
+                self._apply_array_assignment(node, state)
+            elif isinstance(node, CdCommand):
+                self._apply_cd(node, state)
+            elif isinstance(node, SetCommand):
+                self._apply_set(node, state)
+            elif isinstance(node, ForLoop):
+                self._apply_for_loop(node, state, stack)
+            elif isinstance(node, SourceSite):
+                self._apply_source_site(node, state, stack)
+            elif isinstance(node, RawCommand):
+                self._apply_raw_command(node, state, stack)
 
     @staticmethod
     def _apply_assignment(node: Assignment, state: EvaluationState):
+        runtime_context = state.runtime_context()
+        runtime_value = resolve_variable_references(node.value, runtime_context)
+        runtime_value = os.path.expandvars(runtime_value)
+        runtime_value = resolve_shell_path_commands(runtime_value, str(state.cwd))
+        runtime_value = strip_matching_quotes(runtime_value)
+
         context = state.resolver_context()
         value = strip_matching_quotes(resolve_variable_references(node.value, context))
         resolved_value, _ = resolve_command(value, context)
         state.variables[node.name] = resolved_value
+        state.runtime_variables[node.name] = runtime_value
 
     @staticmethod
     def _apply_array_assignment(node: ArrayAssignment, state: EvaluationState):
@@ -172,6 +210,72 @@ class SourceEvaluator:
                     else:
                         state.shell_options.discard(option)
             index += 1
+
+    def _apply_for_loop(self, node: ForLoop, state: EvaluationState, stack: tuple[Path, ...]):
+        try:
+            words = self._resolve_loop_words(node, state)
+        except UnsupportedSourceError:
+            if self.mode == "context":
+                return
+            raise
+
+        for word in words:
+            state.variables[node.variable] = word
+            state.runtime_variables[node.variable] = word
+            self._evaluate_nodes(node.body, state, stack)
+
+    def _resolve_loop_words(self, node: ForLoop, state: EvaluationState):
+        if not node.is_exact:
+            raise self._unsupported_loop_words(node, "unsupported loop word list")
+
+        words = []
+        for word in node.words:
+            words.extend(self._expand_loop_word(word, node, state))
+
+        return words
+
+    def _expand_loop_word(self, word: str, node: ForLoop, state: EvaluationState):
+        if '$(' in word or '`' in word:
+            raise self._unsupported_loop_words(node, "loop word list is runtime-dynamic")
+
+        array_match = ARRAY_EXPANSION_PATTERN.match(word)
+        if array_match:
+            array_name = array_match.group(1)
+            values = state.arrays.get(array_name)
+            if values is None:
+                raise self._unsupported_loop_words(node, f"loop word list references unknown array: {array_name}")
+            return list(values)
+
+        if GLOB_CHAR_PATTERN.search(word):
+            raise self._unsupported_loop_words(node, "loop word list contains unsupported glob")
+
+        for match in SCALAR_REFERENCE_PATTERN.finditer(word):
+            variable_name = match.group(1) or match.group(2)
+            if variable_name not in state.runtime_variables:
+                raise self._unsupported_loop_words(node, f"loop word list references unknown variable: {variable_name}")
+
+        if '$' in word:
+            resolved_word = resolve_variable_references(word, state.runtime_context())
+            if any(char.isspace() for char in resolved_word):
+                raise self._unsupported_loop_words(
+                    node,
+                    "unsupported loop word list contains whitespace after scalar expansion",
+                )
+            return [resolved_word]
+
+        return [word]
+
+    @staticmethod
+    def _unsupported_loop_words(node: ForLoop, message: str):
+        return unsupported_source_error(
+            str(node.location.path),
+            node.location.line - 1,
+            node.text,
+            node.text,
+            "unsupported.source.loop-word-list",
+            message,
+            "Use a literal finite list, known scalar variables, or an exact ${array[@]} expansion.",
+        )
 
     def _apply_source_site(self, node: SourceSite, state: EvaluationState, stack: tuple[Path, ...]):
         if not self._is_plain_source_site(node) and self.mode == "executable":
@@ -237,6 +341,7 @@ class SourceEvaluator:
             )
 
         source_path = Path(resolved_source.path)
+        source_value = self._source_runtime_value(resolved_expression, state)
         if is_context_control_flow:
             branch_state = state.conditional_copy()
             self._record_event(
@@ -248,12 +353,21 @@ class SourceEvaluator:
                 "source",
                 state,
                 occurrence_model=OccurrenceModel.CONDITIONAL,
+                source_value=source_value,
             )
             self._evaluate_file(source_path, branch_state, stack)
             return
 
         self._record_and_descend(
-            source_path, node, node.source_expression, source_site, state, stack, ExecutionModel.PARENT_SOURCE, "source"
+            source_path,
+            node,
+            node.source_expression,
+            source_site,
+            state,
+            stack,
+            ExecutionModel.PARENT_SOURCE,
+            "source",
+            source_value,
         )
 
     def _apply_raw_command(self, node: RawCommand, state: EvaluationState, stack: tuple[Path, ...]):
@@ -297,6 +411,7 @@ class SourceEvaluator:
                 execution_model,
                 resolved_source.replacement_kind,
                 state,
+                source_value=resolved_source.source_value,
             )
             if execution_model == ExecutionModel.CHILD_SHELL:
                 self._evaluate_file(source_path, state.child_shell_copy(), stack)
@@ -305,13 +420,16 @@ class SourceEvaluator:
 
     def _record_and_descend(self, source_path: Path, node: SourceSite, source_expression: str, source_site: str,
                             state: EvaluationState, stack: tuple[Path, ...], execution_model: ExecutionModel,
-                            replacement_kind: str):
-        self._record_event(source_path, node, source_expression, source_site, execution_model, replacement_kind, state)
+                            replacement_kind: str, source_value: str | None = None):
+        self._record_event(
+            source_path, node, source_expression, source_site, execution_model, replacement_kind, state,
+            source_value=source_value,
+        )
         self._evaluate_file(source_path, state, stack)
 
     def _record_event(self, source_path: Path, node, source_expression: str, source_site: str,
                       execution_model: ExecutionModel, replacement_kind: str, state: EvaluationState,
-                      occurrence_model: OccurrenceModel | None = None):
+                      occurrence_model: OccurrenceModel | None = None, source_value: str | None = None):
         self.events.append(SourceEvent(
             path=source_path.resolve(),
             location=node.location,
@@ -320,6 +438,7 @@ class SourceEvaluator:
             execution_model=execution_model,
             occurrence_model=occurrence_model or state.occurrence_context,
             replacement_kind=replacement_kind,
+            source_value=source_value,
             state_before=state.snapshot(),
         ))
 
@@ -342,6 +461,23 @@ class SourceEvaluator:
             return values[index]
 
         return ARRAY_INDEX_PATTERN.sub(replace, source_expression)
+
+    @staticmethod
+    def _source_runtime_value(source_expression: str, state: EvaluationState):
+        context = state.runtime_context()
+        resolved_expression = resolve_variable_references(source_expression, context)
+        runtime_value = strip_matching_quotes(resolved_expression)
+        if runtime_value and not os.path.isabs(runtime_value) and '$(' not in runtime_value:
+            return runtime_value
+
+        resolved_value, is_valid_path = resolve_command(runtime_value, state.resolver_context())
+        if is_valid_path:
+            current_directory = str(state.cwd)
+            try:
+                return str(Path(resolved_value).resolve().relative_to(Path(current_directory).resolve()))
+            except ValueError:
+                return resolved_value
+        return runtime_value
 
     @staticmethod
     def _is_plain_source_site(node: SourceSite):
@@ -372,6 +508,7 @@ class SourceEvaluator:
                     else event.occurrence_model
                 ),
                 replacement_kind=event.replacement_kind,
+                source_value=event.source_value,
                 state_before=event.state_before,
                 condition=event.condition,
             )

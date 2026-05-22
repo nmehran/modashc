@@ -47,32 +47,6 @@ def indent_block(content: str, prefix: str):
     return '\n'.join(f"{prefix}{line}" if line else line for line in lines)
 
 
-def replace_source_sites(line: str, source_paths: list[str], render_source):
-    if not source_paths:
-        return line
-
-    updated_parts = []
-    last_end = 0
-    source_index = 0
-
-    for match in SOURCE_PATTERN.finditer(line):
-        if source_index >= len(source_paths):
-            break
-
-        separator = match.group(1) or ''
-        indent = re.match(r'\s*', separator).group(0) if separator else ''
-        rendered_source = indent_block(render_source(source_paths[source_index]), indent)
-        replacement = f"{separator}{{\n{rendered_source}\n{indent}}}"
-
-        updated_parts.append(line[last_end:match.start()])
-        updated_parts.append(replacement)
-        last_end = match.end()
-        source_index += 1
-
-    updated_parts.append(line[last_end:])
-    return ''.join(updated_parts)
-
-
 def construct_file_separator(filepath, entry_point, delimiter="-", length=120):
     # Get the basename of the file for the header
     filename = os.path.relpath(filepath, start=os.path.dirname(entry_point))
@@ -138,6 +112,34 @@ def render_source_block(filepath: str, render_source, indent: str):
     return f"{{\n{rendered_source}\n{indent}}}"
 
 
+def render_source_dispatch(source_expression: str, source_declarations, render_source, indent: str):
+    output = [f"case {source_expression.strip()} in"]
+    seen_patterns = set()
+
+    for source_declaration in source_declarations:
+        pattern = source_declaration.source_value or source_declaration.path
+        if pattern in seen_patterns:
+            continue
+        seen_patterns.add(pattern)
+        rendered_source = indent_block(render_source(source_declaration.path), f"{indent}    ")
+        output.extend([
+            f"{indent}  {shell_quote(pattern)})",
+            f"{indent}    {{",
+            rendered_source,
+            f"{indent}    }}",
+            f"{indent}    ;;",
+        ])
+
+    output.extend([
+        f"{indent}  *)",
+        f"{indent}    echo {shell_quote(f'modashc: unresolved source {source_expression.strip()}')} >&2",
+        f"{indent}    exit 1",
+        f"{indent}    ;;",
+        f"{indent}esac",
+    ])
+    return '\n'.join(output)
+
+
 def find_unquoted_substring(text: str, needle: str, start: int = 0):
     in_single_quote = False
     in_double_quote = False
@@ -181,6 +183,78 @@ def replace_command_source_sites(line: str, source_declarations, render_source):
         search_start = source_index + len(replacement)
 
     return line
+
+
+def source_site_for_match(match):
+    _, command_name, arguments = match.groups()
+    return f"{command_name.strip()} {(arguments or '').strip()}".strip()
+
+
+def source_column_for_match(match):
+    return match.start(2) + 1
+
+
+def pop_source_declarations_for_match(match, declarations_by_column):
+    grouped_declarations = declarations_by_column.pop(source_column_for_match(match), [])
+    if grouped_declarations:
+        return grouped_declarations
+
+    match_source_site = source_site_for_match(match)
+    for source_column, declarations in list(declarations_by_column.items()):
+        if declarations and declarations[0].source_site == match_source_site:
+            return declarations_by_column.pop(source_column)
+
+    return []
+
+
+def group_source_declarations_by_column(source_declarations):
+    declarations_by_column = defaultdict(list)
+    fallback_declarations = []
+
+    for source_declaration in source_declarations:
+        if source_declaration.source_column is None:
+            fallback_declarations.append(source_declaration)
+        else:
+            declarations_by_column[source_declaration.source_column].append(source_declaration)
+
+    return declarations_by_column, fallback_declarations
+
+
+def replace_source_site_declarations(line: str, source_declarations, render_source):
+    if not source_declarations:
+        return line
+
+    matches = list(SOURCE_PATTERN.finditer(line))
+    if not matches:
+        raise ValueError(f"Could not replace resolved source declarations: {line.strip()}")
+
+    declarations_by_column, fallback_declarations = group_source_declarations_by_column(source_declarations)
+    updated_parts = []
+    last_end = 0
+
+    for match in matches:
+        grouped_declarations = pop_source_declarations_for_match(match, declarations_by_column)
+        if not grouped_declarations and fallback_declarations:
+            grouped_declarations.append(fallback_declarations.pop(0))
+        if not grouped_declarations:
+            continue
+
+        separator = match.group(1) or ''
+        indent = re.match(r'\s*', separator).group(0) if separator else ''
+        declaration = grouped_declarations[0]
+        unique_paths = {source_declaration.path for source_declaration in grouped_declarations}
+        if len(grouped_declarations) > 1 and len(unique_paths) > 1:
+            replacement = f"{separator}{render_source_dispatch(declaration.source_expression, grouped_declarations, render_source, indent)}"
+        else:
+            rendered_source = indent_block(render_source(declaration.path), indent)
+            replacement = f"{separator}{{\n{rendered_source}\n{indent}}}"
+
+        updated_parts.append(line[last_end:match.start()])
+        updated_parts.append(replacement)
+        last_end = match.end()
+
+    updated_parts.append(line[last_end:])
+    return ''.join(updated_parts)
 
 
 def assert_no_unresolved_source_sites(content: str):
@@ -241,11 +315,16 @@ def render_executable_script(entry_point: str, context: dict):
                     if source_declaration.replacement_kind == "command"
                 ]
                 line = replace_command_source_sites(line, command_sources, render_file)
-                source_paths = [
-                    source_declaration.path for source_declaration in source_declarations
+                source_site_declarations = [
+                    source_declaration for source_declaration in source_declarations
                     if source_declaration.replacement_kind == "source"
                 ]
-                line = replace_source_sites(line, source_paths, render_file)
+                if source_site_declarations:
+                    line = replace_source_site_declarations(
+                        line,
+                        source_site_declarations,
+                        render_file,
+                    )
                 output.append(line)
 
             return '\n'.join(output)
@@ -298,6 +377,8 @@ def context_from_source_events(events):
             source_site=event.source_site,
             execution_model=event.execution_model.value,
             replacement_kind=event.replacement_kind,
+            source_value=event.source_value,
+            source_column=event.location.column,
         ))
 
     return {'source_declarations': source_declarations}

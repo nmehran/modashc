@@ -2,7 +2,7 @@ import textwrap
 import unittest
 from pathlib import Path
 
-from methods.source_effects import ArrayAssignment, Assignment, CdCommand, RawCommand, SetCommand, SourceSite
+from methods.source_effects import ArrayAssignment, Assignment, CdCommand, ForLoop, RawCommand, SetCommand, SourceSite
 from methods.source_frontend import LineParserFrontend
 
 
@@ -152,13 +152,67 @@ class LineParserFrontendTestCase(unittest.TestCase):
             '"${deps[0]}"',
         ])
         self.assertEqual([site.location.line for site in ir.source_sites], [1, 3, 6, 7, 10])
-        self.assertEqual([site.is_control_flow for site in ir.source_sites], [True, True, True, True, False])
+        self.assertEqual([site.is_control_flow for site in ir.source_sites], [False, True, True, True, False])
 
     def test_control_flow_marking_is_source_site_specific_on_mixed_lines(self):
         ir = self.parse('source ./always.sh; if true; then source ./branch.sh; fi\n')
 
         self.assertEqual([site.source_expression for site in ir.source_sites], ["./always.sh", "./branch.sh"])
         self.assertEqual([site.is_control_flow for site in ir.source_sites], [False, True])
+
+    def test_parses_simple_multiline_for_loop_node(self):
+        ir = self.parse("""\
+            for dep in ./a.sh "./b path.sh"; do
+              echo "$dep"
+              source "$dep"
+            done
+            """)
+
+        self.assertEqual(len(ir.nodes), 1)
+        loop = ir.nodes[0]
+        self.assertIsInstance(loop, ForLoop)
+        self.assertEqual(loop.variable, "dep")
+        self.assertEqual(loop.words, ("./a.sh", "./b path.sh"))
+        self.assertTrue(loop.is_exact)
+        self.assertEqual([type(node) for node in loop.body], [RawCommand, SourceSite])
+        self.assertEqual(loop.body[1].location.line, 3)
+        self.assertEqual(loop.body[1].source_expression, '"$dep"')
+        self.assertFalse(loop.body[1].is_control_flow)
+
+    def test_parses_newline_do_for_loop_node(self):
+        ir = self.parse("""\
+            for dep in ./a.sh ./b.sh
+            do
+              source "$dep"
+            done
+            """)
+
+        self.assertEqual(len(ir.nodes), 1)
+        loop = ir.nodes[0]
+        self.assertIsInstance(loop, ForLoop)
+        self.assertEqual(loop.variable, "dep")
+        self.assertEqual(loop.words, ("./a.sh", "./b.sh"))
+        self.assertEqual(loop.body[0].location.line, 3)
+        self.assertEqual(loop.body[0].source_expression, '"$dep"')
+
+    def test_parses_simple_inline_for_loop_node(self):
+        ir = self.parse('for dep in ./a.sh ./b.sh; do source "$dep"; done\n')
+
+        self.assertEqual(len(ir.nodes), 1)
+        loop = ir.nodes[0]
+        self.assertIsInstance(loop, ForLoop)
+        self.assertEqual(loop.variable, "dep")
+        self.assertEqual(loop.words, ("./a.sh", "./b.sh"))
+        self.assertEqual([site.source_expression for site in loop.body if isinstance(site, SourceSite)], ['"$dep"'])
+
+    def test_marks_unparseable_for_loop_words_as_not_exact(self):
+        ir = self.parse('for dep in "./unterminated; do source "$dep"; done\n')
+
+        self.assertEqual(len(ir.nodes), 1)
+        loop = ir.nodes[0]
+        self.assertIsInstance(loop, ForLoop)
+        self.assertEqual(loop.words, ())
+        self.assertFalse(loop.is_exact)
 
 
 if __name__ == "__main__":
