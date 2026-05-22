@@ -6,9 +6,10 @@ Partially implemented. The compiler now has a source-effect IR frontend,
 structured unsupported-source diagnostics, and an abstract evaluator that drives
 both executable and context rendering for the supported subset. Exact finite
 `for` loops over literal words, known scalar path variables, and exact
-`${array[@]}` expansions are implemented. It remains fail-closed for glob
-iteration, scalar word-list splitting, conditionals, case statements, modeled
-functions, and runtime dispatch.
+`${array[@]}` expansions are implemented, along with deterministic ordinary
+file-glob loop expansion. It remains fail-closed for broader glob semantics,
+scalar word-list splitting, conditionals, case statements, modeled functions,
+and runtime dispatch.
 
 ## Problem
 
@@ -17,10 +18,6 @@ but it does not fully model Bash control flow. Patterns like these remain
 unsupported by design:
 
 ```bash
-for file in ./plugins/*.sh; do
-  source "$file"
-done
-
 if [[ -f ./local.sh ]]; then
   source ./local.sh
 fi
@@ -32,8 +29,8 @@ esac
 ```
 
 Supporting those safely requires continuing the compiler model, not adding more
-ad hoc source regexes. The next steps are deterministic glob expansion, then
-branch-aware conditional and case evaluation.
+ad hoc source regexes. The next steps are branch-aware conditional and case
+evaluation, then modeled function calls.
 
 ## Goals
 
@@ -259,6 +256,10 @@ deps=(./a.sh ./b.sh)
 for file in "${deps[@]}"; do
   source "$file"
 done
+
+for file in ./plugins/*.sh; do
+  source "$file"
+done
 ```
 
 The evaluator lowers these by proving the finite values, recording source events
@@ -268,10 +269,12 @@ original source site. Supported word inputs are:
 - literal words
 - exact array expansion
 - known scalar path variables that expand to a single word
+- deterministic ordinary file globs
 
 Deferred word inputs are:
 
-- deterministic glob expansion
+- broader glob semantics under shell options such as `nullglob`, `dotglob`,
+  `globstar`, `extglob`, and `GLOBIGNORE`
 - scalar values that require shell word splitting
 - safe `find` output only if modeled as a word-list producer
 - command substitution word lists
@@ -312,11 +315,14 @@ runtime branching.
 
 ### Globs
 
-Glob expansion should be deterministic and cwd-aware:
+Ordinary file-glob expansion is implemented for finite loop word lists and for
+direct source expressions with exactly one match. Broader glob expansion should
+remain deterministic and cwd-aware:
 
 - sort matches lexically
-- support ordinary file globs first
-- reject nullglob/failglob/extglob unless option state is modeled
+- support direct source glob multi-match semantics only when Bash source
+  argument behavior is modeled
+- reject nullglob/failglob/extglob unless option state is fully modeled
 - reject ambiguous directory state
 
 ## Diagnostics
@@ -435,14 +441,27 @@ done
 ```
 
 The supported loop forms include `for ...; do ... done` and newline-`do`
-variants. Word lists may contain literal words, known scalar path variables, or
-exact `${array[@]}` expansion. Glob iteration and scalar word-list splitting
-remain unsupported until their semantics are modeled explicitly.
+variants. Word lists may contain literal words, known scalar path variables,
+exact `${array[@]}` expansion, or deterministic ordinary file globs. Scalar
+word-list splitting and broader glob semantics remain unsupported until their
+semantics are modeled explicitly.
 
 ### Phase 6: Deterministic Globs
 
-Support deterministic glob expansion in direct source expressions and finite
-loop word lists. Add explicit iteration limits and diagnostics.
+Implemented for ordinary file globs in finite loop word lists. Direct source
+globs are supported only when the glob resolves to exactly one regular file.
+Multiple direct source matches reject because Bash would source the first match
+and pass the rest as positional arguments, which is not equivalent to sourcing
+every match.
+
+Remaining glob work:
+
+- explicit iteration limits
+- glob-affecting option semantics such as `nullglob`, `failglob`, `dotglob`,
+  `globstar`, `extglob`, and `nocaseglob`
+- `GLOBIGNORE`
+- recursive `**`
+- brace expansion
 
 ### Phase 7: Provable Conditionals And Cases
 

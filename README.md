@@ -62,15 +62,20 @@ safe to lower, compilation fails before writing or overwriting the output file.
 - exact indexed array source paths, such as `source "${deps[0]}"`
 - exact finite `for` loops over literal words, known scalar path variables, or
   `${array[@]}` expansions
+- deterministic finite `for` loops over ordinary file globs, such as
+  `for dep in ./plugins/*.sh; do source "$dep"; done`
+- direct source globs only when the glob resolves to exactly one file
 - `bash -c "source ..."` classification in context mode
 
 Unsupported or ambiguous dynamic forms fail closed in executable mode. This
-includes glob-driven loops, scalar word-list splitting, conditional/case-driven
-sources, process substitution, user-defined source-path functions, nested
-dynamic substitutions, and multi-result `cat` or `find` output.
+includes direct source globs with multiple matches, unmatched or quoted globs,
+globstar/brace/extglob-style patterns, glob-affecting shell options,
+scalar word-list splitting, conditional/case-driven sources, process
+substitution, user-defined source-path functions, nested dynamic substitutions,
+and multi-result `cat` or `find` output.
 
 Control-flow evaluation beyond exact finite loops is intentionally fail-closed
-until branch, case, glob, and function semantics are modeled. See
+until branch, case, broader glob, and function semantics are modeled. See
 [Dynamic Source Resolution](docs/dynamic-source-resolution.md) for the current
 resolver contract and [Evaluator And IR Plan](docs/evaluator-ir-plan.md) for
 the remaining pattern families.
@@ -130,7 +135,6 @@ Design notes live in [docs](docs/README.md).
 
 ## Current Roadmap
 
-- Deterministic glob expansion under modeled shell options.
 - Provable conditionals and case statements.
 - Modeled function calls whose source effects are bounded and exact.
 

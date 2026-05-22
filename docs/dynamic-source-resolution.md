@@ -8,7 +8,9 @@ variable/env-expanded paths, path command substitutions such as `dirname`,
 safe `cat`, safe `find`, safe `eval source`, and context-only `bash -c source`
 classification. The source-effect evaluator also supports exact finite `for`
 loops over literal words, known scalar path variables, and exact `${array[@]}`
-expansions. Unsupported forms fail closed.
+expansions, plus deterministic ordinary file globs in finite loop word lists.
+Direct source globs are accepted only when they resolve to exactly one file.
+Unsupported forms fail closed.
 
 ## Goal
 
@@ -102,9 +104,10 @@ Resolvers should be tried from most explicit to most specialized:
 3. Path command resolver: `dirname`, `basename`, `realpath`
 4. Safe `cat` resolver
 5. Safe `find` resolver
-6. Safe `eval source` resolver
-7. Safe `bash -c source` classifier
-8. Unsupported dynamic diagnostic
+6. Direct one-match glob resolver
+7. Safe `eval source` resolver
+8. Safe `bash -c source` classifier
+9. Unsupported dynamic diagnostic
 
 The resolver registry should make this ordering explicit in code and tests.
 
@@ -141,6 +144,12 @@ deps=(./a.sh ./b.sh)
 for dep in "${deps[@]}"; do
   source "$dep"
 done
+
+for dep in ./plugins/*.sh; do
+  source "$dep"
+done
+
+source ./single-plugin/*.sh
 ```
 
 ## Implemented Resolver Subset
@@ -244,6 +253,54 @@ The last example should be rejected at the `eval` layer initially. A later
 implementation may allow nested resolver dispatch only if diagnostics remain
 clear and the parser can prove there is still one source command.
 
+### Deterministic Globs
+
+Target loop forms:
+
+```bash
+for dep in ./plugins/*.sh; do
+  source "$dep"
+done
+
+for dep in "./plugin dir#tag"/*.sh; do
+  source "$dep"
+done
+```
+
+Target direct-source form:
+
+```bash
+source ./single-plugin/*.sh
+```
+
+Accept loop globs only when:
+
+- The glob metacharacters are unquoted.
+- The pattern is an ordinary file glob using `*`, `?`, or `[]`.
+- Expansion is cwd-aware and deterministic.
+- Every match is a regular file.
+- No modeled shell state changes the meaning of the glob.
+
+Accept direct source globs only when the glob resolves to exactly one regular
+file. Multiple direct-source matches are rejected because Bash would source the
+first expanded word and pass the remaining words as positional arguments to that
+sourced file, which is not equivalent to sourcing every match.
+
+Reject examples:
+
+```bash
+source ./plugins/*.sh          # multiple matches
+for dep in "./plugins/*.sh"; do source "$dep"; done
+for dep in ./plugins/**/*.sh; do source "$dep"; done
+for dep in ./plugins/{a,b}.sh; do source "$dep"; done
+shopt -s nullglob
+for dep in ./plugins/*.sh; do source "$dep"; done
+```
+
+Currently rejected glob-affecting state includes `set -f`, non-empty
+`GLOBIGNORE`, and enabled `shopt` options such as `nullglob`, `failglob`,
+`dotglob`, `globstar`, `extglob`, and `nocaseglob`.
+
 ### `bash -c "source ..."`
 
 Target forms:
@@ -271,12 +328,7 @@ boundary rather than inline the file into the parent shell.
 
 These still need separate specs before implementation:
 
-- Glob-driven source sites:
-  ```bash
-  for file in ./plugins/*.sh; do
-    source "$file"
-  done
-  ```
+- Broader glob semantics beyond ordinary deterministic file globs.
 - Scalar word-list splitting:
   ```bash
   DEPS="./a.sh ./b.sh"
@@ -292,7 +344,6 @@ These still need separate specs before implementation:
   ```
 - Case-driven source selection.
 - Complex array/list-based source paths.
-- Glob expansion as dependency source.
 - User-defined functions that compute source paths.
 - Process substitution and generated source streams.
 
@@ -332,6 +383,8 @@ scope:
   `bash -c source` classification are implemented.
 - Exact finite `for` loop lowering is implemented for literal words, known
   scalar path variables, and exact `${array[@]}` expansion.
+- Deterministic ordinary file-glob loop lowering is implemented, and direct
+  source globs are implemented for one-match cases only.
 - Executable mode fails before output when unsupported source forms would leave
   live runtime `source` commands.
 
@@ -339,6 +392,7 @@ Structured diagnostic objects are implemented for unsupported source failures.
 Current diagnostics are raised as explicit `UnsupportedSourceError` instances
 with stable codes, source locations, rejected fragments, messages, and hints.
 
-Future resolver increments should stay small, tested, and fail-closed. Loop,
-conditional, case, array, glob, and runtime-dispatch support should not be added
-as one-off resolver patches; those belong in the evaluator/IR design.
+Future resolver increments should stay small, tested, and fail-closed.
+Conditional, case, complex array, broader glob, and runtime-dispatch support
+should not be added as one-off resolver patches; those belong in the
+evaluator/IR design.

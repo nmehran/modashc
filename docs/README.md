@@ -24,8 +24,7 @@ These require more evaluator coverage before executable lowering can be exact.
 The intended approach is captured in the
 [Next-Generation Evaluator And IR Plan](evaluator-ir-plan.md):
 
-- Glob-driven loop source discovery
 - Conditional and case-driven source discovery
 - Complex array/list iteration
-- Glob iteration semantics
+- Broader glob semantics
 - Runtime dispatch and user-defined source-path functions
