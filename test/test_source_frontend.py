@@ -32,6 +32,7 @@ class LineParserFrontendTestCase(unittest.TestCase):
         self.assertEqual([site.command_name for site in source_sites], ["source", ".", "source", "source", "source"])
         self.assertEqual([site.location.line for site in source_sites], [1, 2, 3, 4, 5])
         self.assertEqual([site.location.column for site in source_sites], [1, 1, 1, 1, 1])
+        self.assertEqual([site.is_control_flow for site in source_sites], [False, False, False, False, False])
 
         raw_commands = [node for node in ir.nodes if isinstance(node, RawCommand)]
         self.assertEqual([node.text for node in raw_commands], ["echo done"])
@@ -151,6 +152,13 @@ class LineParserFrontendTestCase(unittest.TestCase):
             '"${deps[0]}"',
         ])
         self.assertEqual([site.location.line for site in ir.source_sites], [1, 3, 6, 7, 10])
+        self.assertEqual([site.is_control_flow for site in ir.source_sites], [True, True, True, True, False])
+
+    def test_control_flow_marking_is_source_site_specific_on_mixed_lines(self):
+        ir = self.parse('source ./always.sh; if true; then source ./branch.sh; fi\n')
+
+        self.assertEqual([site.source_expression for site in ir.source_sites], ["./always.sh", "./branch.sh"])
+        self.assertEqual([site.is_control_flow for site in ir.source_sites], [False, True])
 
 
 if __name__ == "__main__":

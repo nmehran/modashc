@@ -18,9 +18,12 @@ from methods.source_effects import (
 )
 from methods.source_resolver import (
     contains_source_command,
+    ends_unsupported_control_block,
     extract_heredoc_delimiters,
+    is_unsupported_control_flow_source,
     is_heredoc_end,
     parse_shell_words,
+    starts_unsupported_control_block,
     source_command_index,
     UnsupportedSourceError,
 )
@@ -45,6 +48,7 @@ class LineParserFrontend:
         script_path = Path(path)
         nodes = []
         active_heredocs = []
+        control_depth = 0
 
         for line_number, line in enumerate(content.splitlines(), start=1):
             if active_heredocs:
@@ -58,12 +62,14 @@ class LineParserFrontend:
                 exclusion_patterns=[r'\#\!.*'],
                 escape_exclusions=False,
             )
-            nodes.extend(self._parse_line(script_path, line_number, code_line))
+            control_flow_source_ranges = self._control_flow_source_ranges(code_line, control_depth)
+            nodes.extend(self._parse_line(script_path, line_number, code_line, control_flow_source_ranges))
+            control_depth = self._next_control_depth(code_line, control_depth)
             active_heredocs.extend(extract_heredoc_delimiters(line))
 
         return ScriptIR(path=script_path, nodes=tuple(nodes))
 
-    def _parse_line(self, script_path: Path, line_number: int, line: str):
+    def _parse_line(self, script_path: Path, line_number: int, line: str, control_flow_source_ranges):
         nodes = []
         source_spans = []
 
@@ -74,12 +80,14 @@ class LineParserFrontend:
 
             text = ''.join(part or '' for part in (separator, command_name, arguments)).strip()
             column = match.start(2) + 1
+            is_control_flow = self._column_in_ranges(column, control_flow_source_ranges)
             nodes.append(SourceSite(
                 location=SourceLocation(script_path, line_number, column),
                 text=text,
                 command_name=command_name.strip(),
                 source_expression=(arguments or '').strip(),
                 separator=(separator or '').strip(),
+                is_control_flow=is_control_flow,
             ))
             source_spans.append(match.span())
 
@@ -89,7 +97,13 @@ class LineParserFrontend:
             if any(command in line[start:end] for start, end in source_spans):
                 continue
             if contains_source_command(command):
-                nodes.append(self._fallback_source_site(script_path, line_number, line, command))
+                nodes.append(self._fallback_source_site(
+                    script_path,
+                    line_number,
+                    line,
+                    command,
+                    control_flow_source_ranges,
+                ))
                 continue
             nodes.append(self._command_node(script_path, line_number, line, command))
 
@@ -185,7 +199,8 @@ class LineParserFrontend:
         )
 
     @staticmethod
-    def _fallback_source_site(script_path: Path, line_number: int, line: str, command: str):
+    def _fallback_source_site(script_path: Path, line_number: int, line: str, command: str,
+                              control_flow_source_ranges):
         words = command.split()
         source_index = source_command_index(command)
         command_name = words[source_index] if source_index is not None and source_index < len(words) else "source"
@@ -193,10 +208,49 @@ class LineParserFrontend:
         source_offset = command.find(command_name)
         expression = command[source_offset + len(command_name):].strip() if source_offset >= 0 else ""
         column = command_offset + source_offset + 1 if command_offset >= 0 and source_offset >= 0 else 1
+        is_control_flow = LineParserFrontend._column_in_ranges(max(column, 1), control_flow_source_ranges)
 
         return SourceSite(
             location=SourceLocation(script_path, line_number, max(column, 1)),
             text=command,
             command_name=command_name,
             source_expression=expression,
+            is_control_flow=is_control_flow,
         )
+
+    @staticmethod
+    def _control_flow_source_ranges(line: str, control_depth: int):
+        ranges = []
+        simulated_depth = control_depth
+        search_start = 0
+
+        for command in get_commands(line):
+            command_start = line.find(command, search_start)
+            if command_start < 0:
+                command_start = search_start
+            command_end = command_start + len(command)
+
+            if contains_source_command(command) and is_unsupported_control_flow_source(command, simulated_depth):
+                ranges.append((command_start + 1, command_end + 1))
+
+            if starts_unsupported_control_block(command):
+                simulated_depth += 1
+            elif ends_unsupported_control_block(command):
+                simulated_depth = max(0, simulated_depth - 1)
+
+            search_start = command_end
+
+        return tuple(ranges)
+
+    @staticmethod
+    def _next_control_depth(line: str, control_depth: int):
+        for command in get_commands(line):
+            if starts_unsupported_control_block(command):
+                control_depth += 1
+            elif ends_unsupported_control_block(command):
+                control_depth = max(0, control_depth - 1)
+        return control_depth
+
+    @staticmethod
+    def _column_in_ranges(column: int, ranges):
+        return any(start <= column < end for start, end in ranges)

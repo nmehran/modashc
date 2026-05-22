@@ -167,6 +167,17 @@ class SourceEvaluator:
             index += 1
 
     def _apply_source_site(self, node: SourceSite, state: EvaluationState, stack: tuple[Path, ...]):
+        if node.is_control_flow and self.mode == "executable":
+            raise unsupported_source_error(
+                str(node.location.path),
+                node.location.line - 1,
+                node.text,
+                node.text,
+                "unsupported.source.ir-control-flow",
+                "unsupported source in control flow",
+                "Control-flow source sites need modeled branch semantics before executable lowering.",
+            )
+
         source_expression = self._expand_array_indexes(node.source_expression, node, state)
         source_site = f"{node.command_name} {source_expression.strip()}"
         try:

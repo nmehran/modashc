@@ -122,6 +122,22 @@ class SourceEvaluatorTestCase(unittest.TestCase):
         self.assertEqual(cm.exception.diagnostic.location.line, 1)
         self.assertEqual(cm.exception.diagnostic.fragment, 'source "${deps[0]}"')
 
+    def test_control_flow_source_rejects_even_when_path_is_static(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "dep"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                if [[ -f ./dep.sh ]]; then
+                  source ./dep.sh
+                fi
+                """))
+
+            with self.assertRaisesRegex(NotImplementedError, "control flow") as cm:
+                SourceEvaluator().evaluate(entry)
+
+        self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.ir-control-flow")
+        self.assertEqual(cm.exception.diagnostic.location.line, 2)
+        self.assertEqual(cm.exception.diagnostic.fragment, "source ./dep.sh")
+
     def test_circular_source_raises_recursion_error(self):
         with ScriptProject() as project:
             entry = project.write("a.sh", "source ./b.sh\n")

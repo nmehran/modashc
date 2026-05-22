@@ -110,6 +110,7 @@ class SourceSite(IRNode):
     command_name: str
     source_expression: str
     separator: str = ""
+    is_control_flow: bool = False
 
 
 @dataclass(frozen=True)
