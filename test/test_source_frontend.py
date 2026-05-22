@@ -126,11 +126,12 @@ class LineParserFrontendTestCase(unittest.TestCase):
         self.assertEqual(ir.nodes[0].body[0].source_expression, '"$1"')
         self.assertEqual(ir.nodes[0].body[0].location.line, 2)
 
-    def test_unsupported_function_tail_does_not_expose_body_sources(self):
+    def test_parses_same_line_function_definition_tail(self):
         ir = self.parse('load_dep() { source ./dep.sh; }; load_dep\n')
 
-        self.assertEqual([type(node) for node in ir.nodes], [RawCommand])
-        self.assertEqual(ir.source_sites, ())
+        self.assertEqual([type(node) for node in ir.nodes], [FunctionDef, RawCommand])
+        self.assertEqual(ir.nodes[0].body[0].source_expression, "./dep.sh")
+        self.assertEqual(ir.nodes[1].text, "load_dep")
 
     def test_function_body_parameter_expansion_is_not_a_closing_brace(self):
         ir = self.parse("""\

@@ -177,6 +177,18 @@ class EvaluationState:
         self.local_scopes = copy.deepcopy(other.local_scopes)
 
 
+@dataclass
+class FunctionReturnSignal(Exception):
+    status: int
+    node: RawCommand
+
+
+@dataclass
+class EvaluationOutcome:
+    state: EvaluationState
+    return_signal: FunctionReturnSignal | None = None
+
+
 class SourceEvaluator:
     """Evaluate source effects for the supported IR subset without executing Bash."""
 
@@ -233,27 +245,32 @@ class SourceEvaluator:
             state.bash_source_stack = previous_stack
 
     def _evaluate_nodes(self, nodes, state: EvaluationState, stack: tuple[Path, ...]):
-        for node in nodes:
-            if isinstance(node, Assignment):
-                self._apply_assignment(node, state)
-            elif isinstance(node, ArrayAssignment):
-                self._apply_array_assignment(node, state)
-            elif isinstance(node, CdCommand):
-                self._apply_cd(node, state)
-            elif isinstance(node, SetCommand):
-                self._apply_set(node, state)
-            elif isinstance(node, FunctionDef):
-                self._apply_function_def(node, state)
-            elif isinstance(node, ForLoop):
-                self._apply_for_loop(node, state, stack)
-            elif isinstance(node, IfBlock):
-                self._apply_if_block(node, state, stack)
-            elif isinstance(node, CaseBlock):
-                self._apply_case_block(node, state, stack)
-            elif isinstance(node, SourceSite):
-                self._apply_source_site(node, state, stack)
-            elif isinstance(node, RawCommand):
-                self._apply_raw_command(node, state, stack)
+        nodes = tuple(nodes)
+        for index, node in enumerate(nodes):
+            try:
+                if isinstance(node, Assignment):
+                    self._apply_assignment(node, state)
+                elif isinstance(node, ArrayAssignment):
+                    self._apply_array_assignment(node, state)
+                elif isinstance(node, CdCommand):
+                    self._apply_cd(node, state)
+                elif isinstance(node, SetCommand):
+                    self._apply_set(node, state)
+                elif isinstance(node, FunctionDef):
+                    self._apply_function_def(node, state)
+                elif isinstance(node, ForLoop):
+                    self._apply_for_loop(node, state, stack)
+                elif isinstance(node, IfBlock):
+                    self._apply_if_block(node, state, stack)
+                elif isinstance(node, CaseBlock):
+                    self._apply_case_block(node, state, stack)
+                elif isinstance(node, SourceSite):
+                    self._apply_source_site(node, state, stack)
+                elif isinstance(node, RawCommand):
+                    self._apply_raw_command(node, state, stack)
+            except FunctionReturnSignal:
+                self._disable_unreachable_sources(nodes[index + 1:], "return")
+                raise
 
     @staticmethod
     def _apply_assignment(node: Assignment, state: EvaluationState):
@@ -551,7 +568,7 @@ class SourceEvaluator:
             return
 
         base_state = state.child_shell_copy()
-        branch_states = []
+        branch_outcomes = []
         branch_reachability = self._if_branch_reachability(statuses)
         occurrence_model = (
             OccurrenceModel.MUTUALLY_EXCLUSIVE
@@ -561,19 +578,25 @@ class SourceEvaluator:
         for branch, is_reachable in zip(node.branches, branch_reachability):
             if not is_reachable:
                 self._disable_unreachable_sources(branch.body, branch.condition or "else")
-                branch_states.append(base_state.child_shell_copy())
+                branch_outcomes.append(EvaluationOutcome(base_state.child_shell_copy()))
                 continue
 
             branch_state = state.child_shell_copy()
             branch_state.occurrence_context = occurrence_model
             branch_state.condition_context = branch.condition or "else"
-            self._evaluate_nodes(branch.body, branch_state, stack)
-            branch_states.append(branch_state)
+            return_signal = None
+            try:
+                self._evaluate_nodes(branch.body, branch_state, stack)
+            except FunctionReturnSignal as signal:
+                return_signal = signal
+            branch_outcomes.append(EvaluationOutcome(branch_state, return_signal))
 
-        possible_states = self._possible_if_states(statuses, base_state, branch_states)
-        self._merge_possible_states(state, possible_states)
-        state.occurrence_context = outer_occurrence_context
-        state.condition_context = outer_condition_context
+        possible_outcomes = self._possible_if_outcomes(statuses, base_state, branch_outcomes)
+        try:
+            self._apply_possible_outcomes(node, state, possible_outcomes)
+        finally:
+            state.occurrence_context = outer_occurrence_context
+            state.condition_context = outer_condition_context
 
     def _apply_context_if_block(
         self,
@@ -582,7 +605,7 @@ class SourceEvaluator:
         stack: tuple[Path, ...],
         statuses: list[str],
     ):
-        branch_states = []
+        branch_outcomes = []
         occurrence_model = (
             OccurrenceModel.MUTUALLY_EXCLUSIVE
             if len(node.branches) > 1
@@ -593,11 +616,20 @@ class SourceEvaluator:
             branch_state = state.child_shell_copy()
             branch_state.occurrence_context = occurrence_model
             branch_state.condition_context = branch.condition or "else"
-            self._evaluate_nodes(branch.body, branch_state, stack)
-            branch_states.append(branch_state)
+            return_signal = None
+            try:
+                self._evaluate_nodes(branch.body, branch_state, stack)
+            except FunctionReturnSignal as signal:
+                return_signal = signal
+            branch_outcomes.append(EvaluationOutcome(branch_state, return_signal))
 
-        possible_states = self._possible_if_states(statuses, state.child_shell_copy(), branch_states)
-        self._merge_possible_states(state, possible_states)
+        possible_outcomes = self._possible_if_outcomes(statuses, state.child_shell_copy(), branch_outcomes)
+        continuing_outcomes = [outcome for outcome in possible_outcomes if outcome.return_signal is None]
+        returning_outcomes = [outcome for outcome in possible_outcomes if outcome.return_signal is not None]
+        self._merge_possible_states(
+            state,
+            [outcome.state for outcome in continuing_outcomes or returning_outcomes],
+        )
 
     @staticmethod
     def _if_branch_reachability(statuses: list[str]):
@@ -616,35 +648,59 @@ class SourceEvaluator:
         return reachable
 
     @staticmethod
-    def _possible_if_states(statuses: list[str], base_state: EvaluationState, branch_states: list[EvaluationState]):
+    def _possible_if_outcomes(
+        statuses: list[str],
+        base_state: EvaluationState,
+        branch_outcomes: list[EvaluationOutcome],
+    ):
         if not statuses:
-            return [base_state]
+            return [EvaluationOutcome(base_state)]
 
         if "unknown" not in statuses:
-            for status, branch_state in zip(statuses, branch_states):
+            for status, branch_outcome in zip(statuses, branch_outcomes):
                 if status in {"true", "else"}:
-                    return [branch_state]
-            return [base_state]
+                    return [branch_outcome]
+            return [EvaluationOutcome(base_state)]
 
-        possible_states = []
+        possible_outcomes = []
         fallthrough_possible = True
-        for status, branch_state in zip(statuses, branch_states):
+        for status, branch_outcome in zip(statuses, branch_outcomes):
             if not fallthrough_possible:
                 break
             if status == "false":
                 continue
             if status == "true":
-                possible_states.append(branch_state)
+                possible_outcomes.append(branch_outcome)
                 fallthrough_possible = False
             elif status == "else":
-                possible_states.append(branch_state)
+                possible_outcomes.append(branch_outcome)
                 fallthrough_possible = False
             else:
-                possible_states.append(branch_state)
+                possible_outcomes.append(branch_outcome)
 
         if fallthrough_possible:
-            possible_states.append(base_state)
-        return possible_states
+            possible_outcomes.append(EvaluationOutcome(base_state))
+        return possible_outcomes
+
+    def _apply_possible_outcomes(self, node, state: EvaluationState, outcomes: list[EvaluationOutcome]):
+        returning_outcomes = [outcome for outcome in outcomes if outcome.return_signal is not None]
+        continuing_outcomes = [outcome for outcome in outcomes if outcome.return_signal is None]
+
+        if returning_outcomes and continuing_outcomes:
+            raise unsupported_source_error(
+                str(node.location.path),
+                node.location.line - 1,
+                node.text,
+                node.text,
+                "unsupported.source.function-control",
+                "unsupported branch-dependent function return",
+                "Make function return flow exact before later source-aware effects.",
+            )
+
+        selected_outcomes = returning_outcomes or continuing_outcomes
+        self._merge_possible_states(state, [outcome.state for outcome in selected_outcomes])
+        if returning_outcomes:
+            raise returning_outcomes[0].return_signal
 
     def _apply_case_block(self, node: CaseBlock, state: EvaluationState, stack: tuple[Path, ...]):
         outer_occurrence_context = state.occurrence_context
@@ -686,7 +742,7 @@ class SourceEvaluator:
             )
 
         base_state = state.child_shell_copy()
-        arm_states = []
+        arm_outcomes = []
         reachable_arms = self._case_arm_reachability(node, subject_value)
         occurrence_model = (
             OccurrenceModel.MUTUALLY_EXCLUSIVE
@@ -698,23 +754,29 @@ class SourceEvaluator:
             condition = self._case_arm_condition(node, arm)
             if not is_reachable:
                 self._disable_unreachable_sources(arm.body, condition)
-                arm_states.append(base_state.child_shell_copy())
+                arm_outcomes.append(EvaluationOutcome(base_state.child_shell_copy()))
                 continue
 
             arm_state = state.child_shell_copy()
             arm_state.occurrence_context = occurrence_model
             arm_state.condition_context = condition
-            self._evaluate_nodes(arm.body, arm_state, stack)
-            arm_states.append(arm_state)
+            return_signal = None
+            try:
+                self._evaluate_nodes(arm.body, arm_state, stack)
+            except FunctionReturnSignal as signal:
+                return_signal = signal
+            arm_outcomes.append(EvaluationOutcome(arm_state, return_signal))
 
-        possible_states = [
-            arm_state
-            for arm_state, is_reachable in zip(arm_states, reachable_arms)
+        possible_outcomes = [
+            arm_outcome
+            for arm_outcome, is_reachable in zip(arm_outcomes, reachable_arms)
             if is_reachable
-        ] or [base_state]
-        self._merge_possible_states(state, possible_states)
-        state.occurrence_context = outer_occurrence_context
-        state.condition_context = outer_condition_context
+        ] or [EvaluationOutcome(base_state)]
+        try:
+            self._apply_possible_outcomes(node, state, possible_outcomes)
+        finally:
+            state.occurrence_context = outer_occurrence_context
+            state.condition_context = outer_condition_context
 
     def _apply_context_case_block(
         self,
@@ -728,43 +790,56 @@ class SourceEvaluator:
             if len(node.arms) > 1
             else OccurrenceModel.CONDITIONAL
         )
-        arm_states = []
+        arm_outcomes = []
 
         for arm in node.arms:
             arm_state = state.child_shell_copy()
             arm_state.occurrence_context = occurrence_model
             arm_state.condition_context = self._case_arm_condition(node, arm)
-            self._evaluate_nodes(arm.body, arm_state, stack)
-            arm_states.append(arm_state)
+            return_signal = None
+            try:
+                self._evaluate_nodes(arm.body, arm_state, stack)
+            except FunctionReturnSignal as signal:
+                return_signal = signal
+            arm_outcomes.append(EvaluationOutcome(arm_state, return_signal))
 
         if subject_value is None:
-            possible_states = arm_states
+            possible_outcomes = arm_outcomes
             if not self._case_has_default_arm(node):
-                possible_states.append(state.child_shell_copy())
+                possible_outcomes.append(EvaluationOutcome(state.child_shell_copy()))
         else:
             reachable_arms = self._case_arm_reachability(node, subject_value)
-            possible_states = [
-                arm_state
-                for arm_state, is_reachable in zip(arm_states, reachable_arms)
+            possible_outcomes = [
+                arm_outcome
+                for arm_outcome, is_reachable in zip(arm_outcomes, reachable_arms)
                 if is_reachable
-            ] or [state.child_shell_copy()]
+            ] or [EvaluationOutcome(state.child_shell_copy())]
 
-        self._merge_possible_states(state, possible_states)
+        selected_states = [
+            outcome.state
+            for outcome in possible_outcomes
+            if outcome.return_signal is None
+        ] or [outcome.state for outcome in possible_outcomes]
+        self._merge_possible_states(state, selected_states)
 
     def _apply_source_free_unknown_case_block(self, node: CaseBlock, state: EvaluationState, stack: tuple[Path, ...]):
-        arm_states = []
+        arm_outcomes = []
 
         for arm in node.arms:
             arm_state = state.child_shell_copy()
             arm_state.occurrence_context = OccurrenceModel.MUTUALLY_EXCLUSIVE
             arm_state.condition_context = self._case_arm_condition(node, arm)
-            self._evaluate_nodes(arm.body, arm_state, stack)
-            arm_states.append(arm_state)
+            return_signal = None
+            try:
+                self._evaluate_nodes(arm.body, arm_state, stack)
+            except FunctionReturnSignal as signal:
+                return_signal = signal
+            arm_outcomes.append(EvaluationOutcome(arm_state, return_signal))
 
-        possible_states = arm_states
+        possible_outcomes = arm_outcomes
         if not self._case_has_default_arm(node):
-            possible_states.append(state.child_shell_copy())
-        self._merge_possible_states(state, possible_states)
+            possible_outcomes.append(EvaluationOutcome(state.child_shell_copy()))
+        self._apply_possible_outcomes(node, state, possible_outcomes)
 
     def _case_subject_value(self, subject: str, state: EvaluationState):
         subject = subject.strip()
@@ -1516,16 +1591,12 @@ class SourceEvaluator:
         if self._apply_function_call(node, state, stack):
             return
 
-        if state.function_call_stack and self._raw_function_control_command(node):
-            raise unsupported_source_error(
-                str(node.location.path),
-                node.location.line - 1,
-                node.text,
-                node.text,
-                "unsupported.source.function-control",
-                "unsupported function control command",
-                "Function return/shift semantics need explicit modeling before source-aware lowering.",
-            )
+        if state.function_call_stack and self._raw_function_return_command(node):
+            raise FunctionReturnSignal(self._function_return_status(node, state), node)
+
+        if state.function_call_stack and self._raw_function_shift_command(node):
+            self._apply_function_shift(node, state)
+            return
 
         self._apply_shopt(node, state)
 
@@ -1592,7 +1663,7 @@ class SourceEvaluator:
         if index >= len(words):
             return False
 
-        function_name = strip_matching_quotes(words[index])
+        function_name = self._resolve_function_name(words[index], node, state)
         if function_name in state.ambiguous_functions:
             raise unsupported_source_error(
                 str(node.location.path),
@@ -1626,7 +1697,10 @@ class SourceEvaluator:
         state.function_call_stack = (*state.function_call_stack, function_name)
         state.local_scopes.append({})
         try:
-            self._evaluate_nodes(function_def.body, state, stack)
+            try:
+                self._evaluate_nodes(function_def.body, state, stack)
+            except FunctionReturnSignal:
+                pass
         finally:
             local_scope = state.local_scopes.pop()
             self._restore_local_scope(local_scope, state)
@@ -1634,6 +1708,23 @@ class SourceEvaluator:
             self._restore_local_scope(prefix_scope, state)
             state.function_call_stack = previous_call_stack
         return True
+
+    def _resolve_function_name(self, word: str, node: RawCommand, state: EvaluationState):
+        if "$" not in word:
+            return strip_matching_quotes(word)
+
+        try:
+            return self._resolve_function_exact_word(
+                word,
+                node,
+                state,
+                "unsupported.source.function-dispatch",
+                "unsupported dynamic function dispatch",
+                "unsupported unresolved function dispatch",
+                "Function dispatch must resolve to a known local function before source-aware evaluation.",
+            )
+        except UnsupportedSourceError:
+            return strip_matching_quotes(word)
 
     def _apply_function_assignment_prefixes(self, words: list[str], scope: dict, node: RawCommand,
                                             state: EvaluationState):
@@ -1763,9 +1854,96 @@ class SourceEvaluator:
                 state.ambiguous_variables.discard(name)
 
     @staticmethod
-    def _raw_function_control_command(node: RawCommand):
+    def _raw_function_return_command(node: RawCommand):
         stripped = node.text.strip()
-        return bool(re.match(r'^(?:return|shift)(?:\s|$)', stripped))
+        return bool(re.match(r'^return(?:\s|$)', stripped))
+
+    @staticmethod
+    def _raw_function_shift_command(node: RawCommand):
+        stripped = node.text.strip()
+        return bool(re.match(r'^shift(?:\s|$)', stripped))
+
+    def _function_return_status(self, node: RawCommand, state: EvaluationState):
+        try:
+            words = parse_shell_words_preserving_quotes(node.text.strip())
+        except UnsupportedSourceError as exc:
+            raise self._unsupported_function_control(node, "unsupported function return syntax") from exc
+
+        if len(words) > 2 or not words or words[0] != "return":
+            raise self._unsupported_function_control(node, "unsupported function return syntax")
+        if len(words) == 1:
+            return 0
+
+        status_text = self._resolve_function_control_word(words[1], node, state, "return")
+        if not re.fullmatch(r'[+-]?\d+', status_text):
+            raise self._unsupported_function_control(node, "unsupported non-integer function return status")
+        return int(status_text) % 256
+
+    def _apply_function_shift(self, node: RawCommand, state: EvaluationState):
+        try:
+            words = parse_shell_words_preserving_quotes(node.text.strip())
+        except UnsupportedSourceError as exc:
+            raise self._unsupported_function_control(node, "unsupported function shift syntax") from exc
+
+        if len(words) > 2 or not words or words[0] != "shift":
+            raise self._unsupported_function_control(node, "unsupported function shift syntax")
+
+        if len(words) == 1:
+            count = 1
+        else:
+            count_text = self._resolve_function_control_word(words[1], node, state, "shift")
+            if not re.fullmatch(r'\d+', count_text):
+                raise self._unsupported_function_control(node, "unsupported non-integer function shift count")
+            count = int(count_text)
+
+        positional_indexes = sorted(
+            int(name)
+            for name in set(state.variables) | set(state.runtime_variables)
+            if name.isdigit() and int(name) > 0
+        )
+        argument_count = positional_indexes[-1] if positional_indexes else 0
+        if count == 0 or count > argument_count:
+            return
+
+        for index in range(1, argument_count + 1):
+            target = str(index)
+            source = str(index + count)
+            if index + count <= argument_count:
+                if source in state.variables:
+                    state.variables[target] = state.variables[source]
+                else:
+                    state.variables.pop(target, None)
+                if source in state.runtime_variables:
+                    state.runtime_variables[target] = state.runtime_variables[source]
+                else:
+                    state.runtime_variables.pop(target, None)
+            else:
+                state.variables.pop(target, None)
+                state.runtime_variables.pop(target, None)
+            state.ambiguous_variables.discard(target)
+
+    def _resolve_function_control_word(self, word: str, node: RawCommand, state: EvaluationState, command: str):
+        return self._resolve_function_exact_word(
+            word,
+            node,
+            state,
+            "unsupported.source.function-control",
+            f"unsupported dynamic function {command}",
+            f"unsupported unresolved function {command}",
+            "Function control arguments must be exact for source-aware function evaluation.",
+        )
+
+    @staticmethod
+    def _unsupported_function_control(node: RawCommand, message: str):
+        return unsupported_source_error(
+            str(node.location.path),
+            node.location.line - 1,
+            node.text,
+            node.text,
+            "unsupported.source.function-control",
+            message,
+            "Function return/shift semantics must be exact for source-aware lowering.",
+        )
 
     @staticmethod
     def _apply_shopt(node: RawCommand, state: EvaluationState):

@@ -75,13 +75,16 @@ class LineParserFrontend:
 
     def parse(self, path: Path | str, content: str) -> ScriptIR:
         script_path = Path(path)
+        lines = content.splitlines()
+        return ScriptIR(path=script_path, nodes=tuple(self._parse_lines(script_path, lines, 0, len(lines))))
+
+    def _parse_lines(self, script_path: Path, lines: list[str], start_index: int, end_index: int):
         nodes = []
         active_heredocs = []
         control_depth = 0
-        lines = content.splitlines()
-        line_index = 0
+        line_index = start_index
 
-        while line_index < len(lines):
+        while line_index < end_index:
             line_number = line_index + 1
             line = lines[line_index]
             if active_heredocs:
@@ -111,7 +114,10 @@ class LineParserFrontend:
                 line_index,
             )
             if function_def:
-                nodes.append(function_def)
+                if isinstance(function_def, tuple):
+                    nodes.extend(function_def)
+                else:
+                    nodes.append(function_def)
                 line_index = next_line_index
                 continue
 
@@ -133,7 +139,7 @@ class LineParserFrontend:
             active_heredocs.extend(extract_heredoc_delimiters(line))
             line_index += 1
 
-        return ScriptIR(path=script_path, nodes=tuple(nodes))
+        return nodes
 
     def _parse_line(self, script_path: Path, line_number: int, line: str, control_flow_source_ranges):
         nodes = []
@@ -322,16 +328,16 @@ class LineParserFrontend:
 
         body_lines = []
         before_close, has_close, trailing = self._split_function_closing_brace(first_tail)
-        if not self._function_close_tail_supported(trailing):
-            return self._unsupported_function_node(script_path, line_number, code_line), line_index + 1
         if before_close.strip():
             body_lines.append((first_tail_line_number, before_close.strip()))
         if has_close:
-            return FunctionDef(
-                location=SourceLocation(script_path, line_number, self._command_column(code_line, function_name)),
-                text=code_line.strip(),
-                name=function_name,
-                body=self._parse_loop_body(script_path, body_lines),
+            return self._function_definition_nodes(
+                script_path,
+                line_number,
+                code_line,
+                function_name,
+                body_lines,
+                trailing,
             ), body_start_index
 
         body_index = body_start_index
@@ -355,16 +361,18 @@ class LineParserFrontend:
 
             before_close, has_close, trailing = self._split_function_closing_brace(body_code_line)
             if has_close:
-                if not self._function_close_tail_supported(trailing):
+                if self._function_tail_command_text(trailing) is None:
                     raw_text = "\n".join(lines[line_index:body_index + 1])
                     return self._unsupported_function_node(script_path, line_number, raw_text), body_index + 1
                 if before_close.strip():
                     body_lines.append((body_line_number, before_close.strip()))
-                return FunctionDef(
-                    location=SourceLocation(script_path, line_number, self._command_column(code_line, function_name)),
-                    text=code_line.strip(),
-                    name=function_name,
-                    body=self._parse_loop_body(script_path, body_lines),
+                return self._function_definition_nodes(
+                    script_path,
+                    line_number,
+                    code_line,
+                    function_name,
+                    body_lines,
+                    trailing,
                 ), body_index + 1
 
             body_lines.append((body_line_number, body_code_line))
@@ -372,6 +380,36 @@ class LineParserFrontend:
             body_index += 1
 
         return None, line_index + 1
+
+    def _function_definition_nodes(
+        self,
+        script_path: Path,
+        line_number: int,
+        code_line: str,
+        function_name: str,
+        body_lines,
+        trailing: str,
+    ):
+        tail_command = self._function_tail_command_text(trailing)
+        if tail_command is None:
+            return (self._unsupported_function_node(script_path, line_number, code_line),)
+
+        function_def = FunctionDef(
+            location=SourceLocation(script_path, line_number, self._command_column(code_line, function_name)),
+            text=code_line.strip(),
+            name=function_name,
+            body=self._parse_loop_body(script_path, body_lines),
+        )
+        if not tail_command:
+            return (function_def,)
+
+        tail_nodes = self._parse_line(
+            script_path,
+            line_number,
+            tail_command,
+            self._control_flow_source_ranges(tail_command, 0),
+        )
+        return (function_def, *tail_nodes)
 
     @staticmethod
     def _unsupported_function_node(script_path: Path, line_number: int, text: str):
@@ -381,16 +419,19 @@ class LineParserFrontend:
         )
 
     @staticmethod
-    def _function_close_tail_supported(trailing: str):
+    def _function_tail_command_text(trailing: str):
         tail = re.sub(r'^(?:;\s*)+', '', trailing.strip())
         if not tail:
-            return True
+            return ""
 
         commands = get_commands(tail)
-        if len(commands) != 1:
-            return False
+        if not commands:
+            return ""
 
-        return bool(re.match(r'^(?:\d*(?:<>|>>|>|<|>\||<<-?|<<<)|&>>?)', commands[0].strip()))
+        if re.match(r'^(?:\d*(?:<>|>>|>|<|>\||<<-?|<<<)|&>>?)', commands[0].strip()):
+            return "" if len(commands) == 1 else None
+
+        return tail
 
     @staticmethod
     def _next_function_opening_line(lines: list[str], line_index: int):
@@ -829,22 +870,16 @@ class LineParserFrontend:
             return (), False
 
     def _parse_loop_body(self, script_path: Path, body_lines):
-        nodes = []
-        control_depth = 0
-        active_heredocs = []
+        if not body_lines:
+            return ()
 
+        start_index = min(line_number for line_number, _ in body_lines) - 1
+        end_index = max(line_number for line_number, _ in body_lines)
+        lines = [""] * end_index
         for line_number, code_line in body_lines:
-            if active_heredocs:
-                if is_heredoc_end(code_line, active_heredocs[0]):
-                    active_heredocs.pop(0)
-                continue
+            lines[line_number - 1] = code_line
 
-            control_flow_source_ranges = self._control_flow_source_ranges(code_line, control_depth)
-            nodes.extend(self._parse_line(script_path, line_number, code_line, control_flow_source_ranges))
-            control_depth = self._next_control_depth(code_line, control_depth)
-            active_heredocs.extend(extract_heredoc_delimiters(code_line))
-
-        return tuple(nodes)
+        return tuple(self._parse_lines(script_path, lines, start_index, end_index))
 
     @staticmethod
     def _command_column(line: str, command: str):

@@ -177,6 +177,97 @@ class SourceEvaluatorTestCase(unittest.TestCase):
 
         self.assertEqual([event.path for event in result.events], [outer, inner])
 
+    def test_same_line_function_definition_tail_is_evaluated(self):
+        with ScriptProject() as project:
+            dep = project.write("dep.sh", 'echo "dep"\n')
+            entry = project.write("main.sh", 'load_dep() { source ./dep.sh; }; load_dep\n')
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [dep])
+
+    def test_dynamic_function_dispatch_is_evaluated_when_exact(self):
+        with ScriptProject() as project:
+            dep = project.write("dep.sh", 'echo "dep"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                load_dep() {
+                  source "$1"
+                }
+                FN=load_dep
+                "$FN" ./dep.sh
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [dep])
+
+    def test_function_shift_updates_positional_source_arguments(self):
+        with ScriptProject() as project:
+            dep = project.write("dep.sh", 'echo "dep"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                load_dep() {
+                  shift
+                  source "$1"
+                }
+                load_dep ignored ./dep.sh
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [dep])
+        self.assertEqual(result.events[0].source_value, "./dep.sh")
+
+    def test_function_return_disables_later_sources(self):
+        with ScriptProject() as project:
+            entry = project.write("main.sh", textwrap.dedent("""\
+                load_dep() {
+                  return 0
+                  source ./missing.sh
+                }
+                load_dep
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual(result.events, ())
+        self.assertEqual([disabled.source_site for disabled in result.disabled_sources], ["source ./missing.sh"])
+        self.assertEqual(result.disabled_sources[0].condition, "return")
+
+    def test_nested_function_control_flow_is_evaluated(self):
+        with ScriptProject() as project:
+            dep = project.write("dep.sh", 'echo "dep"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                load_dep() {
+                  if [[ -f ./dep.sh ]]; then
+                    source ./dep.sh
+                  fi
+                }
+                load_dep
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [dep])
+
+    def test_branch_dependent_function_return_raises_structured_diagnostic(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "dep"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                load_dep() {
+                  if [[ -n "$SKIP" ]]; then
+                    return 0
+                  fi
+                  source ./dep.sh
+                }
+                load_dep
+                """))
+
+            with self.assertRaisesRegex(NotImplementedError, "branch-dependent function return") as cm:
+                SourceEvaluator().evaluate(entry)
+
+        self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.function-control")
+        self.assertEqual(cm.exception.diagnostic.location.line, 2)
+
     def test_recursive_function_source_raises_structured_diagnostic(self):
         with ScriptProject() as project:
             project.write("dep.sh", 'echo "dep"\n')

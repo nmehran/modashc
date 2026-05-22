@@ -1017,6 +1017,75 @@ class CompileRegressionTestCase(unittest.TestCase):
 
             project.assert_compiled_matches(self, "main.sh")
 
+    def test_function_control_flow_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "shifted:$1"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                load_dep() {
+                  shift
+                  source "$1"
+                }
+
+                load_dep ignored ./dep.sh
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("missing.sh", 'echo "should not run"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                load_dep() {
+                  return 0
+                  source ./missing.sh
+                }
+
+                load_dep
+                echo done
+                """))
+
+            output = project.compile("main.sh", mode="executable")
+            expected = project.run("main.sh")
+            actual = project.run(output)
+            compiled_content = output.read_text()
+
+        self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
+        self.assertEqual(actual.stdout, expected.stdout)
+        self.assertNotIn("should not run", compiled_content)
+
+    def test_nested_function_control_flow_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "nested function dep"\n')
+            project.write("missing.sh", 'echo "missing"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                load_dep() {
+                  if [[ -f ./dep.sh ]]; then
+                    source ./dep.sh
+                  else
+                    source ./missing.sh
+                  fi
+                }
+
+                load_dep
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_dynamic_function_dispatch_and_same_line_tail_match_bash(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "dynamic dispatch"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                load_dep() { source "$1"; }; FN=load_dep
+                "$FN" ./dep.sh
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "same line tail"\n')
+            project.write("main.sh", 'load_dep() { source ./dep.sh; }; load_dep\n')
+
+            project.assert_compiled_matches(self, "main.sh")
+
     def test_duplicate_sources_execute_each_time_bash_would_execute_them(self):
         with ScriptProject() as project:
             project.write("dep.sh", 'echo "dep"\n')
@@ -1191,13 +1260,9 @@ class CompileRegressionTestCase(unittest.TestCase):
                 'echo `case "$ENV" in prod) . ./dep.sh ;; esac`\n',
                 'echo `case "$ENV" in prod) . ./dep.sh ;; esac`',
             ),
-            "function return before source": (
-                'load_dep() { return 0; source ./dep.sh; }\nload_dep\n',
-                'return 0',
-            ),
-            "function trailing command after definition": (
-                'load_dep() { source ./dep.sh; }; load_dep\n',
-                'load_dep() { source ./dep.sh; }; load_dep',
+            "branch-dependent function return": (
+                'load_dep() {\n  if [[ -n "$SKIP" ]]; then return 0; fi\n  source ./dep.sh\n}\nload_dep\n',
+                'if [[ -n "$SKIP" ]]',
             ),
             "command builtin source": (
                 'command source ./dep.sh\n',
