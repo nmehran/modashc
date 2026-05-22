@@ -439,17 +439,16 @@ def _brace_sequence_options(body: str):
 
 
 def _glob_matches(pattern: str, current_directory: str, glob_options: set[str], include_hidden: bool):
-    if 'nocaseglob' in glob_options:
+    if include_hidden or 'nocaseglob' in glob_options:
         return _manual_glob_matches(pattern, current_directory, glob_options, include_hidden)
 
     recursive = 'globstar' in glob_options
     if os.path.isabs(pattern):
-        return sorted(glob.glob(pattern, recursive=recursive, include_hidden=include_hidden))
+        return sorted(glob.glob(pattern, recursive=recursive))
     return sorted(glob.glob(
         pattern,
         root_dir=current_directory,
         recursive=recursive,
-        include_hidden=include_hidden,
     ))
 
 
