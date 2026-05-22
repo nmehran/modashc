@@ -67,7 +67,7 @@ class SourceEvaluatorTestCase(unittest.TestCase):
         self.assertEqual(len(result.events), 1)
         event = result.events[0]
         self.assertEqual(event.path, dep)
-        self.assertEqual(event.source_expression, '"./deps/feature.sh"')
+        self.assertEqual(event.source_expression, '"${deps[1]}"')
         self.assertEqual(event.state_before.arrays["deps"], ("./base.sh", "./deps/feature.sh"))
 
     def test_duplicate_source_events_are_marked_repeated(self):

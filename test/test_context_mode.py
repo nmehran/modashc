@@ -108,6 +108,32 @@ class ContextModeTestCase(unittest.TestCase):
         self.assertIn('# modashc: source ./dep.sh -> dep.sh', content)
         self.assertIn('eval "source ./dep.sh"', content)
 
+    def test_context_output_resolves_exact_array_index_source(self):
+        with ScriptProject() as project:
+            project.write("deps/feature.sh", 'echo "feature body"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                deps=(./unused.sh ./deps/feature.sh)
+                source "${deps[1]}"
+                echo "main body"
+                """))
+
+            output = project.compile("main.sh")
+            content = output.read_text()
+
+        self.assertIn('echo "feature body"', content)
+        self.assertIn('# modashc: source "${deps[1]}" -> deps/feature.sh', content)
+        self.assertIn('source "${deps[1]}"', content)
+
+    def test_context_output_preserves_unresolved_source_without_failing(self):
+        with ScriptProject() as project:
+            project.write("main.sh", 'source "$OPTIONAL_DEP"\necho "main body"\n')
+
+            output = project.compile("main.sh")
+            content = output.read_text()
+
+        self.assertIn('source "$OPTIONAL_DEP"', content)
+        self.assertIn('echo "main body"', content)
+
     def test_context_output_classifies_bash_c_source_as_child_shell(self):
         with ScriptProject() as project:
             project.write("dep.sh", 'echo "dep body"\n')

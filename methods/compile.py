@@ -11,7 +11,7 @@ from methods.source_resolver import (
     extract_heredoc_delimiters,
     is_heredoc_end,
 )
-from methods.sources import get_sources, validate_path
+from methods.sources import validate_path
 
 SET_SHEBANG = "#!/bin/bash"
 
@@ -303,6 +303,26 @@ def context_from_source_events(events):
     return {'source_declarations': source_declarations}
 
 
+def context_paths_from_source_events(entry_point: str, events):
+    children_by_parent = defaultdict(list)
+    for event in events:
+        children_by_parent[os.path.abspath(event.location.path)].append(os.path.abspath(event.path))
+
+    ordered_paths = []
+    seen_paths = set()
+
+    def visit(filepath: str):
+        filepath = os.path.abspath(filepath)
+        for child in children_by_parent.get(filepath, []):
+            visit(child)
+        if filepath not in seen_paths:
+            seen_paths.add(filepath)
+            ordered_paths.append(filepath)
+
+    visit(entry_point)
+    return ordered_paths
+
+
 def compile_sources(entry_point: str, output_file: str, mode: str = "context"):
     if mode not in {"context", "executable"}:
         raise ValueError(f"Unsupported compile mode: {mode}")
@@ -314,12 +334,12 @@ def compile_sources(entry_point: str, output_file: str, mode: str = "context"):
         raise OSError(f"Error: entry point must be a file - {entry_point}")
 
     entry_point = os.path.abspath(entry_point)
+    evaluation = SourceEvaluator(mode=mode).evaluate(entry_point)
+    context = context_from_source_events(evaluation.events)
     if mode == "executable":
-        evaluation = SourceEvaluator(mode=mode).evaluate(entry_point)
-        context = context_from_source_events(evaluation.events)
         output = render_executable_script(entry_point, context)
     else:
-        sources, context = get_sources(entry_point, mode=mode)
+        sources = context_paths_from_source_events(entry_point, evaluation.events)
         output = render_context_files(sources, entry_point, context)
     content = '\n'.join(output)
     write_output(output_file, content)

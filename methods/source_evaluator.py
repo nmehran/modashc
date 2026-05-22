@@ -167,7 +167,7 @@ class SourceEvaluator:
             index += 1
 
     def _apply_source_site(self, node: SourceSite, state: EvaluationState, stack: tuple[Path, ...]):
-        if not self._is_plain_source_site(node):
+        if not self._is_plain_source_site(node) and self.mode == "executable":
             raise unsupported_source_error(
                 str(node.location.path),
                 node.location.line - 1,
@@ -189,15 +189,23 @@ class SourceEvaluator:
                 "Control-flow source sites need modeled branch semantics before executable lowering.",
             )
 
-        source_expression = self._expand_array_indexes(node.source_expression, node, state)
-        source_site = f"{node.command_name} {source_expression.strip()}"
+        try:
+            resolved_expression = self._expand_array_indexes(node.source_expression, node, state)
+        except UnsupportedSourceError:
+            if self.mode == "context":
+                return
+            raise
+
+        source_site = f"{node.command_name} {node.source_expression.strip()}"
         try:
             resolved_source = SOURCE_RESOLVER.resolve_source_expression(
-                source_expression,
+                resolved_expression,
                 source_site,
                 state.resolver_context(),
             )
         except UnsupportedSourceError as exc:
+            if self.mode == "context":
+                return
             raise with_source_diagnostic(
                 exc,
                 str(node.location.path),
@@ -208,6 +216,8 @@ class SourceEvaluator:
             ) from exc
 
         if not resolved_source:
+            if self.mode == "context":
+                return
             raise unsupported_source_error(
                 str(node.location.path),
                 node.location.line - 1,
@@ -221,7 +231,7 @@ class SourceEvaluator:
         self._record_and_descend(
             Path(resolved_source.path),
             node,
-            source_expression,
+            node.source_expression,
             source_site,
             state,
             stack,
@@ -237,6 +247,8 @@ class SourceEvaluator:
                 self.mode,
             )
         except UnsupportedSourceError as exc:
+            if self.mode == "context":
+                return
             raise with_source_diagnostic(
                 exc,
                 str(node.location.path),
