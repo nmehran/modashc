@@ -405,10 +405,10 @@ bounded iteration limit. It also models `while read` file enumeration, including
 the common `IFS= read -r` form for paths containing spaces and the
 `read ... || [[ -n "$var" ]]` guard for files without a final newline. Read-loop
 input may come from an exact file redirection, safe producer pipeline, or safe
-process substitution. Pipeline read loops are lowered through an explicit
-subshell wrapper so parent-state behavior matches Bash. C-style `for ((...))`
-loops are modeled when init, condition, and update clauses are exact arithmetic
-expressions.
+process substitution. Pipeline read loops use an explicit subshell wrapper
+unless exact `lastpipe` / `monitor` shell state proves the loop runs in the
+parent shell. C-style `for ((...))` loops are modeled when init, condition, and
+update clauses are exact arithmetic expressions.
 
 Unknown loop conditions, unsupported C-style arithmetic, unsupported read
 options, multi-level loop control, and loops exceeding the modeled iteration

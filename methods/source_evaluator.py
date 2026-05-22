@@ -68,8 +68,12 @@ SHELL_OPTION_FLAGS = {
     'e': 'errexit',
     'E': 'errtrace',
     'f': 'noglob',
+    'm': 'monitor',
     'u': 'nounset',
 }
+SHOPT_SHELL_OPTIONS = frozenset({
+    'lastpipe',
+})
 GLOB_SHOPT_OPTIONS = frozenset({
     'dotglob',
     'extglob',
@@ -901,7 +905,10 @@ class SourceEvaluator:
     def _read_loop_input_lines(self, node: WhileLoop, state: EvaluationState, include_incomplete: bool):
         if node.producer:
             output = self._evaluate_safe_word_list_command(node.producer, node, state)
-            return True, self._read_loop_lines_from_content(output, include_incomplete)
+            return (
+                self._producer_read_loop_uses_child_shell(node, state),
+                self._read_loop_lines_from_content(output, include_incomplete),
+            )
 
         process_substitution = self._read_loop_process_substitution(node.trailing)
         if process_substitution is not None:
@@ -921,6 +928,11 @@ class SourceEvaluator:
     def _read_loop_process_substitution(trailing: str):
         match = re.fullmatch(r'<\s*<\((.*)\)\s*', trailing)
         return match.group(1).strip() if match else None
+
+    def _producer_read_loop_uses_child_shell(self, node: WhileLoop, state: EvaluationState):
+        if state.ambiguous_shell_options:
+            raise self._unsupported_loop_condition(node, "unsupported read loop producer with ambiguous shell options")
+        return "lastpipe" not in state.shell_options or "monitor" in state.shell_options
 
     @staticmethod
     def _split_read_loop_nonempty_tail(condition: str):
@@ -1311,12 +1323,52 @@ class SourceEvaluator:
     def _evaluate_path_transform_word_list(self, command_name: str, words: list[str], node, state: EvaluationState):
         if len(words) < 2:
             raise self._unsupported_loop_words(node, f"unsupported {command_name} command substitution without operands")
+        index = 1
+        option_like_operands = False
+        if strip_shell_word_quotes(words[index]) == "--":
+            index += 1
+            option_like_operands = True
+        operand_words = words[index:]
+        if not operand_words:
+            raise self._unsupported_loop_words(node, f"unsupported {command_name} command substitution without operands")
+        for word in operand_words:
+            if not option_like_operands and strip_shell_word_quotes(word).startswith("-"):
+                raise self._unsupported_loop_words(node, f"unsupported {command_name} command substitution option")
+
         values = [
             self._resolve_exact_runtime_word(strip_shell_word_quotes(word), node, state, "loop word list")
-            for word in words[1:]
+            for word in operand_words
         ]
-        transform = os.path.dirname if command_name == "dirname" else os.path.basename
+        if command_name == "basename":
+            if len(values) > 2:
+                raise self._unsupported_loop_words(node, "unsupported basename command substitution operands")
+            return self._lines_output([self._utility_basename(*values)])
+
+        transform = self._utility_dirname
         return self._lines_output([transform(value) for value in values])
+
+    @staticmethod
+    def _utility_dirname(value: str):
+        if value == "":
+            return "."
+        stripped = value.rstrip("/")
+        if stripped == "":
+            return "/"
+        directory = stripped.rsplit("/", 1)[0] if "/" in stripped else "."
+        directory = directory.rstrip("/")
+        return directory or "/"
+
+    @staticmethod
+    def _utility_basename(value: str, suffix: str = ""):
+        if value == "":
+            return ""
+        stripped = value.rstrip("/")
+        if stripped == "":
+            return "/"
+        basename = stripped.rsplit("/", 1)[-1]
+        if suffix and basename != suffix and basename.endswith(suffix):
+            return basename[:-len(suffix)]
+        return basename
 
     def _word_list_path_pairs(self, raw_words: list[str], node, state: EvaluationState):
         pairs = []
@@ -3380,6 +3432,11 @@ class SourceEvaluator:
 
         for option in words[2:]:
             if option not in GLOB_SHOPT_OPTIONS:
+                if option in SHOPT_SHELL_OPTIONS:
+                    if action == "-s":
+                        state.shell_options.add(option)
+                    else:
+                        state.shell_options.discard(option)
                 continue
             if action == "-s":
                 state.glob_options.add(option)

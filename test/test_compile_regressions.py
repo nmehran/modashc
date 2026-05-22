@@ -1058,6 +1058,46 @@ class CompileRegressionTestCase(unittest.TestCase):
             project.assert_compiled_matches(self, "main.sh")
 
         with ScriptProject() as project:
+            project.write("dep.sh", 'echo "dirname bare:$dir"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for dir in $(dirname dep.sh); do
+                  source "$dir/dep.sh"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("plugins/dep.sh", 'echo "basename trailing:$name"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for name in $(basename ./plugins/dep.sh/); do
+                  source "./plugins/$name"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("plugins/dep.sh", 'echo "basename suffix:$name"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for name in $(basename ./plugins/dep.sh .sh); do
+                  source "./plugins/$name.sh"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("plugins/-dep.sh", 'echo "basename dash:$name"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for name in $(basename -- ./plugins/-dep.sh .sh); do
+                  source "./plugins/$name.sh"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
             dep = project.write("a.sh", 'echo "realpath:$dep"\n')
             project.write("main.sh", textwrap.dedent("""\
                 for dep in $(realpath ./a.sh); do
@@ -1177,6 +1217,38 @@ class CompileRegressionTestCase(unittest.TestCase):
             compiled = project.path("compiled.sh").read_text()
             self.assertNotIn("find ./plugins", compiled)
             self.assertIn("( for dep in './plugins/a.sh' './plugins/b.sh'; do", compiled)
+
+        with ScriptProject() as project:
+            project.write("plugins/a.sh", 'echo "lastpipe:a"; VALUE=a\n')
+            project.write("main.sh", textwrap.dedent("""\
+                shopt -s lastpipe
+                find ./plugins -type f -name '*.sh' -print | while read -r dep; do
+                  echo "dep=$dep"
+                  source "$dep"
+                done
+                echo "value:${VALUE:-unset}"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            compiled = project.path("compiled.sh").read_text()
+            self.assertNotIn("( for dep", compiled)
+            self.assertIn("for dep in './plugins/a.sh'; do", compiled)
+
+        with ScriptProject() as project:
+            project.write("plugins/a.sh", 'echo "monitor:a"; VALUE=a\n')
+            project.write("main.sh", textwrap.dedent("""\
+                set -m
+                shopt -s lastpipe
+                find ./plugins -type f -name '*.sh' -print | while read -r dep; do
+                  echo "dep=$dep"
+                  source "$dep"
+                done
+                echo "value:${VALUE:-unset}"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            compiled = project.path("compiled.sh").read_text()
+            self.assertIn("( for dep in './plugins/a.sh'; do", compiled)
 
         with ScriptProject() as project:
             project.write("plugins/a.sh", 'echo "process:a"; VALUE=a\n')
