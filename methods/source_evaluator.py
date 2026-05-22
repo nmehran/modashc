@@ -40,6 +40,7 @@ class EvaluationState:
     arrays: dict[str, tuple[str, ...]] = field(default_factory=dict)
     shell_options: set[str] = field(default_factory=set)
     bash_source_stack: tuple[Path, ...] = ()
+    occurrence_context: OccurrenceModel = OccurrenceModel.ONCE
 
     def resolver_context(self):
         return {
@@ -63,7 +64,13 @@ class EvaluationState:
             arrays=copy.deepcopy(self.arrays),
             shell_options=set(self.shell_options),
             bash_source_stack=self.bash_source_stack,
+            occurrence_context=self.occurrence_context,
         )
+
+    def conditional_copy(self):
+        state = self.child_shell_copy()
+        state.occurrence_context = OccurrenceModel.CONDITIONAL
+        return state
 
 
 class SourceEvaluator:
@@ -188,6 +195,7 @@ class SourceEvaluator:
                 "unsupported source in control flow",
                 "Control-flow source sites need modeled branch semantics before executable lowering.",
             )
+        is_context_control_flow = node.is_control_flow and self.mode == "context"
 
         try:
             resolved_expression = self._expand_array_indexes(node.source_expression, node, state)
@@ -228,15 +236,24 @@ class SourceEvaluator:
                 "Use a statically resolvable source path for IR evaluation.",
             )
 
+        source_path = Path(resolved_source.path)
+        if is_context_control_flow:
+            branch_state = state.conditional_copy()
+            self._record_event(
+                source_path,
+                node,
+                node.source_expression,
+                source_site,
+                ExecutionModel.PARENT_SOURCE,
+                "source",
+                state,
+                occurrence_model=OccurrenceModel.CONDITIONAL,
+            )
+            self._evaluate_file(source_path, branch_state, stack)
+            return
+
         self._record_and_descend(
-            Path(resolved_source.path),
-            node,
-            node.source_expression,
-            source_site,
-            state,
-            stack,
-            ExecutionModel.PARENT_SOURCE,
-            "source",
+            source_path, node, node.source_expression, source_site, state, stack, ExecutionModel.PARENT_SOURCE, "source"
         )
 
     def _apply_raw_command(self, node: RawCommand, state: EvaluationState, stack: tuple[Path, ...]):
@@ -293,14 +310,15 @@ class SourceEvaluator:
         self._evaluate_file(source_path, state, stack)
 
     def _record_event(self, source_path: Path, node, source_expression: str, source_site: str,
-                      execution_model: ExecutionModel, replacement_kind: str, state: EvaluationState):
+                      execution_model: ExecutionModel, replacement_kind: str, state: EvaluationState,
+                      occurrence_model: OccurrenceModel | None = None):
         self.events.append(SourceEvent(
             path=source_path.resolve(),
             location=node.location,
             source_expression=source_expression.strip(),
             source_site=source_site.strip(),
             execution_model=execution_model,
-            occurrence_model=OccurrenceModel.ONCE,
+            occurrence_model=occurrence_model or state.occurrence_context,
             replacement_kind=replacement_kind,
             state_before=state.snapshot(),
         ))
@@ -349,7 +367,9 @@ class SourceEvaluator:
                 source_site=event.source_site,
                 execution_model=event.execution_model,
                 occurrence_model=(
-                    OccurrenceModel.REPEATED if path_counts[event.path] > 1 else event.occurrence_model
+                    OccurrenceModel.REPEATED
+                    if path_counts[event.path] > 1 and event.occurrence_model == OccurrenceModel.ONCE
+                    else event.occurrence_model
                 ),
                 replacement_kind=event.replacement_kind,
                 state_before=event.state_before,

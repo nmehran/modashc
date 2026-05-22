@@ -118,6 +118,26 @@ class SourceEvaluatorTestCase(unittest.TestCase):
         self.assertEqual(cm.exception.diagnostic.location.line, 2)
         self.assertEqual(cm.exception.diagnostic.fragment, "source ./dep.sh")
 
+    def test_context_control_flow_source_is_conditional_and_does_not_leak_state(self):
+        with ScriptProject() as project:
+            optional = project.write("optional.sh", 'NEXT=./next.sh\nsource ./nested.sh\n')
+            nested = project.write("nested.sh", 'echo "nested"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                if [[ -n "$LOAD_OPTIONAL" ]]; then
+                  source ./optional.sh
+                fi
+                source "$NEXT"
+                """))
+
+            result = SourceEvaluator(mode="context").evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [optional, nested])
+        self.assertEqual([event.occurrence_model for event in result.events], [
+            OccurrenceModel.CONDITIONAL,
+            OccurrenceModel.CONDITIONAL,
+        ])
+        self.assertNotIn("NEXT", result.final_state.variables)
+
     def test_circular_source_raises_recursion_error(self):
         with ScriptProject() as project:
             entry = project.write("a.sh", "source ./b.sh\n")

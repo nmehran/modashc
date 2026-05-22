@@ -134,6 +134,25 @@ class ContextModeTestCase(unittest.TestCase):
         self.assertIn('source "$OPTIONAL_DEP"', content)
         self.assertIn('echo "main body"', content)
 
+    def test_context_output_does_not_leak_state_from_control_flow_sources(self):
+        with ScriptProject() as project:
+            project.write("optional.sh", 'NEXT=./next.sh\n')
+            project.write("next.sh", 'echo "next body"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                if [[ -n "$LOAD_OPTIONAL" ]]; then
+                  source ./optional.sh
+                fi
+                source "$NEXT"
+                echo "main body"
+                """))
+
+            output = project.compile("main.sh")
+            content = output.read_text()
+
+        self.assertIn('source "$NEXT"', content)
+        self.assertNotIn('echo "next body"', content)
+        self.assertIn('echo "main body"', content)
+
     def test_context_output_classifies_bash_c_source_as_child_shell(self):
         with ScriptProject() as project:
             project.write("dep.sh", 'echo "dep body"\n')
