@@ -60,16 +60,17 @@ safe to lower, compilation fails before writing or overwriting the output file.
 - safe deterministic `find` sources with one matching file
 - safe `eval` payloads that resolve to exactly one source command
 - exact indexed array source paths, such as `source "${deps[0]}"`
+- exact finite `for` loops over literal words, known scalar path variables, or
+  `${array[@]}` expansions
 - `bash -c "source ..."` classification in context mode
 
 Unsupported or ambiguous dynamic forms fail closed in executable mode. This
-includes loop-driven sources, conditional/case-driven sources, array-list
-iteration, glob iteration, process substitution, user-defined source-path
-functions, nested dynamic substitutions, and multi-result `cat` or `find`
-output.
+includes glob-driven loops, scalar word-list splitting, conditional/case-driven
+sources, process substitution, user-defined source-path functions, nested
+dynamic substitutions, and multi-result `cat` or `find` output.
 
-Control-flow evaluation beyond exact source-site state is intentionally
-fail-closed until branch and loop lowering are modeled. See
+Control-flow evaluation beyond exact finite loops is intentionally fail-closed
+until branch, case, glob, and function semantics are modeled. See
 [Dynamic Source Resolution](docs/dynamic-source-resolution.md) for the current
 resolver contract and [Evaluator And IR Plan](docs/evaluator-ir-plan.md) for
 the remaining pattern families.
@@ -129,7 +130,6 @@ Design notes live in [docs](docs/README.md).
 
 ## Current Roadmap
 
-- Exact finite loop and word-list lowering.
 - Deterministic glob expansion under modeled shell options.
 - Provable conditionals and case statements.
 - Modeled function calls whose source effects are bounded and exact.

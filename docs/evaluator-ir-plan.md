@@ -4,14 +4,16 @@
 
 Partially implemented. The compiler now has a source-effect IR frontend,
 structured unsupported-source diagnostics, and an abstract evaluator that drives
-both executable and context rendering for the supported subset. It remains
-fail-closed for loop lowering, conditionals, globs, case statements, and
-runtime dispatch.
+both executable and context rendering for the supported subset. Exact finite
+`for` loops over literal words, known scalar path variables, and exact
+`${array[@]}` expansions are implemented. It remains fail-closed for glob
+iteration, scalar word-list splitting, conditionals, case statements, modeled
+functions, and runtime dispatch.
 
 ## Problem
 
 The current compiler can resolve a useful exact subset of Bash source patterns,
-but it does not model Bash control flow. Patterns like these are currently
+but it does not fully model Bash control flow. Patterns like these remain
 unsupported by design:
 
 ```bash
@@ -30,8 +32,8 @@ esac
 ```
 
 Supporting those safely requires continuing the compiler model, not adding more
-ad hoc source regexes. The next steps are exact finite word-list/loop lowering,
-then branch-aware conditional and case evaluation.
+ad hoc source regexes. The next steps are deterministic glob expansion, then
+branch-aware conditional and case evaluation.
 
 ## Goals
 
@@ -246,23 +248,36 @@ Bash function semantics.
 
 ### Loops
 
-Start with exact finite loops:
+Exact finite loops are supported when the word list is already concrete:
 
 ```bash
-for file in ./plugins/*.sh; do
+for file in ./a.sh ./b.sh; do
+  source "$file"
+done
+
+deps=(./a.sh ./b.sh)
+for file in "${deps[@]}"; do
   source "$file"
 done
 ```
 
-The evaluator can unroll when the word list is exact and finite:
+The evaluator lowers these by proving the finite values, recording source events
+for each iteration, and rendering executable output as a runtime dispatch at the
+original source site. Supported word inputs are:
 
 - literal words
 - exact array expansion
-- deterministic glob expansion
-- safe `find` output only if modeled as a word-list producer
+- known scalar path variables that expand to a single word
 
-Unroll limits should be explicit. Exceeding the limit produces a structured
-unsupported diagnostic.
+Deferred word inputs are:
+
+- deterministic glob expansion
+- scalar values that require shell word splitting
+- safe `find` output only if modeled as a word-list producer
+- command substitution word lists
+
+Iteration limits should be explicit before broader multi-result producers are
+added. Exceeding the limit should produce a structured unsupported diagnostic.
 
 ### Conditionals
 
@@ -400,16 +415,17 @@ Move current traversal behavior onto the evaluator. Existing regression tests
 must stay green. This phase proves the IR can replace traversal without adding
 new surface area.
 
-### Phase 5: Exact Arrays And Word Lists
+### Phase 5: Exact Arrays And Finite Loops
 
-Partially implemented. Direct exact indexed array source paths are supported:
+Implemented for the current exact subset. Direct exact indexed array source
+paths are supported:
 
 ```bash
 deps=(./a.sh ./b.sh)
 source "${deps[1]}"
 ```
 
-Remaining work is word-list expansion in loops:
+Exact finite loop source sites are also supported:
 
 ```bash
 deps=(./a.sh ./b.sh)
@@ -418,10 +434,15 @@ for dep in "${deps[@]}"; do
 done
 ```
 
-### Phase 6: Deterministic Globs And Finite Loops
+The supported loop forms include `for ...; do ... done` and newline-`do`
+variants. Word lists may contain literal words, known scalar path variables, or
+exact `${array[@]}` expansion. Glob iteration and scalar word-list splitting
+remain unsupported until their semantics are modeled explicitly.
 
-Support finite loop unrolling over deterministic literal/glob word lists. Add
-explicit iteration limits and diagnostics.
+### Phase 6: Deterministic Globs
+
+Support deterministic glob expansion in direct source expressions and finite
+loop word lists. Add explicit iteration limits and diagnostics.
 
 ### Phase 7: Provable Conditionals And Cases
 

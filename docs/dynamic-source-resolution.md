@@ -6,7 +6,9 @@ Initial implementation. The compiler supports static sources,
 variable/env-expanded paths, path command substitutions such as `dirname`,
 `basename`, and `realpath`, plus the first Python-only dynamic resolver subset:
 safe `cat`, safe `find`, safe `eval source`, and context-only `bash -c source`
-classification. Unsupported forms fail closed.
+classification. The source-effect evaluator also supports exact finite `for`
+loops over literal words, known scalar path variables, and exact `${array[@]}`
+expansions. Unsupported forms fail closed.
 
 ## Goal
 
@@ -130,6 +132,15 @@ source "$THIS_DIR/dep.sh"
 
 source "$(dirname "$BASH_SOURCE")/dep.sh"
 source "$(realpath ./dep.sh)"
+
+for dep in ./a.sh ./b.sh; do
+  source "$dep"
+done
+
+deps=(./a.sh ./b.sh)
+for dep in "${deps[@]}"; do
+  source "$dep"
+done
 ```
 
 ## Implemented Resolver Subset
@@ -258,11 +269,18 @@ boundary rather than inline the file into the parent shell.
 
 ## Future Pattern Families
 
-These need separate specs before implementation:
+These still need separate specs before implementation:
 
-- Loop-driven source sites:
+- Glob-driven source sites:
   ```bash
   for file in ./plugins/*.sh; do
+    source "$file"
+  done
+  ```
+- Scalar word-list splitting:
+  ```bash
+  DEPS="./a.sh ./b.sh"
+  for file in $DEPS; do
     source "$file"
   done
   ```
@@ -273,7 +291,7 @@ These need separate specs before implementation:
   fi
   ```
 - Case-driven source selection.
-- Array/list-based source paths.
+- Complex array/list-based source paths.
 - Glob expansion as dependency source.
 - User-defined functions that compute source paths.
 - Process substitution and generated source streams.
@@ -281,10 +299,9 @@ These need separate specs before implementation:
 These are not merely more dynamic resolvers. They require control-flow and
 multi-result semantics, and they should be designed separately.
 
-In the current resolver-driven compiler, executable mode fails closed when a
-source command appears inside these unsupported families. That prevents output
-from silently preserving runtime `source` behavior that the compiler has not
-lowered.
+Executable mode fails closed when a source command appears inside these
+unsupported families. That prevents output from silently preserving runtime
+`source` behavior that the compiler has not lowered.
 
 ## Test Requirements
 
@@ -313,13 +330,15 @@ scope:
   context.
 - Safe `cat`, safe `find`, safe `eval source`, and context-only
   `bash -c source` classification are implemented.
+- Exact finite `for` loop lowering is implemented for literal words, known
+  scalar path variables, and exact `${array[@]}` expansion.
 - Executable mode fails before output when unsupported source forms would leave
   live runtime `source` commands.
 
-Structured diagnostic objects are still deferred. Current diagnostics are raised
-as explicit `UnsupportedSourceError` messages that include the rejected source
-site wherever possible.
+Structured diagnostic objects are implemented for unsupported source failures.
+Current diagnostics are raised as explicit `UnsupportedSourceError` instances
+with stable codes, source locations, rejected fragments, messages, and hints.
 
 Future resolver increments should stay small, tested, and fail-closed. Loop,
 conditional, case, array, glob, and runtime-dispatch support should not be added
-as one-off resolver patches; those belong to a separate evaluator or IR design.
+as one-off resolver patches; those belong in the evaluator/IR design.
