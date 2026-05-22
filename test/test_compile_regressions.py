@@ -1177,6 +1177,26 @@ class CompileRegressionTestCase(unittest.TestCase):
 
             project.assert_compiled_matches(self, "main.sh")
 
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "same line function body"\n')
+            project.write("tail.sh", 'echo "same line tail source"\n')
+            project.write(
+                "main.sh",
+                'load_dep() { source ./dep.sh; }; load_dep; source ./tail.sh\n',
+            )
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "same line chained body"\n')
+            project.write("tail.sh", 'echo "same line chained tail"\n')
+            project.write(
+                "main.sh",
+                'load_dep() { source ./dep.sh; }; load_dep && source ./tail.sh\n',
+            )
+
+            project.assert_compiled_matches(self, "main.sh")
+
     def test_duplicate_sources_execute_each_time_bash_would_execute_them(self):
         with ScriptProject() as project:
             project.write("dep.sh", 'echo "dep"\n')

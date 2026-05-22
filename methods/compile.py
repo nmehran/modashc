@@ -290,6 +290,59 @@ def replace_source_site_substrings(line: str, source_declarations, render_source
     return line
 
 
+def source_declaration_groups(source_declarations):
+    groups = []
+    index = 0
+    while index < len(source_declarations):
+        declaration = source_declarations[index]
+        source_site = declaration.source_site.strip()
+        group = [declaration]
+        index += 1
+        while index < len(source_declarations) and source_declarations[index].source_site.strip() == source_site:
+            group.append(source_declarations[index])
+            index += 1
+        groups.append(group)
+    return groups
+
+
+def remaining_source_declaration_groups(declarations_by_column, fallback_declarations):
+    groups = []
+    for source_column in sorted(declarations_by_column):
+        groups.extend(source_declaration_groups(declarations_by_column[source_column]))
+    groups.extend(source_declaration_groups(fallback_declarations))
+    return groups
+
+
+def spans_overlap(left, right):
+    return left[0] < right[1] and right[0] < left[1]
+
+
+def find_unquoted_source_site_span(line: str, source_site: str, occupied_spans):
+    search_start = 0
+    while search_start < len(line):
+        source_index = find_unquoted_substring(line, source_site, search_start)
+        if source_index < 0:
+            return None
+        span = (source_index, source_index + len(source_site))
+        if not any(spans_overlap(span, occupied_span) for occupied_span in occupied_spans):
+            return span
+        search_start = span[1]
+    return None
+
+
+def apply_line_replacements(line: str, replacements):
+    output = []
+    last_end = 0
+    for start, end, replacement in sorted(replacements, key=lambda item: item[0]):
+        if start < last_end:
+            raise ValueError(f"Overlapping source replacements in line: {line.strip()}")
+        output.append(line[last_end:start])
+        output.append(replacement)
+        last_end = end
+    output.append(line[last_end:])
+    return ''.join(output)
+
+
 def replace_source_site_declarations(line: str, source_declarations, render_source):
     if not source_declarations:
         return line
@@ -299,8 +352,8 @@ def replace_source_site_declarations(line: str, source_declarations, render_sour
         return replace_source_site_substrings(line, source_declarations, render_source)
 
     declarations_by_column, fallback_declarations = group_source_declarations_by_column(source_declarations)
-    updated_parts = []
-    last_end = 0
+    replacements = []
+    occupied_spans = []
 
     for match in matches:
         grouped_declarations = pop_source_declarations_for_match(
@@ -316,13 +369,22 @@ def replace_source_site_declarations(line: str, source_declarations, render_sour
         separator = match.group(1) or ''
         indent = re.match(r'\s*', separator).group(0) if separator else ''
         replacement = render_source_site_replacement(separator, grouped_declarations, render_source, indent)
+        span = (match.start(), match.end())
+        replacements.append((*span, replacement))
+        occupied_spans.append(span)
 
-        updated_parts.append(line[last_end:match.start()])
-        updated_parts.append(replacement)
-        last_end = match.end()
+    for grouped_declarations in remaining_source_declaration_groups(declarations_by_column, fallback_declarations):
+        source_site = grouped_declarations[0].source_site.strip()
+        span = find_unquoted_source_site_span(line, source_site, occupied_spans)
+        if span is None:
+            raise ValueError(f"Could not replace resolved source declaration: {source_site}")
 
-    updated_parts.append(line[last_end:])
-    return ''.join(updated_parts)
+        indent = re.match(r'\s*', line[:span[0]]).group(0)
+        replacement = render_source_site_replacement("", grouped_declarations, render_source, indent)
+        replacements.append((*span, replacement))
+        occupied_spans.append(span)
+
+    return apply_line_replacements(line, replacements)
 
 
 def assert_no_unresolved_source_sites(content: str):
