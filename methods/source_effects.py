@@ -59,8 +59,15 @@ class SourceEvent:
     source_site: str
     execution_model: ExecutionModel
     occurrence_model: OccurrenceModel
-    state_before: StateSnapshot
+    state_before: StateSnapshot | None = None
     condition: str | None = None
+
+
+@dataclass(frozen=True)
+class EvaluationResult:
+    events: tuple[SourceEvent, ...]
+    diagnostics: tuple[Diagnostic, ...] = ()
+    final_state: StateSnapshot | None = None
 
 
 @dataclass(frozen=True)
