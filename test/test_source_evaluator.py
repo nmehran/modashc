@@ -222,6 +222,35 @@ class SourceEvaluatorTestCase(unittest.TestCase):
         self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.case-subject")
         self.assertEqual(cm.exception.diagnostic.location.line, 1)
 
+    def test_case_block_unknown_subject_rejects_state_expanded_eval_source(self):
+        with ScriptProject() as project:
+            project.write("prod.sh", 'echo "prod"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                case "$ENV" in
+                  prod) COMMAND="source ./prod.sh"; eval "$COMMAND" ;;
+                esac
+                """))
+
+            with self.assertRaisesRegex(NotImplementedError, "case subject") as cm:
+                SourceEvaluator().evaluate(entry)
+
+        self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.case-subject")
+        self.assertEqual(cm.exception.diagnostic.location.line, 1)
+
+    def test_case_block_unknown_subject_rejects_positional_eval_payload(self):
+        with ScriptProject() as project:
+            entry = project.write("main.sh", textwrap.dedent("""\
+                case "$ENV" in
+                  prod) eval "$1" ;;
+                esac
+                """))
+
+            with self.assertRaisesRegex(NotImplementedError, "case subject") as cm:
+                SourceEvaluator().evaluate(entry)
+
+        self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.case-subject")
+        self.assertEqual(cm.exception.diagnostic.location.line, 1)
+
     def test_case_block_fallthrough_terminator_raises_structured_diagnostic(self):
         with ScriptProject() as project:
             project.write("prod.sh", 'echo "prod"\n')

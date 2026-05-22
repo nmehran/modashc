@@ -373,6 +373,8 @@ unsupported forms:
 - Branch-divergent cwd, variables, arrays, or shell options followed by later
   source resolution that depends on that divergent state.
 - Case subjects or arm patterns outside the exact modeled case subset.
+- Case patterns that need shell normalization for mixed quoting, backslash
+  escapes, or POSIX character classes.
 - Case fallthrough terminators, `;&` and `;;&`.
 
 These are not merely more dynamic resolvers. They require control-flow and

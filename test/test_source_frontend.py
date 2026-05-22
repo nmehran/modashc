@@ -318,6 +318,20 @@ class LineParserFrontendTestCase(unittest.TestCase):
         self.assertEqual([arm.patterns for arm in block.arms], [("prod",), ("dev",)])
         self.assertEqual([site.source_expression for site in ir.source_sites], ["./prod.sh", "./dev.sh"])
 
+    def test_parses_case_subject_containing_in_inside_quotes(self):
+        ir = self.parse("""\
+            case "value in prod" in
+              *prod) source ./prod.sh ;;
+            esac
+            """)
+
+        self.assertEqual(len(ir.nodes), 1)
+        block = ir.nodes[0]
+        self.assertIsInstance(block, CaseBlock)
+        self.assertEqual(block.subject, '"value in prod"')
+        self.assertEqual(block.arms[0].patterns, ("*prod",))
+        self.assertEqual(ir.source_sites[0].source_expression, "./prod.sh")
+
     def test_parses_case_fallthrough_terminator_for_evaluator_rejection(self):
         ir = self.parse("""\
             case "$ENV" in

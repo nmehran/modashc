@@ -68,7 +68,8 @@ safe to lower, compilation fails before writing or overwriting the output file.
 - branch-aware `if` / `elif` / `else` blocks with side-effect-free file,
   non-empty, empty, and exact string predicates
 - exact `case` blocks over known scalar subjects, with literal, alternate,
-  default, quoted literal, and ordinary glob arm patterns
+  default, quoted literal, and ordinary glob arm patterns without mixed quoting,
+  backslash escapes, or POSIX character classes
 - `bash -c "source ..."` classification in context mode
 
 Unsupported or ambiguous dynamic forms fail closed in executable mode. This

@@ -28,6 +28,7 @@ from methods.source_resolver import (
     is_unsupported_control_flow_source,
     is_heredoc_end,
     parse_shell_words,
+    parse_shell_words_preserving_quotes,
     starts_unsupported_control_block,
     source_command_index,
     UnsupportedSourceError,
@@ -44,7 +45,6 @@ ELIF_COMMAND_PATTERN = re.compile(r'^\s*elif\s+(.+?)\s*$')
 THEN_COMMAND_PATTERN = re.compile(r'^\s*then(?:\s+(.+?))?\s*$')
 ELSE_COMMAND_PATTERN = re.compile(r'^\s*else(?:\s+(.+?))?\s*$')
 FI_COMMAND_PATTERN = re.compile(r'^\s*fi\s*$')
-CASE_COMMAND_PATTERN = re.compile(r'^\s*case\s+(.+?)\s+in(?:\s*(.*))?$')
 ESAC_COMMAND_PATTERN = re.compile(r'^\s*esac\s*$')
 CASE_TERMINATOR_COMMANDS = {
     "__MODASHC_CASE_TERM_END__": ";;",
@@ -273,11 +273,11 @@ class LineParserFrontend:
 
     def _parse_case_block(self, script_path: Path, line_number: int, code_line: str, lines: list[str],
                           line_index: int):
-        match = CASE_COMMAND_PATTERN.match(code_line)
-        if not match:
+        header = self._split_case_header(code_line)
+        if not header:
             return None, line_index + 1
 
-        subject, first_tail = match.groups()
+        subject, first_tail = header
         arms = []
         current_patterns = None
         current_body = []
@@ -341,6 +341,69 @@ class LineParserFrontend:
             index += 1
 
         return None, line_index + 1
+
+    @staticmethod
+    def _split_case_header(line: str):
+        match = re.match(r'^\s*case(?:\s+|$)', line)
+        if not match:
+            return None
+
+        rest = line[match.end():]
+        for index in LineParserFrontend._unquoted_case_in_indices(rest):
+            subject = rest[:index].strip()
+            if not subject:
+                continue
+
+            try:
+                subject_words = parse_shell_words_preserving_quotes(subject)
+            except UnsupportedSourceError:
+                continue
+            if len(subject_words) != 1:
+                continue
+
+            return subject, rest[index + 2:].strip()
+
+        return None
+
+    @staticmethod
+    def _unquoted_case_in_indices(text: str):
+        in_single_quote = False
+        in_double_quote = False
+        escaped = False
+        index = 0
+
+        while index < len(text):
+            char = text[index]
+            if escaped:
+                escaped = False
+                index += 1
+                continue
+
+            if char == '\\' and not in_single_quote:
+                escaped = True
+                index += 1
+                continue
+
+            if char == "'" and not in_double_quote:
+                in_single_quote = not in_single_quote
+                index += 1
+                continue
+
+            if char == '"' and not in_single_quote:
+                in_double_quote = not in_double_quote
+                index += 1
+                continue
+
+            if not in_single_quote and not in_double_quote and text.startswith("in", index):
+                previous_char = text[index - 1] if index > 0 else ""
+                next_index = index + 2
+                next_char = text[next_index] if next_index < len(text) else ""
+                previous_boundary = index > 0 and previous_char.isspace()
+                next_boundary = next_index == len(text) or next_char.isspace()
+                if previous_boundary and next_boundary:
+                    yield index
+
+            index += 1
 
     def _case_arm(self, script_path: Path, patterns: tuple[str, ...], body_lines, terminator: str):
         return CaseArm(

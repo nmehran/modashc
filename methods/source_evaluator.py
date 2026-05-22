@@ -47,6 +47,7 @@ from methods.regex.utilities import strip_matching_quotes
 ARRAY_INDEX_PATTERN = re.compile(r'\$\{([a-zA-Z_]\w*)\[(\d+)\]\}')
 ARRAY_EXPANSION_PATTERN = re.compile(r'^\$\{([a-zA-Z_]\w*)\[@\]\}$')
 SCALAR_REFERENCE_PATTERN = re.compile(r'\$(?:\{([a-zA-Z_]\w*)\}|([a-zA-Z_]\w*))')
+ASSIGNMENT_WORD_PATTERN = re.compile(r'^[a-zA-Z_]\w*(?:\+)?=.*$')
 SHELL_OPTION_FLAGS = {
     'e': 'errexit',
     'E': 'errtrace',
@@ -650,6 +651,7 @@ class SourceEvaluator:
     @staticmethod
     def _validate_case_pattern(pattern: str):
         stripped_pattern = pattern.strip()
+        is_quoted_literal = SourceEvaluator._is_quoted_case_pattern(stripped_pattern)
         if '$(' in stripped_pattern or '`' in stripped_pattern:
             raise UnsupportedSourceError(
                 f"unsupported dynamic case pattern: {stripped_pattern}",
@@ -665,6 +667,26 @@ class SourceEvaluator:
                 f"unsupported variable case pattern: {stripped_pattern}",
                 code="unsupported.source.case-pattern",
                 hint="Variable-expanded case patterns need explicit pattern expansion semantics.",
+            )
+        if is_quoted_literal:
+            return
+        if "'" in stripped_pattern or '"' in stripped_pattern:
+            raise UnsupportedSourceError(
+                f"unsupported mixed-quoted case pattern: {stripped_pattern}",
+                code="unsupported.source.case-pattern",
+                hint="Mixed quoted case patterns need exact shell pattern normalization.",
+            )
+        if SourceEvaluator._contains_unquoted_backslash(stripped_pattern):
+            raise UnsupportedSourceError(
+                f"unsupported escaped case pattern: {stripped_pattern}",
+                code="unsupported.source.case-pattern",
+                hint="Backslash-escaped case patterns need exact shell pattern normalization.",
+            )
+        if re.search(r'\[:[a-zA-Z_]+:\]', stripped_pattern):
+            raise UnsupportedSourceError(
+                f"unsupported POSIX class case pattern: {stripped_pattern}",
+                code="unsupported.source.case-pattern",
+                hint="POSIX character classes need exact shell pattern semantics.",
             )
         if any(contains_unquoted_token(stripped_pattern, token) for token in {"@(", "!(", "+(", "?(", "*("}):
             raise UnsupportedSourceError(
@@ -698,15 +720,43 @@ class SourceEvaluator:
     @staticmethod
     def _case_pattern_matches(pattern: str, subject_value: str):
         stripped_pattern = pattern.strip()
-        quoted = (
-            len(stripped_pattern) >= 2
-            and stripped_pattern[0] == stripped_pattern[-1]
-            and stripped_pattern[0] in {"'", '"'}
-        )
+        quoted = SourceEvaluator._is_quoted_case_pattern(stripped_pattern)
         pattern_value = strip_matching_quotes(stripped_pattern)
         if quoted:
             return subject_value == pattern_value
+        pattern_value = SourceEvaluator._normalize_case_glob_pattern(pattern_value)
         return fnmatchcase(subject_value, pattern_value)
+
+    @staticmethod
+    def _is_quoted_case_pattern(pattern: str):
+        return (
+            len(pattern) >= 2
+            and pattern[0] == pattern[-1]
+            and pattern[0] in {"'", '"'}
+        )
+
+    @staticmethod
+    def _contains_unquoted_backslash(text: str):
+        in_single_quote = False
+        in_double_quote = False
+
+        for char in text:
+            if char == "'" and not in_double_quote:
+                in_single_quote = not in_single_quote
+                continue
+
+            if char == '"' and not in_single_quote:
+                in_double_quote = not in_double_quote
+                continue
+
+            if char == '\\' and not in_single_quote and not in_double_quote:
+                return True
+
+        return False
+
+    @staticmethod
+    def _normalize_case_glob_pattern(pattern: str):
+        return re.sub(r'\[\^', '[!', pattern)
 
     @staticmethod
     def _case_has_default_arm(node: CaseBlock):
@@ -1143,7 +1193,37 @@ class SourceEvaluator:
         return bool(
             contains_source_command(command)
             or re.search(r'\b(?:eval|bash|/bin/bash|/usr/bin/bash)\b.*(?:\bsource\b|(?:^|[\s;&|])\.)', command)
+            or SourceEvaluator._raw_command_may_expand_to_source(command)
         )
+
+    @staticmethod
+    def _raw_command_may_expand_to_source(command: str):
+        try:
+            words = parse_shell_words_preserving_quotes(command.strip())
+        except UnsupportedSourceError:
+            return bool(
+                '$' in command
+                and re.search(r'^\s*(?:[a-zA-Z_]\w*(?:\+)?=\S+\s+)*(?:eval|bash|/bin/bash|/usr/bin/bash)\b', command)
+            )
+
+        index = 0
+        while index < len(words) and ASSIGNMENT_WORD_PATTERN.match(words[index]):
+            index += 1
+        if index >= len(words):
+            return False
+
+        command_name = words[index]
+        if command_name == "eval":
+            return any("$" in word for word in words[index + 1:])
+
+        if command_name in {"bash", "/bin/bash", "/usr/bin/bash"}:
+            return (
+                len(words) > index + 2
+                and words[index + 1] == "-c"
+                and "$" in words[index + 2]
+            )
+
+        return False
 
     @staticmethod
     def _ensure_source_state_can_resolve(node, source_expression: str, state: EvaluationState):

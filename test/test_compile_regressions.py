@@ -483,6 +483,16 @@ class CompileRegressionTestCase(unittest.TestCase):
                     """),
                 None,
             ),
+            "quoted subject containing in": (
+                textwrap.dedent("""\
+                    case "value in prod" in
+                      *prod) source ./prod.sh ;;
+                      *) source ./missing-default.sh ;;
+                    esac
+                    echo "main"
+                    """),
+                None,
+            ),
             "unknown source-free case": (
                 textwrap.dedent("""\
                     case "$ENV" in
@@ -824,6 +834,22 @@ class CompileRegressionTestCase(unittest.TestCase):
             "case divergent state": (
                 'case "$ENV" in\n  prod) DEP=./a.sh ;;\n  dev) DEP=./b.sh ;;\nesac\nsource "$DEP"\n',
                 'source "$DEP"',
+            ),
+            "case hidden eval source": (
+                'case "$ENV" in\n  prod) COMMAND="source ./prod.sh"; eval "$COMMAND" ;;\nesac\n',
+                'case "$ENV" in',
+            ),
+            "case escaped pattern": (
+                'ENV="prod*"\ncase "$ENV" in\n  prod\\*) source ./prod.sh ;;\n  *) source ./b.sh ;;\nesac\n',
+                'case "$ENV" in',
+            ),
+            "case mixed-quoted pattern": (
+                'ENV="prod-eu"\ncase "$ENV" in\n  prod"-"*) source ./prod.sh ;;\nesac\n',
+                'case "$ENV" in',
+            ),
+            "case POSIX class pattern": (
+                'ENV=5\ncase "$ENV" in\n  [[:digit:]]) source ./prod.sh ;;\nesac\n',
+                'case "$ENV" in',
             ),
             "command builtin source": (
                 'command source ./dep.sh\n',

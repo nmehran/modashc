@@ -8,16 +8,18 @@ both executable and context rendering for the supported subset. Exact finite
 `for` loops over literal words, known scalar path variables, and exact
 `${array[@]}` expansions are implemented, along with deterministic ordinary
 file-glob loop expansion. Branch-aware `if` / `elif` / `else` lowering is
-implemented for the current side-effect-free predicate subset. It remains
-fail-closed for broader glob semantics, scalar word-list splitting, unsupported
-conditional predicates, case statements, modeled functions, and runtime
-dispatch.
+implemented for the current side-effect-free predicate subset, and exact
+`case` blocks are implemented for known subjects and the modeled pattern
+subset. It remains fail-closed for broader glob semantics, scalar word-list
+splitting, unsupported conditional predicates, broader case pattern semantics,
+modeled functions, and runtime dispatch.
 
 ## Problem
 
 The current compiler can resolve a useful exact subset of Bash source patterns,
-but it does not fully model Bash control flow. Patterns like these remain
-unsupported by design:
+but it does not fully model Bash control flow. Patterns like these drive the
+remaining work when their predicates, patterns, or state effects fall outside
+the exact modeled subsets:
 
 ```bash
 if [[ -f ./local.sh ]]; then
@@ -31,9 +33,9 @@ esac
 ```
 
 Supporting those safely requires continuing the compiler model, not adding more
-ad hoc source regexes. Branch-aware `if` lowering is implemented for the first
-predicate subset. The next steps are case evaluation, broader practical
-conditional predicates, then modeled function calls.
+ad hoc source regexes. Branch-aware `if` lowering and exact `case` lowering are
+implemented for their first subsets. The next steps are broader practical
+conditional predicates, broader case patterns, then modeled function calls.
 
 ## Goals
 
