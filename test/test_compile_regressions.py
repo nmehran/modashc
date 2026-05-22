@@ -119,10 +119,34 @@ class CompileRegressionTestCase(unittest.TestCase):
 
             project.assert_compiled_matches(self, "main.sh")
 
+        with ScriptProject() as project:
+            project.write("deps dir#tag/dep file.sh", 'echo "dep from special cat path"\n')
+            project.write("path files/dep#path.txt", "./deps dir#tag/dep file.sh\n")
+            project.write("main.sh", 'source "$(cat \'path files/dep#path.txt\')"\necho "main"\n')
+
+            project.assert_compiled_matches(self, "main.sh")
+
     def test_safe_find_dynamic_source_matches_bash(self):
         with ScriptProject() as project:
             project.write("plugins/init.sh", 'echo "dep from find"\n')
             project.write("main.sh", 'source "$(find ./plugins -type f -name init.sh -print -quit)"\necho "main"\n')
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("plugins/root.sh", 'echo "root should not match depth"\n')
+            project.write("plugins/nested/init.sh", 'echo "dep from filtered find"\n')
+            project.write("main.sh", (
+                'source "$(find ./plugins -maxdepth 2 -mindepth 2 '
+                '-path ./plugins/nested/init.sh -print -quit)"\n'
+                'echo "main"\n'
+            ))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("plugin dir#tag/init.sh", 'echo "dep from special find root"\n')
+            project.write("main.sh", 'source "$(find \'./plugin dir#tag\' -type f -name init.sh -print -quit)"\necho "main"\n')
 
             project.assert_compiled_matches(self, "main.sh")
 
@@ -263,19 +287,61 @@ class CompileRegressionTestCase(unittest.TestCase):
 
     def test_runtime_dynamic_sources_raise_clear_diagnostic(self):
         cases = {
-            "cat multiple operands": 'source "$(cat dep-path.txt other.txt)"\n',
-            "cat multiple lines": 'source "$(cat dep-path.txt)"\n',
-            "cat pipe": 'source "$(cat dep-path.txt | head -1)"\n',
-            "find multiple matches": 'source "$(find . -name dep.sh)"\n',
-            "find exec": 'source "$(find . -name dep.sh -exec echo {} \\;)"\n',
-            "find quit without print": 'source "$(find ./nested -type f -name dep.sh -quit)"\n',
-            "eval extra command": 'eval "source ./dep.sh; echo unsafe"\n',
-            "eval nested dynamic": 'eval "source $(cat dep-path.txt)"\n',
-            "eval unresolved payload source": 'COMMAND="source $DEP"\neval "$COMMAND"\n',
-            "backticks": "source `cat dep-path.txt`\n",
+            "cat multiple operands": (
+                'source "$(cat dep-path.txt other.txt)"\n',
+                'source "$(cat dep-path.txt other.txt)"',
+            ),
+            "cat multiple lines": (
+                'source "$(cat dep-path.txt)"\n',
+                'source "$(cat dep-path.txt)"',
+            ),
+            "cat pipe": (
+                'source "$(cat dep-path.txt | head -1)"\n',
+                'source "$(cat dep-path.txt | head -1)"',
+            ),
+            "cat missing path file": (
+                'source "$(cat missing-path.txt)"\n',
+                'source "$(cat missing-path.txt)"',
+            ),
+            "cat empty path file": (
+                'source "$(cat empty-path.txt)"\n',
+                'source "$(cat empty-path.txt)"',
+            ),
+            "find multiple matches": (
+                'source "$(find . -name dep.sh)"\n',
+                'source "$(find . -name dep.sh)"',
+            ),
+            "find no match": (
+                'source "$(find ./nested -type f -name missing.sh -print -quit)"\n',
+                'source "$(find ./nested -type f -name missing.sh -print -quit)"',
+            ),
+            "find exec": (
+                'source "$(find . -name dep.sh -exec echo {} \\;)"\n',
+                'source "$(find . -name dep.sh -exec echo {} \\;)"',
+            ),
+            "find quit without print": (
+                'source "$(find ./nested -type f -name dep.sh -quit)"\n',
+                'source "$(find ./nested -type f -name dep.sh -quit)"',
+            ),
+            "eval extra command": (
+                'eval "source ./dep.sh; echo unsafe"\n',
+                'eval "source ./dep.sh; echo unsafe"',
+            ),
+            "eval nested dynamic": (
+                'eval "source $(cat dep-path.txt)"\n',
+                'eval "source $(cat dep-path.txt)"',
+            ),
+            "eval unresolved payload source": (
+                'COMMAND="source $DEP"\neval "$COMMAND"\n',
+                'eval "$COMMAND"',
+            ),
+            "backticks": (
+                "source `cat dep-path.txt`\n",
+                "source `cat dep-path.txt`",
+            ),
         }
 
-        for name, content in cases.items():
+        for name, (content, expected_fragment) in cases.items():
             with self.subTest(name=name), ScriptProject() as project:
                 project.write("dep.sh", 'echo "dep"\n')
                 project.write("nested/dep.sh", 'echo "nested dep"\n')
@@ -283,11 +349,16 @@ class CompileRegressionTestCase(unittest.TestCase):
                     project.write("dep-path.txt", "./dep.sh\n./nested/dep.sh\n")
                 else:
                     project.write("dep-path.txt", "./dep.sh\n")
+                project.write("empty-path.txt", "\n")
                 project.write("other.txt", "./nested/dep.sh\n")
                 project.write("main.sh", content)
+                output = project.path("compiled.sh")
 
-                with self.assertRaisesRegex((ValueError, NotImplementedError), "unsupported|ambiguous|dynamic|source"):
-                    project.compile("main.sh")
+                with self.assertRaisesRegex((ValueError, NotImplementedError), "unsupported|ambiguous|dynamic|source") as cm:
+                    project.compile("main.sh", output=output, mode="executable")
+
+                self.assertIn(expected_fragment, str(cm.exception))
+                self.assertFalse(output.exists())
 
     def test_bash_c_source_is_rejected_for_executable_mode(self):
         with ScriptProject() as project:

@@ -416,7 +416,7 @@ def resolve_safe_cat_source(inner_command: str, source_expression: str, source_s
 
     path_file = resolve_path(words[1], context)
     if not path_file or not os.path.isfile(path_file):
-        raise UnsupportedSourceError(f"unsupported cat source path file: {words[1]}")
+        raise UnsupportedSourceError(f"unsupported cat source path file: {source_site.strip()}")
 
     with open(path_file, 'r') as file:
         lines = file.read().splitlines()
@@ -426,7 +426,7 @@ def resolve_safe_cat_source(inner_command: str, source_expression: str, source_s
 
     resolved_path = resolve_path(lines[0].strip(), context)
     if not resolved_path:
-        raise UnsupportedSourceError(f"unsupported cat-resolved source path: {lines[0].strip()}")
+        raise UnsupportedSourceError(f"unsupported cat-resolved source path: {source_site.strip()}")
 
     return ResolvedSource(
         path=resolved_path,
@@ -556,7 +556,10 @@ def resolve_safe_find_source(inner_command: str, source_expression: str, source_
         raise UnsupportedSourceError(f"unsupported find source command syntax: {source_site.strip()}")
 
     words = parse_shell_words(inner_command)
-    parsed_find = parse_find_command(words, context)
+    try:
+        parsed_find = parse_find_command(words, context)
+    except UnsupportedSourceError as exc:
+        raise UnsupportedSourceError(f"{exc}: {source_site.strip()}") from exc
     if not parsed_find:
         return None
 

@@ -84,6 +84,30 @@ class ContextModeTestCase(unittest.TestCase):
         self.assertIn('# modashc: source "$(cat dep-path.txt)" -> dep.sh', content)
         self.assertIn('source "$(cat dep-path.txt)"', content)
 
+    def test_context_output_resolves_safe_find_source(self):
+        with ScriptProject() as project:
+            project.write("plugins/init.sh", 'echo "dep body"\n')
+            project.write("main.sh", 'source "$(find ./plugins -type f -name init.sh -print -quit)"\necho "main body"\n')
+
+            output = project.compile("main.sh")
+            content = output.read_text()
+
+        self.assertIn('echo "dep body"', content)
+        self.assertIn('# modashc: source "$(find ./plugins -type f -name init.sh -print -quit)" -> plugins/init.sh', content)
+        self.assertIn('source "$(find ./plugins -type f -name init.sh -print -quit)"', content)
+
+    def test_context_output_resolves_safe_eval_source(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "dep body"\n')
+            project.write("main.sh", 'eval "source ./dep.sh"\necho "main body"\n')
+
+            output = project.compile("main.sh")
+            content = output.read_text()
+
+        self.assertIn('echo "dep body"', content)
+        self.assertIn('# modashc: source ./dep.sh -> dep.sh', content)
+        self.assertIn('eval "source ./dep.sh"', content)
+
     def test_context_output_classifies_bash_c_source_as_child_shell(self):
         with ScriptProject() as project:
             project.write("dep.sh", 'echo "dep body"\n')
