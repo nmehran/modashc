@@ -140,6 +140,19 @@ class IfBlock(IRNode):
 
 
 @dataclass(frozen=True)
+class CaseArm:
+    patterns: tuple[str, ...]
+    body: tuple[IRNode, ...]
+    terminator: str = ";;"
+
+
+@dataclass(frozen=True)
+class CaseBlock(IRNode):
+    subject: str
+    arms: tuple[CaseArm, ...]
+
+
+@dataclass(frozen=True)
 class SourceSite(IRNode):
     command_name: str
     source_expression: str
@@ -165,6 +178,9 @@ class ScriptIR:
                 elif isinstance(node, IfBlock):
                     for branch in node.branches:
                         sites.extend(collect(branch.body))
+                elif isinstance(node, CaseBlock):
+                    for arm in node.arms:
+                        sites.extend(collect(arm.body))
             return sites
 
         return tuple(collect(self.nodes))

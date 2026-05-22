@@ -5,6 +5,7 @@ from pathlib import Path
 from methods.source_effects import (
     ArrayAssignment,
     Assignment,
+    CaseBlock,
     CdCommand,
     ForLoop,
     IfBlock,
@@ -161,7 +162,7 @@ class LineParserFrontendTestCase(unittest.TestCase):
             '"${deps[0]}"',
         ])
         self.assertEqual([site.location.line for site in ir.source_sites], [1, 3, 6, 7, 10])
-        self.assertEqual([site.is_control_flow for site in ir.source_sites], [False, False, True, True, False])
+        self.assertEqual([site.is_control_flow for site in ir.source_sites], [False, False, False, False, False])
 
     def test_control_flow_marking_is_source_site_specific_on_mixed_lines(self):
         ir = self.parse('source ./always.sh; if true; then source ./branch.sh; fi\n')
@@ -273,6 +274,61 @@ class LineParserFrontendTestCase(unittest.TestCase):
         self.assertEqual([branch.keyword for branch in block.branches], ["if", "else"])
         self.assertEqual([branch.condition for branch in block.branches], ['[[ "$MODE" == prod ]]', None])
         self.assertEqual([site.source_expression for site in ir.source_sites], ["./prod.sh", "./dev.sh"])
+
+    def test_parses_simple_multiline_case_block_node(self):
+        ir = self.parse("""\
+            case "$ENV" in
+              prod|stage)
+                source ./prod.sh
+                ;;
+              "dev")
+                source ./dev.sh
+                ;;
+              *)
+                source ./default.sh
+                ;;
+            esac
+            """)
+
+        self.assertEqual(len(ir.nodes), 1)
+        block = ir.nodes[0]
+        self.assertIsInstance(block, CaseBlock)
+        self.assertEqual(block.subject, '"$ENV"')
+        self.assertEqual([arm.patterns for arm in block.arms], [
+            ("prod", "stage"),
+            ('"dev"',),
+            ("*",),
+        ])
+        self.assertEqual([arm.terminator for arm in block.arms], [";;", ";;", ";;"])
+        self.assertEqual([arm.body[0].source_expression for arm in block.arms], [
+            "./prod.sh",
+            "./dev.sh",
+            "./default.sh",
+        ])
+        self.assertEqual([arm.body[0].location.line for arm in block.arms], [3, 6, 9])
+        self.assertEqual([site.is_control_flow for site in ir.source_sites], [False, False, False])
+
+    def test_parses_simple_inline_case_block_node(self):
+        ir = self.parse('case "$ENV" in prod) source ./prod.sh ;; dev) source ./dev.sh ;; esac\n')
+
+        self.assertEqual(len(ir.nodes), 1)
+        block = ir.nodes[0]
+        self.assertIsInstance(block, CaseBlock)
+        self.assertEqual(block.subject, '"$ENV"')
+        self.assertEqual([arm.patterns for arm in block.arms], [("prod",), ("dev",)])
+        self.assertEqual([site.source_expression for site in ir.source_sites], ["./prod.sh", "./dev.sh"])
+
+    def test_parses_case_fallthrough_terminator_for_evaluator_rejection(self):
+        ir = self.parse("""\
+            case "$ENV" in
+              prod) source ./prod.sh ;&
+              *) source ./default.sh ;;
+            esac
+            """)
+
+        block = ir.nodes[0]
+        self.assertIsInstance(block, CaseBlock)
+        self.assertEqual([arm.terminator for arm in block.arms], [";&", ";;"])
 
 
 if __name__ == "__main__":

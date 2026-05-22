@@ -9,6 +9,8 @@ from methods.regex.utilities import remove_comments
 from methods.source_effects import (
     ArrayAssignment,
     Assignment,
+    CaseArm,
+    CaseBlock,
     CdCommand,
     ForLoop,
     IfBlock,
@@ -42,6 +44,13 @@ ELIF_COMMAND_PATTERN = re.compile(r'^\s*elif\s+(.+?)\s*$')
 THEN_COMMAND_PATTERN = re.compile(r'^\s*then(?:\s+(.+?))?\s*$')
 ELSE_COMMAND_PATTERN = re.compile(r'^\s*else(?:\s+(.+?))?\s*$')
 FI_COMMAND_PATTERN = re.compile(r'^\s*fi\s*$')
+CASE_COMMAND_PATTERN = re.compile(r'^\s*case\s+(.+?)\s+in(?:\s*(.*))?$')
+ESAC_COMMAND_PATTERN = re.compile(r'^\s*esac\s*$')
+CASE_TERMINATOR_COMMANDS = {
+    "__MODASHC_CASE_TERM_END__": ";;",
+    "__MODASHC_CASE_TERM_FALLTHROUGH__": ";&",
+    "__MODASHC_CASE_TERM_FALLTHROUGH_TEST__": ";;&",
+}
 
 
 class ParserFrontend(Protocol):
@@ -83,6 +92,12 @@ class LineParserFrontend:
             if_block, next_line_index = self._parse_if_block(script_path, line_number, code_line, lines, line_index)
             if if_block:
                 nodes.append(if_block)
+                line_index = next_line_index
+                continue
+
+            case_block, next_line_index = self._parse_case_block(script_path, line_number, code_line, lines, line_index)
+            if case_block:
+                nodes.append(case_block)
                 line_index = next_line_index
                 continue
 
@@ -255,6 +270,225 @@ class LineParserFrontend:
             body=self._parse_loop_body(script_path, body_lines),
             keyword=keyword,
         )
+
+    def _parse_case_block(self, script_path: Path, line_number: int, code_line: str, lines: list[str],
+                          line_index: int):
+        match = CASE_COMMAND_PATTERN.match(code_line)
+        if not match:
+            return None, line_index + 1
+
+        subject, first_tail = match.groups()
+        arms = []
+        current_patterns = None
+        current_body = []
+        current_terminator = ";;"
+        index = line_index
+
+        while index < len(lines):
+            if index == line_index:
+                commands = self._case_commands(first_tail or "")
+            else:
+                code = remove_comments(
+                    lines[index],
+                    ['#'],
+                    exclusion_patterns=[r'\#\!.*'],
+                    escape_exclusions=False,
+                )
+                commands = self._case_commands(code)
+
+            for command in commands:
+                stripped_command = command.strip()
+
+                if terminator := CASE_TERMINATOR_COMMANDS.get(stripped_command):
+                    if current_patterns is None:
+                        return None, line_index + 1
+                    current_terminator = terminator
+                    arms.append(self._case_arm(script_path, current_patterns, current_body, current_terminator))
+                    current_patterns = None
+                    current_body = []
+                    current_terminator = ";;"
+                    continue
+
+                if ESAC_COMMAND_PATTERN.match(stripped_command):
+                    if current_patterns is not None:
+                        arms.append(self._case_arm(script_path, current_patterns, current_body, current_terminator))
+                    if not arms:
+                        return None, line_index + 1
+                    column = self._command_column(code_line, "case")
+                    return CaseBlock(
+                        location=SourceLocation(script_path, line_number, column),
+                        text=code_line.strip(),
+                        subject=subject.strip(),
+                        arms=tuple(arms),
+                    ), index + 1
+
+                arm = self._split_case_arm_header(stripped_command)
+                if arm:
+                    if current_patterns is not None:
+                        return None, line_index + 1
+                    patterns, body_command = arm
+                    current_patterns = patterns
+                    current_body = []
+                    current_terminator = ";;"
+                    if body_command:
+                        current_body.append((index + 1, body_command))
+                    continue
+
+                if current_patterns is None:
+                    return None, line_index + 1
+                current_body.append((index + 1, command))
+
+            index += 1
+
+        return None, line_index + 1
+
+    def _case_arm(self, script_path: Path, patterns: tuple[str, ...], body_lines, terminator: str):
+        return CaseArm(
+            patterns=patterns,
+            body=self._parse_loop_body(script_path, body_lines),
+            terminator=terminator,
+        )
+
+    @staticmethod
+    def _case_commands(line: str):
+        return get_commands(LineParserFrontend._mark_case_terminators(line))
+
+    @staticmethod
+    def _mark_case_terminators(line: str):
+        output = []
+        in_single_quote = False
+        in_double_quote = False
+        escaped = False
+        index = 0
+
+        while index < len(line):
+            char = line[index]
+            if escaped:
+                output.append(char)
+                escaped = False
+                index += 1
+                continue
+
+            if char == '\\' and not in_single_quote:
+                output.append(char)
+                escaped = True
+                index += 1
+                continue
+
+            if char == "'" and not in_double_quote:
+                in_single_quote = not in_single_quote
+                output.append(char)
+                index += 1
+                continue
+
+            if char == '"' and not in_single_quote:
+                in_double_quote = not in_double_quote
+                output.append(char)
+                index += 1
+                continue
+
+            if not in_single_quote and not in_double_quote:
+                if line.startswith(";;&", index):
+                    output.append("; __MODASHC_CASE_TERM_FALLTHROUGH_TEST__ ;")
+                    index += 3
+                    continue
+                if line.startswith(";&", index):
+                    output.append("; __MODASHC_CASE_TERM_FALLTHROUGH__ ;")
+                    index += 2
+                    continue
+                if line.startswith(";;", index):
+                    output.append("; __MODASHC_CASE_TERM_END__ ;")
+                    index += 2
+                    continue
+
+            output.append(char)
+            index += 1
+
+        return ''.join(output)
+
+    @staticmethod
+    def _split_case_arm_header(command: str):
+        pattern_end = LineParserFrontend._unquoted_index(command, ")")
+        if pattern_end <= 0:
+            return None
+
+        pattern_text = command[:pattern_end].strip()
+        if pattern_text.startswith("("):
+            pattern_text = pattern_text[1:].strip()
+        if not pattern_text:
+            return None
+
+        patterns = tuple(part.strip() for part in LineParserFrontend._split_unquoted(pattern_text, "|") if part.strip())
+        if not patterns:
+            return None
+        return patterns, command[pattern_end + 1:].strip()
+
+    @staticmethod
+    def _split_unquoted(text: str, separator: str):
+        parts = []
+        current = []
+        in_single_quote = False
+        in_double_quote = False
+        escaped = False
+
+        for char in text:
+            if escaped:
+                current.append(char)
+                escaped = False
+                continue
+
+            if char == '\\' and not in_single_quote:
+                current.append(char)
+                escaped = True
+                continue
+
+            if char == "'" and not in_double_quote:
+                in_single_quote = not in_single_quote
+                current.append(char)
+                continue
+
+            if char == '"' and not in_single_quote:
+                in_double_quote = not in_double_quote
+                current.append(char)
+                continue
+
+            if char == separator and not in_single_quote and not in_double_quote:
+                parts.append(''.join(current))
+                current = []
+                continue
+
+            current.append(char)
+
+        parts.append(''.join(current))
+        return parts
+
+    @staticmethod
+    def _unquoted_index(text: str, needle: str):
+        in_single_quote = False
+        in_double_quote = False
+        escaped = False
+
+        for index, char in enumerate(text):
+            if escaped:
+                escaped = False
+                continue
+
+            if char == '\\' and not in_single_quote:
+                escaped = True
+                continue
+
+            if char == "'" and not in_double_quote:
+                in_single_quote = not in_single_quote
+                continue
+
+            if char == '"' and not in_single_quote:
+                in_double_quote = not in_double_quote
+                continue
+
+            if char == needle and not in_single_quote and not in_double_quote:
+                return index
+
+        return -1
 
     def _parse_for_loop(self, script_path: Path, line_number: int, code_line: str, lines: list[str], line_index: int):
         match = FOR_LOOP_PATTERN.match(code_line)
