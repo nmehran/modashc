@@ -1185,6 +1185,33 @@ class CompileRegressionTestCase(unittest.TestCase):
         self.assertEqual(actual.stdout, expected.stdout)
         self.assertNotIn("after shift should not run", compiled_content)
 
+        with ScriptProject() as project:
+            project.write("after.sh", 'echo "after implicit status"\n')
+            project.write("fallback.sh", 'echo "fallback implicit status"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                load_ok() {
+                  true
+                }
+                load_fail() {
+                  false
+                }
+
+                load_ok && source ./after.sh
+                load_ok || source ./skipped-ok.sh
+                load_fail && source ./skipped-fail.sh
+                load_fail || source ./fallback.sh
+                """))
+
+            output = project.compile("main.sh", mode="executable")
+            expected = project.run("main.sh")
+            actual = project.run(output)
+            compiled_content = output.read_text()
+
+        self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
+        self.assertEqual(actual.stdout, expected.stdout)
+        self.assertNotIn("skipped-ok", compiled_content)
+        self.assertNotIn("skipped-fail", compiled_content)
+
     def test_nested_function_control_flow_matches_bash(self):
         with ScriptProject() as project:
             project.write("dep.sh", 'echo "nested function dep"\n')

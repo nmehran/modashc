@@ -1750,6 +1750,11 @@ class SourceEvaluator:
             self._apply_function_shift(node, state)
             return
 
+        exact_status = self._raw_exact_status_command(node)
+        if exact_status is not None:
+            state.last_status = exact_status
+            return
+
         if self._apply_shopt(node, state):
             state.last_status = 0
             return
@@ -2085,6 +2090,32 @@ class SourceEvaluator:
     def _raw_function_shift_command(node: RawCommand):
         stripped = node.text.strip()
         return bool(re.match(r'^shift(?:\s|$)', stripped))
+
+    @staticmethod
+    def _raw_exact_status_command(node: RawCommand):
+        stripped = node.text.strip()
+        if contains_source_command(stripped) or contains_nested_source_command(stripped):
+            return None
+
+        try:
+            words = parse_shell_words_preserving_quotes(stripped)
+        except UnsupportedSourceError:
+            return None
+        if not words:
+            return 0
+
+        index = 0
+        while index < len(words) and ASSIGNMENT_WORD_PATTERN.match(words[index]):
+            index += 1
+        if index >= len(words):
+            return 0
+
+        command_name = strip_matching_quotes(words[index])
+        if command_name in {":", "true"}:
+            return 0
+        if command_name == "false":
+            return 1
+        return None
 
     def _function_return_status(self, node: RawCommand, state: EvaluationState):
         try:

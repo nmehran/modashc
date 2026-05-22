@@ -320,6 +320,35 @@ class SourceEvaluatorTestCase(unittest.TestCase):
         self.assertEqual([event.path for event in result.events], [fallback])
         self.assertEqual([disabled.source_site for disabled in result.disabled_sources], ["source ./skipped.sh"])
 
+    def test_function_implicit_builtin_status_controls_chained_sources(self):
+        with ScriptProject() as project:
+            after = project.write("after.sh", 'echo "after"\n')
+            fallback = project.write("fallback.sh", 'echo "fallback"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                load_ok() {
+                  true
+                }
+                load_fail() {
+                  false
+                }
+                load_colon() {
+                  :
+                }
+                load_ok && source ./after.sh
+                load_ok || source ./skipped-ok.sh
+                load_fail && source ./skipped-fail.sh
+                load_fail || source ./fallback.sh
+                load_colon || source ./skipped-colon.sh
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [after, fallback])
+        self.assertEqual(
+            [disabled.source_site for disabled in result.disabled_sources],
+            ["source ./skipped-ok.sh", "source ./skipped-fail.sh", "source ./skipped-colon.sh"],
+        )
+
     def test_branch_dependent_equivalent_function_definitions_are_evaluated(self):
         with ScriptProject() as project:
             dep = project.write("dep.sh", 'echo "dep"\n')
