@@ -39,7 +39,7 @@ class CompileRegressionTestCase(unittest.TestCase):
             ),
             "hash in path": (
                 "main.sh",
-                'source "./dir#tag/dep.sh"\necho "main"\n',
+                'source ./dir#tag/dep.sh\necho "main"\n',
                 {"dir#tag/dep.sh": 'echo "dep"\n'},
                 None,
             ),

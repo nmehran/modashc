@@ -83,7 +83,7 @@ class SourceRegressionTestCase(unittest.TestCase):
                 "source ./dep.sh",
                 ". ./dot.sh",
                 'source "./dir with spaces/dep.sh"',
-                'source "./dir#tag/dep.sh"',
+                'source ./dir#tag/dep.sh',
                 "source ./config",
                 f'source "{absolute_dep}"',
                 "",

@@ -84,8 +84,12 @@ def remove_comments(text, comment_patterns, exclusion_patterns=None, escape_excl
         exclusion_regex = '(?:' + '|'.join(
             f"{re.escape(pattern) if escape_exclusions else pattern}" for pattern in exclusion_patterns) + ')'
 
-    # Combine exclusions and comment markers into a single regex
-    comment_regex = '|'.join([re.escape(pattern) for pattern in comment_patterns])
+    # Combine exclusions and comment markers into a single regex. In shell text,
+    # an unquoted # starts a comment only at a word boundary, not inside paths.
+    comment_regex = '|'.join(
+        rf'(?<!\S){re.escape(pattern)}' if pattern == '#' else re.escape(pattern)
+        for pattern in comment_patterns
+    )
 
     # pattern = re.compile(rf"""
     #     {exclusion_regex}                         # Match exclusions

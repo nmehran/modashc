@@ -43,6 +43,8 @@ class TestRemoveComments(unittest.TestCase):
             "\"This is a # inside double quotes\" # But this should be commented": "\"This is a # inside double quotes\" ",
             # # Test inside single quotes
             "'It is # inside single quotes' # This should also be commented": "'It is # inside single quotes' ",
+            # Test hash inside an unquoted shell word/path
+            "source ./dir#tag/dep.sh # comment": "source ./dir#tag/dep.sh ",
             # # Test entire line comment removal
             "// This whole line should be removed": "",
             # # Test exclusion pattern with URLs

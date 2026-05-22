@@ -78,6 +78,7 @@ class TestSourceCommandRegex(unittest.TestCase):
             'source file.sh': ['source file.sh'],
             'source /path/to/file.sh': ['source /path/to/file.sh'],
             'source "quoted file.sh"': ['source "quoted file.sh"'],
+            'source ./dir#tag/dep.sh': ['source ./dir#tag/dep.sh'],
             'source file.sh # comment': ['source file.sh'],
             'echo "Hello" && source file.sh': ['&& source file.sh'],
             'ls -l || source file.sh ; echo "Done"': ['|| source file.sh'],

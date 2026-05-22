@@ -31,7 +31,7 @@ COMMAND_TEMPLATE_PATTERN = (r'''
                 |
                 <\([^)]+\)
                 |
-                [^"'`\s\n&|;\#()]+
+                [^"'`\s\n&|;()]+
                 |
                 \s+
                 |
@@ -42,7 +42,7 @@ COMMAND_TEMPLATE_PATTERN = (r'''
         )?                          # Make the entire argument part optional
         \s*                         # Optional whitespace
         (?:                         # Non-capturing group for end conditions
-            (?=\#)                  # Stop at unquoted #
+            (?<=\s)(?=\#)           # Stop at unquoted comment-starting #
             |
             (?=\s*(?:&&|\|\||;|\n|$|\)|\)\s*\)))  # Or at next separator, end of line, or closing parenthesis
         )
