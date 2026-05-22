@@ -86,7 +86,10 @@ render `context-only` records, but the output must make that limitation clear.
 - Any command separator, redirection, pipe, process substitution, background
   operator, or unapproved command substitution in a dynamic source expression is
   unsupported.
+- Executable mode must not emit unresolved live `source` commands.
 - Unsupported cases must fail before output is written.
+- Context mode may preserve unresolved source text for readability, but it must
+  not claim a resolved dependency unless resolution is exact.
 
 ## Resolver Priority
 
@@ -278,6 +281,11 @@ These need separate specs before implementation:
 These are not merely more dynamic resolvers. They require control-flow and
 multi-result semantics, and they should be designed separately.
 
+In the current resolver-driven compiler, executable mode fails closed when a
+source command appears inside these unsupported families. That prevents output
+from silently preserving runtime `source` behavior that the compiler has not
+lowered.
+
 ## Test Requirements
 
 Each resolver needs tests for:
@@ -288,6 +296,7 @@ Each resolver needs tests for:
 - context-mode rendering
 - executable-mode parity or explicit executable-mode rejection
 - diagnostics that identify the rejected source site
+- unsupported executable-mode failures that do not create or overwrite output
 
 Regression tests should use real temporary shell projects through
 `ScriptProject`, not mocked strings alone.
