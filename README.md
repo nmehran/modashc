@@ -47,72 +47,14 @@ safe to lower, compilation fails before writing or overwriting the output file.
 
 ## Supported Source Resolution
 
-`modashc` currently resolves these source forms:
+`modashc` supports static source paths, exact variables, safe path command
+substitutions, safe file/command producers, arrays, finite loops, modeled read
+loops, branch-aware `if` and `case` source sites, and bounded source-bearing
+function calls.
 
-- `source ./dep.sh` and `. ./dep.sh`
-- relative, parent-relative, and absolute source paths
-- paths containing spaces or `#`
-- non-`.sh` sourced files, such as `source ./config`
-- variables and environment variables that resolve to paths
-- common path command substitutions: `dirname`, `basename`, and `realpath`
-- cwd-sensitive sources after supported `cd` commands
-- safe `cat` path-file sources, such as `source "$(cat dep-path.txt)"`
-- safe deterministic `find` sources with one matching file
-- safe `eval` payloads that resolve to exactly one source command
-- exact indexed array source paths, such as `source "${deps[0]}"`
-- computed exact indexed and associative array source paths, such as
-  `source "${deps[$i]}"` and `source "${by_env[$ENV]}"`
-- exact array append, indexed assignment, command-substitution array assignment,
-  and `mapfile` / `readarray -t` population from exact files
-- exact finite `for` loops over literal words, known scalar path variables,
-  exact custom-IFS scalar word lists, `${array[@]}` expansions, or safe
-  `cat` / `find` / `printf` / `sort` / `head` / `grep -lF` or `grep -lE` /
-  `realpath` / `dirname` / `basename` command-substitution word lists
-- deterministic finite `for` loops over ordinary file globs, such as
-  `for dep in ./plugins/*.sh; do source "$dep"; done`
-- bounded `while` / `until` loops with exact conditions, arithmetic mutations,
-  local `break` / `continue`, and `while read` file enumeration, including
-  non-empty guards for files without a final newline, exact safe-producer
-  pipelines, and safe process-substitution input
-- bounded C-style `for ((...))` loops with exact arithmetic init, condition, and
-  update clauses
-- option-aware finite loop globs for `nullglob`, `dotglob`, `globstar`,
-  `nocaseglob`, practical `GLOBIGNORE` filtering, comma braces, and simple
-  brace sequences
-- direct source globs only when the glob resolves to exactly one file
-- branch-aware `if` / `elif` / `else` blocks with side-effect-free file,
-  non-empty, empty, exact string, pattern, compound logical, arithmetic,
-  regex, and safe `grep -q` predicates
-- exact `case` blocks over known scalar subjects, with literal, alternate,
-  default, quoted literal, and ordinary glob arm patterns without mixed quoting,
-  backslash escapes, or POSIX character classes
-- bounded local function calls when the function definition is known, arguments
-  are exact, and source-relevant body effects are modeled, including positional
-  source arguments, exact assignment prefixes, `local` scalar assignments, cwd
-  changes, exact `return` / `shift`, exact dynamic dispatch, nested modeled
-  control flow, same-line post-definition calls, source-equivalent
-  branch-defined functions, function-call status for chained source sites, and
-  functions defined by sourced files
-- `bash -c "source ..."` classification in context mode
-
-Unsupported or ambiguous dynamic forms fail closed in executable mode. This
-includes source commands with positional arguments, direct source globs with
-multiple matches, unmatched or quoted globs, `extglob` patterns, `set -f` /
-`noglob`, `failglob` unmatched globs,
-`GLOBIGNORE` patterns that remove every source match, unsupported command or
-glob-bearing file/bracket conditional predicates, unsupported case subjects or
-arm patterns, unsupported process substitution outside modeled read-loop input,
-unknown runtime-dynamic or recursive function dispatch, non-equivalent
-branch-defined functions, branch-dependent function returns, nested dynamic
-substitutions, and multi-result source command substitution output where a
-single source path is required.
-
-Control-flow evaluation beyond exact finite loops, bounded C-style loops,
-bounded `while` / `until`, modeled `if` blocks, and exact `case` blocks is
-intentionally fail-closed until broader glob, conditional, case, and function
-semantics are modeled. See [Dynamic Source Resolution](docs/dynamic-source-resolution.md)
-for the current resolver contract and [Evaluator And IR Plan](docs/evaluator-ir-plan.md)
-for the remaining pattern families.
+For the full current support matrix, examples, fail-closed behavior, and
+practical remaining source-resolution gaps, see
+[Supported Source Resolution](docs/supported-source-resolution.md).
 
 ## Usage
 
@@ -166,18 +108,6 @@ git diff --check
 ```
 
 Design notes live in [docs](docs/README.md).
-
-## Source Resolution Roadmap
-
-The compiler already models common function calls, conditionals, loops, arrays,
-and glob-driven dependency discovery for `source` resolution. Remaining work is
-focused on source-discovery cases that still require broader Bash semantics
-before executable lowering can stay exact:
-
-- Source effects behind harder function paths, including recursion,
-  branch-dependent returns, and runtime-dynamic dispatch.
-- Source guards and paths involving broader conditional predicates, `extglob`,
-  direct `source` positional/glob arguments, and richer case pattern semantics.
 
 ## Installation
 

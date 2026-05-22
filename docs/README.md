@@ -5,12 +5,14 @@ keep only in code comments or tests.
 
 ## Specs
 
+- [Supported Source Resolution](supported-source-resolution.md): user-facing
+  support matrix for resolved `source` patterns, executable-mode fail-closed
+  behavior, and practical remaining work.
 - [Dynamic Source Resolution](dynamic-source-resolution.md): Python-only
   resolution of common runtime-looking `source` idioms without executing shell
   code.
-- [Next-Generation Evaluator And IR Plan](evaluator-ir-plan.md): Deferred
-  architecture plan and current implementation status for the source-effect IR,
-  evaluator, and remaining loop, glob, conditional, and function work.
+- [Next-Generation Evaluator And IR Plan](evaluator-ir-plan.md): Architecture
+  notes and implementation history for the source-effect IR and evaluator.
 
 ## Planned Specs
 
@@ -21,7 +23,9 @@ keep only in code comments or tests.
 ## Deferred Source-Resolution Specs
 
 These require more evaluator coverage before source discovery and executable
-lowering can both stay exact.
+lowering can both stay exact. See
+[Supported Source Resolution](supported-source-resolution.md) for the current
+user-facing support matrix and practical remaining work.
 The intended approach is captured in the
 [Next-Generation Evaluator And IR Plan](evaluator-ir-plan.md):
 

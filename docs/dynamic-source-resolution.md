@@ -129,56 +129,12 @@ Resolvers should be tried from most explicit to most specialized:
 
 The resolver registry should make this ordering explicit in code and tests.
 
-## Existing Supported Forms
+## Current Support Matrix
 
-These are already expected to resolve:
-
-```bash
-source ./dep.sh
-. ./dep.sh
-source ../shared/dep.sh
-source "./dir with spaces/dep.sh"
-source ./dir#tag/dep.sh
-source ./config
-source "/absolute/path/dep.sh"
-
-DEP_PATH="/absolute/path/dep.sh"
-source "$DEP_PATH"
-
-DEP_PATH="$ENV_PROVIDED_ABSOLUTE_PATH"
-source "$DEP_PATH"
-
-THIS_DIR="$(dirname "$BASH_SOURCE")"
-source "$THIS_DIR/dep.sh"
-
-source "$(dirname "$BASH_SOURCE")/dep.sh"
-source "$(realpath ./dep.sh)"
-
-for dep in ./a.sh ./b.sh; do
-  source "$dep"
-done
-
-deps=(./a.sh ./b.sh)
-for dep in "${deps[@]}"; do
-  source "$dep"
-done
-
-for dep in ./plugins/*.sh; do
-  source "$dep"
-done
-
-source ./single-plugin/*.sh
-
-if [[ -f ./optional.sh ]]; then
-  source ./optional.sh
-fi
-
-if [[ "$MODE" == prod ]]; then
-  source ./prod.sh
-else
-  source ./dev.sh
-fi
-```
+The user-facing current support matrix lives in
+[Supported Source Resolution](supported-source-resolution.md). This document
+describes resolver contracts, safety rules, implementation details, and future
+design constraints.
 
 ## Implemented Resolver Subset
 
