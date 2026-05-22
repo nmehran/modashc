@@ -112,12 +112,30 @@ def render_source_block(filepath: str, render_source, indent: str):
     return f"{{\n{rendered_source}\n{indent}}}"
 
 
+def source_values_are_path_ambiguous(source_declarations):
+    paths_by_source_value = defaultdict(set)
+    for source_declaration in source_declarations:
+        source_value = source_declaration.source_value or source_declaration.path
+        paths_by_source_value[source_value].add(source_declaration.path)
+
+    return any(len(paths) > 1 for paths in paths_by_source_value.values())
+
+
 def render_source_dispatch(source_expression: str, source_declarations, render_source, indent: str):
-    output = [f"case {source_expression.strip()} in"]
+    use_resolved_path = source_values_are_path_ambiguous(source_declarations)
+    dispatch_expression = (
+        f'"$(realpath -- {source_expression.strip()})"'
+        if use_resolved_path
+        else source_expression.strip()
+    )
+    output = [f"case {dispatch_expression} in"]
     seen_patterns = set()
 
     for source_declaration in source_declarations:
-        pattern = source_declaration.source_value or source_declaration.path
+        if use_resolved_path:
+            pattern = source_declaration.path
+        else:
+            pattern = source_declaration.source_value or source_declaration.path
         if pattern in seen_patterns:
             continue
         seen_patterns.add(pattern)

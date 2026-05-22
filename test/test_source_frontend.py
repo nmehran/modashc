@@ -195,6 +195,19 @@ class LineParserFrontendTestCase(unittest.TestCase):
         self.assertEqual(loop.body[0].location.line, 3)
         self.assertEqual(loop.body[0].source_expression, '"$dep"')
 
+    def test_loop_body_ignores_source_text_inside_heredoc(self):
+        ir = self.parse("""\
+            for dep in ./a.sh; do
+              cat <<EOF
+              source "$dep"
+            EOF
+              source "$dep"
+            done
+            """)
+
+        self.assertEqual([site.location.line for site in ir.source_sites], [5])
+        self.assertEqual([site.source_expression for site in ir.source_sites], ['"$dep"'])
+
     def test_parses_simple_inline_for_loop_node(self):
         ir = self.parse('for dep in ./a.sh ./b.sh; do source "$dep"; done\n')
 

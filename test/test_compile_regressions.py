@@ -195,6 +195,32 @@ class CompileRegressionTestCase(unittest.TestCase):
 
             project.assert_compiled_matches(self, "main.sh")
 
+    def test_exact_for_loop_absolute_paths_match_bash(self):
+        with ScriptProject() as project:
+            first = project.write("deps/a.sh", 'echo "absolute:a"\n')
+            second = project.write("deps/b.sh", 'echo "absolute:b"\n')
+            project.write("main.sh", textwrap.dedent(f"""\
+                for dep in "{first}" "{second}"; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_exact_for_loop_cwd_sensitive_source_expression_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("one dir/dep.sh", 'echo "cwd:one:$PWD"\n')
+            project.write("two#dir/dep.sh", 'echo "cwd:two:$PWD"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for dir in "one dir" two#dir; do
+                  cd "$dir"
+                  source ./dep.sh
+                  cd ..
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
     def test_environment_absolute_source_matches_bash(self):
         with ScriptProject() as project:
             dep = project.write("dep.sh", 'echo "dep from env"\n')
@@ -292,6 +318,20 @@ class CompileRegressionTestCase(unittest.TestCase):
         with ScriptProject() as project:
             project.write("dep.sh", 'echo "dep after bash source"\n')
             project.write("main.sh", 'echo "$BASH_SOURCE"; source ./dep.sh\n')
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_loop_heredoc_source_text_is_not_treated_as_dependency(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "loop dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in ./dep.sh; do
+                  cat <<EOF
+                source "$dep"
+                EOF
+                  source "$dep"
+                done
+                """))
 
             project.assert_compiled_matches(self, "main.sh")
 

@@ -466,18 +466,7 @@ class SourceEvaluator:
     def _source_runtime_value(source_expression: str, state: EvaluationState):
         context = state.runtime_context()
         resolved_expression = resolve_variable_references(source_expression, context)
-        runtime_value = strip_matching_quotes(resolved_expression)
-        if runtime_value and not os.path.isabs(runtime_value) and '$(' not in runtime_value:
-            return runtime_value
-
-        resolved_value, is_valid_path = resolve_command(runtime_value, state.resolver_context())
-        if is_valid_path:
-            current_directory = str(state.cwd)
-            try:
-                return str(Path(resolved_value).resolve().relative_to(Path(current_directory).resolve()))
-            except ValueError:
-                return resolved_value
-        return runtime_value
+        return strip_matching_quotes(resolved_expression)
 
     @staticmethod
     def _is_plain_source_site(node: SourceSite):

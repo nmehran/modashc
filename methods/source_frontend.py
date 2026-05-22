@@ -190,18 +190,33 @@ class LineParserFrontend:
             next_line_index = do_line_index + 1
         else:
             body_index = body_start_index
+            active_heredocs = []
+            control_depth = 0
             while body_index < len(lines):
                 body_line_number = body_index + 1
+                body_line = lines[body_index]
+
+                if active_heredocs:
+                    body_lines.append((body_line_number, body_line))
+                    if is_heredoc_end(body_line, active_heredocs[0]):
+                        active_heredocs.pop(0)
+                    body_index += 1
+                    continue
+
                 body_code_line = remove_comments(
-                    lines[body_index],
+                    body_line,
                     ['#'],
                     exclusion_patterns=[r'\#\!.*'],
                     escape_exclusions=False,
                 )
-                if body_code_line.strip() == "done":
+                stripped_body_line = body_code_line.strip()
+                if stripped_body_line == "done" and control_depth == 0:
                     next_line_index = body_index + 1
                     break
+
                 body_lines.append((body_line_number, body_code_line))
+                active_heredocs.extend(extract_heredoc_delimiters(body_line))
+                control_depth = self._next_control_depth(body_code_line, control_depth)
                 body_index += 1
             else:
                 return None, line_index + 1
@@ -230,11 +245,18 @@ class LineParserFrontend:
     def _parse_loop_body(self, script_path: Path, body_lines):
         nodes = []
         control_depth = 0
+        active_heredocs = []
 
         for line_number, code_line in body_lines:
+            if active_heredocs:
+                if is_heredoc_end(code_line, active_heredocs[0]):
+                    active_heredocs.pop(0)
+                continue
+
             control_flow_source_ranges = self._control_flow_source_ranges(code_line, control_depth)
             nodes.extend(self._parse_line(script_path, line_number, code_line, control_flow_source_ranges))
             control_depth = self._next_control_depth(code_line, control_depth)
+            active_heredocs.extend(extract_heredoc_delimiters(code_line))
 
         return tuple(nodes)
 
