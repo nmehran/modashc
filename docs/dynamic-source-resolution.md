@@ -2,10 +2,10 @@
 
 ## Status
 
-Initial implementation. The compiler supports static sources,
+Current implementation. The compiler supports static sources,
 variable/env-expanded paths, path command substitutions such as `dirname`,
-`basename`, and `realpath`, plus the first Python-only dynamic resolver subset:
-safe `cat`, safe `find`, safe `eval source`, and context-only `bash -c source`
+`basename`, and `realpath`, plus Python-only dynamic resolvers for safe `cat`,
+safe `find`, safe `eval source`, and context-only `bash -c source`
 classification. The source-effect evaluator also supports exact finite `for`
 loops over literal words, known scalar path variables, exact custom-IFS scalar
 word lists, exact `${array[@]}` expansions, safe command-substitution word
@@ -101,8 +101,9 @@ render `context-only` records, but the output must make that limitation clear.
   path-list discovery, such as safe `cat`, `sort`, `head`, and `grep -lF` /
   `grep -lE`.
 - Directory walks are allowed only for safe `find` subsets.
-- Multiple candidate paths are unsupported in executable mode unless the source
-  form has deterministic multi-source semantics.
+- Multiple candidate paths and direct source positional arguments are
+  unsupported in executable mode unless the source form has deterministic
+  multi-source or argument semantics.
 - Ambiguous current-directory state is unsupported.
 - Any command separator, redirection, pipe, process substitution, background
   operator, or unapproved command substitution in a dynamic source expression is
@@ -442,6 +443,8 @@ boundary rather than inline the file into the parent shell.
 These still need separate specs before implementation:
 
 - Broader glob semantics beyond ordinary deterministic file globs.
+- Direct source positional arguments, including direct source glob multi-match
+  argument semantics.
 - Conditional predicates outside the modeled side-effect-free subset.
 - Broader case pattern and fallthrough semantics.
 - Complex array/list-based source paths outside exact indexed, associative,
@@ -458,6 +461,7 @@ These are intentionally tracked as practical future work, not permanently
 unsupported forms:
 
 - Glob-bearing conditional predicates such as `[ -f ./plugins/*.sh ]`.
+- Direct source positional arguments such as `source ./dep.sh arg1`.
 - Command predicates outside the safe `grep -q` file-check subset.
 - Regex predicates requiring POSIX classes or unsupported Bash ERE behavior.
 - Nested modeled control flow inside branch bodies when the current line
@@ -533,7 +537,8 @@ Current diagnostics are raised as explicit `UnsupportedSourceError` instances
 with stable codes, source locations, rejected fragments, messages, and hints.
 
 Future resolver increments should stay small, tested, and fail-closed. Case,
-complex array, broader conditional, `extglob`, direct source glob argument
-semantics, recursive functions, non-equivalent branch-defined functions,
-branch-dependent function returns, and runtime-dispatch support should not be
-added as one-off resolver patches; those belong in the evaluator/IR design.
+complex array, broader conditional, `extglob`, direct source positional and
+glob argument semantics, recursive functions, non-equivalent branch-defined
+functions, branch-dependent function returns, and runtime-dispatch support
+should not be added as one-off resolver patches; those belong in the
+evaluator/IR design.

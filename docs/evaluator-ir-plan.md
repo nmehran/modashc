@@ -560,7 +560,7 @@ Remaining glob work:
 
 - explicit iteration limits
 - `extglob`
-- direct source glob multi-match argument semantics
+- direct source positional arguments and glob multi-match argument semantics
 - full `GLOBIGNORE` edge semantics beyond practical path filtering
 
 ### Phase 7: Branch-Aware Conditionals

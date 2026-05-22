@@ -9,7 +9,7 @@ from methods.regex.patterns import (
     VARIABLE_NAME_PATTERN,
     VARIABLE_REFERENCE_PATTERN,
 )
-from methods.source_resolver import SourceResolver
+from methods.source_resolver import SourceResolver, UnsupportedSourceError, parse_shell_words_preserving_quotes
 from methods.shell_line import get_commands
 
 
@@ -36,36 +36,84 @@ def validate_path(path):
     return True
 
 
-def resolve_shell_path_commands(path_command: str, base_dir=None):
-    """Resolve shell functions like $(dirname ...) and $(basename ...)"""
+def shell_utility_dirname(value: str):
+    if value == "":
+        return "."
+    stripped = value.rstrip("/")
+    if stripped == "":
+        return "/"
+    directory = stripped.rsplit("/", 1)[0] if "/" in stripped else "."
+    directory = directory.rstrip("/")
+    return directory or "/"
 
-    def resolve_realpath(path):
-        path = strip_quotes(path)
+
+def shell_utility_basename(value: str, suffix: str = ""):
+    if value == "":
+        return ""
+    stripped = value.rstrip("/")
+    if stripped == "":
+        return "/"
+    basename = stripped.rsplit("/", 1)[-1]
+    if suffix and basename != suffix and basename.endswith(suffix):
+        return basename[:-len(suffix)]
+    return basename
+
+
+def resolve_path_command(command_name: str, arguments: str, base_dir=None):
+    try:
+        words = parse_shell_words_preserving_quotes(arguments)
+    except UnsupportedSourceError:
+        return None
+
+    words = [strip_quotes(word) for word in words]
+    option_like_operands = False
+    if words and words[0] == "--":
+        option_like_operands = True
+        words = words[1:]
+    if not words or (not option_like_operands and any(word.startswith("-") for word in words)):
+        return None
+
+    if command_name == "dirname":
+        if len(words) != 1:
+            return None
+        return shell_utility_dirname(words[0])
+    if command_name == "basename":
+        if len(words) not in {1, 2}:
+            return None
+        return shell_utility_basename(*words)
+    if command_name == "realpath":
+        if len(words) != 1:
+            return None
+        path = words[0]
         if base_dir and not os.path.isabs(path):
             path = os.path.join(base_dir, path)
         return os.path.abspath(path)
+    return None
 
+
+def resolve_shell_path_commands(path_command: str, base_dir=None):
+    """Resolve shell path utilities like $(dirname ...) and $(basename ...)."""
     commands = {
-        'dirname': (os.path.dirname, DIRNAME_PATTERN),
-        'basename': (os.path.basename, BASENAME_PATTERN),
-        'realpath': (resolve_realpath, REALPATH_PATTERN)
+        'dirname': DIRNAME_PATTERN,
+        'basename': BASENAME_PATTERN,
+        'realpath': REALPATH_PATTERN,
     }
 
     while True:
         modified = False
-        for cmd_name, (func, pattern) in commands.items():
+        for cmd_name, pattern in commands.items():
             match = pattern.search(path_command)
             if match:
                 full_match = match.group(0)
-                path_match = match.group(1)
-                result = func(strip_quotes(path_match))
-                # Replace the matched pattern with the result wrapped in an echo statement
+                result = resolve_path_command(cmd_name, match.group(1), base_dir)
+                if result is None:
+                    return path_command
                 path_command = path_command.replace(full_match, result)
                 modified = True
-                break  # Stop after the first replacement to re-evaluate from the start
+                break
 
         if not modified:
-            break  # Exit the loop if no more commands are found
+            break
 
     return path_command
 

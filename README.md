@@ -96,8 +96,9 @@ safe to lower, compilation fails before writing or overwriting the output file.
 - `bash -c "source ..."` classification in context mode
 
 Unsupported or ambiguous dynamic forms fail closed in executable mode. This
-includes direct source globs with multiple matches, unmatched or quoted globs,
-`extglob` patterns, `set -f` / `noglob`, `failglob` unmatched globs,
+includes source commands with positional arguments, direct source globs with
+multiple matches, unmatched or quoted globs, `extglob` patterns, `set -f` /
+`noglob`, `failglob` unmatched globs,
 `GLOBIGNORE` patterns that remove every source match, unsupported command or
 glob-bearing file/bracket conditional predicates, unsupported case subjects or
 arm patterns, unsupported process substitution outside modeled read-loop input,
@@ -170,8 +171,8 @@ Design notes live in [docs](docs/README.md).
 
 - Remaining function semantics, including recursion, branch-dependent returns,
   and runtime-dynamic dispatch.
-- Remaining conditional predicates, `extglob` / direct source glob argument
-  semantics, and broader case pattern semantics.
+- Remaining conditional predicates, `extglob` / direct source positional and
+  glob argument semantics, and broader case pattern semantics.
 
 ## Installation
 

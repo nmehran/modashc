@@ -53,6 +53,8 @@ from methods.sources import (
     resolve_command,
     resolve_shell_path_commands,
     resolve_variable_references,
+    shell_utility_basename,
+    shell_utility_dirname,
 )
 from methods.regex.utilities import strip_matching_quotes
 
@@ -71,6 +73,36 @@ SHELL_OPTION_FLAGS = {
     'm': 'monitor',
     'u': 'nounset',
 }
+VALID_SET_FLAGS = frozenset("abefhkmnptuvxBCEHPT")
+VALID_SET_OPTIONS = frozenset({
+    'allexport',
+    'braceexpand',
+    'emacs',
+    'errexit',
+    'errtrace',
+    'functrace',
+    'hashall',
+    'histexpand',
+    'history',
+    'ignoreeof',
+    'interactive-comments',
+    'keyword',
+    'monitor',
+    'noclobber',
+    'noexec',
+    'noglob',
+    'nolog',
+    'notify',
+    'nounset',
+    'onecmd',
+    'physical',
+    'pipefail',
+    'posix',
+    'privileged',
+    'verbose',
+    'vi',
+    'xtrace',
+})
 SHOPT_SHELL_OPTIONS = frozenset({
     'lastpipe',
 })
@@ -82,6 +114,58 @@ GLOB_SHOPT_OPTIONS = frozenset({
     'nocaseglob',
     'nullglob',
 })
+KNOWN_SHOPT_OPTIONS = frozenset({
+    'assoc_expand_once',
+    'autocd',
+    'cdable_vars',
+    'cdspell',
+    'checkhash',
+    'checkjobs',
+    'checkwinsize',
+    'cmdhist',
+    'compat31',
+    'compat32',
+    'compat40',
+    'compat41',
+    'compat42',
+    'compat43',
+    'compat44',
+    'complete_fullquote',
+    'direxpand',
+    'dirspell',
+    'execfail',
+    'expand_aliases',
+    'extdebug',
+    'extquote',
+    'force_fignore',
+    'globasciiranges',
+    'globskipdots',
+    'gnu_errfmt',
+    'histappend',
+    'histreedit',
+    'histverify',
+    'hostcomplete',
+    'huponexit',
+    'inherit_errexit',
+    'interactive_comments',
+    'lithist',
+    'localvar_inherit',
+    'localvar_unset',
+    'login_shell',
+    'mailwarn',
+    'no_empty_cmd_completion',
+    'nocasematch',
+    'noexpand_translation',
+    'patsub_replacement',
+    'progcomp',
+    'progcomp_alias',
+    'promptvars',
+    'restricted_shell',
+    'shift_verbose',
+    'sourcepath',
+    'varredir_close',
+    'xpg_echo',
+}) | SHOPT_SHELL_OPTIONS | GLOB_SHOPT_OPTIONS
 CONDITION_UNARY_FILE_OPERATORS = frozenset({'-e', '-f', '-d'})
 CONDITION_UNARY_STRING_OPERATORS = frozenset({'-n', '-z'})
 CONDITION_STRING_OPERATORS = frozenset({'=', '==', '!='})
@@ -590,11 +674,19 @@ class SourceEvaluator:
 
     @staticmethod
     def _apply_set(node: SetCommand, state: EvaluationState):
+        status = 0
         index = 0
         while index < len(node.arguments):
             argument = node.arguments[index]
+            if argument == "--":
+                break
+            if not argument.startswith(("-", "+")):
+                break
             if argument in {'-o', '+o'} and index + 1 < len(node.arguments):
                 option = node.arguments[index + 1]
+                if option not in VALID_SET_OPTIONS:
+                    status = 2
+                    break
                 if argument == '-o':
                     state.shell_options.add(option)
                 else:
@@ -604,6 +696,11 @@ class SourceEvaluator:
 
             if len(argument) > 1 and argument[0] in {'-', '+'}:
                 enabled = argument[0] == '-'
+                if argument in {'-o', '+o'}:
+                    break
+                if any(flag not in VALID_SET_FLAGS for flag in argument[1:]):
+                    status = 2
+                    break
                 for flag in argument[1:]:
                     option = SHELL_OPTION_FLAGS.get(flag)
                     if not option:
@@ -613,7 +710,7 @@ class SourceEvaluator:
                     else:
                         state.shell_options.discard(option)
             index += 1
-        state.last_status = 0
+        state.last_status = status
 
     def _apply_for_loop(self, node: ForLoop, state: EvaluationState, stack: tuple[Path, ...]):
         try:
@@ -1342,33 +1439,10 @@ class SourceEvaluator:
         if command_name == "basename":
             if len(values) > 2:
                 raise self._unsupported_loop_words(node, "unsupported basename command substitution operands")
-            return self._lines_output([self._utility_basename(*values)])
+            return self._lines_output([shell_utility_basename(*values)])
 
-        transform = self._utility_dirname
+        transform = shell_utility_dirname
         return self._lines_output([transform(value) for value in values])
-
-    @staticmethod
-    def _utility_dirname(value: str):
-        if value == "":
-            return "."
-        stripped = value.rstrip("/")
-        if stripped == "":
-            return "/"
-        directory = stripped.rsplit("/", 1)[0] if "/" in stripped else "."
-        directory = directory.rstrip("/")
-        return directory or "/"
-
-    @staticmethod
-    def _utility_basename(value: str, suffix: str = ""):
-        if value == "":
-            return ""
-        stripped = value.rstrip("/")
-        if stripped == "":
-            return "/"
-        basename = stripped.rsplit("/", 1)[-1]
-        if suffix and basename != suffix and basename.endswith(suffix):
-            return basename[:-len(suffix)]
-        return basename
 
     def _word_list_path_pairs(self, raw_words: list[str], node, state: EvaluationState):
         pairs = []
@@ -2725,6 +2799,24 @@ class SourceEvaluator:
 
         source_path = Path(resolved_source.path)
         source_value = resolved_source.source_value or self._source_runtime_value(resolved_expression, state)
+        if self._source_site_has_unknown_status_guard(node, state):
+            base_state = state.child_shell_copy()
+            branch_state = state.conditional_copy()
+            self._record_event(
+                source_path,
+                node,
+                node.source_expression,
+                source_site,
+                ExecutionModel.PARENT_SOURCE,
+                "source",
+                state,
+                occurrence_model=OccurrenceModel.CONDITIONAL,
+                source_value=source_value,
+            )
+            self._evaluate_file(source_path, branch_state, stack)
+            self._merge_possible_states(state, [base_state, branch_state])
+            return
+
         if is_context_control_flow:
             branch_state = state.conditional_copy()
             self._record_event(
@@ -2753,6 +2845,10 @@ class SourceEvaluator:
             source_value,
         )
         state.last_status = 0
+
+    @staticmethod
+    def _source_site_has_unknown_status_guard(node: SourceSite, state: EvaluationState):
+        return node.separator in {"&&", "||"} and state.last_status is None
 
     def _source_site_skipped_by_known_status(self, node: SourceSite, state: EvaluationState):
         if node.separator == "&&" and state.last_status not in {None, 0}:
@@ -2788,8 +2884,9 @@ class SourceEvaluator:
             state.last_status = exact_status
             return
 
-        if self._apply_shopt(node, state):
-            state.last_status = 0
+        shopt_status = self._apply_shopt(node, state)
+        if shopt_status is not None:
+            state.last_status = shopt_status
             return
 
         try:
@@ -3416,21 +3513,28 @@ class SourceEvaluator:
     def _apply_shopt(node: RawCommand, state: EvaluationState):
         stripped_text = node.text.strip()
         if not stripped_text.startswith("shopt "):
-            return False
+            return None
 
         try:
             words = parse_shell_words_preserving_quotes(stripped_text)
         except UnsupportedSourceError:
-            return False
+            return None
 
-        if len(words) < 3 or words[0] != "shopt":
-            return False
+        if len(words) < 2 or words[0] != "shopt":
+            return None
 
         action = words[1]
         if action not in {"-s", "-u"}:
-            return False
+            return None
+        if len(words) == 2:
+            return 0
 
+        status = 0
         for option in words[2:]:
+            option = strip_shell_word_quotes(option)
+            if option not in KNOWN_SHOPT_OPTIONS:
+                status = 1
+                continue
             if option not in GLOB_SHOPT_OPTIONS:
                 if option in SHOPT_SHELL_OPTIONS:
                     if action == "-s":
@@ -3442,7 +3546,7 @@ class SourceEvaluator:
                 state.glob_options.add(option)
             else:
                 state.glob_options.discard(option)
-        return True
+        return status
 
     def _record_and_descend(self, source_path: Path, node: SourceSite, source_expression: str, source_site: str,
                             state: EvaluationState, stack: tuple[Path, ...], execution_model: ExecutionModel,

@@ -1,3 +1,4 @@
+import re
 import sys
 import textwrap
 import unittest
@@ -95,12 +96,16 @@ class CompileRegressionTestCase(unittest.TestCase):
         cases = {
             "variable dirname": 'THIS_DIR="$(dirname "$BASH_SOURCE")"\nsource "$THIS_DIR/dep.sh"\necho "main"\n',
             "inline dirname": 'source "$(dirname "$BASH_SOURCE")/dep.sh"\necho "main"\n',
+            "inline dirname bare": 'source "$(dirname dep.sh)/dep.sh"\necho "main"\n',
+            "inline basename trailing slash": 'source "./plugins/$(basename ./plugins/dep.sh/)"\necho "main"\n',
+            "inline basename suffix": 'source "./plugins/$(basename ./plugins/dep.sh .sh).sh"\necho "main"\n',
             "realpath": 'source "$(realpath ./dep.sh)"\necho "main"\n',
         }
 
         for name, content in cases.items():
             with self.subTest(name=name), ScriptProject() as project:
                 project.write("dep.sh", 'echo "dep"\n')
+                project.write("plugins/dep.sh", 'echo "plugin dep"\n')
                 project.write("main.sh", content)
 
                 project.assert_compiled_matches(self, "main.sh")
@@ -1420,6 +1425,56 @@ class CompileRegressionTestCase(unittest.TestCase):
 
             project.assert_compiled_matches(self, "main.sh")
 
+    def test_shell_option_command_status_controls_chained_sources(self):
+        def normalize_shell_error_locations(output: str):
+            return re.sub(r'/tmp/[^:\n]+/(?:main|compiled)\.sh: line \d+', '<script>: line N', output)
+
+        cases = {
+            "invalid shopt": "shopt -s madeup || source ./dep.sh\necho done\n",
+            "mixed shopt applies known option but fails": (
+                "shopt -s madeup nullglob || source ./dep.sh\n"
+                "for dep in ./missing/*.sh; do source \"$dep\"; done\n"
+                "echo done\n"
+            ),
+            "invalid compact set flag": "set -z || source ./dep.sh\necho done\n",
+            "invalid set option": "set -o madeup || source ./dep.sh\necho done\n",
+            "valid monitor set flag": "set -m || source ./dep.sh\necho done\n",
+            "set positional arguments": "set -- || source ./dep.sh\necho done\n",
+            "set bare option listing": "set -o || source ./dep.sh\necho done\n",
+        }
+
+        for name, content in cases.items():
+            with self.subTest(name=name), ScriptProject() as project:
+                project.write("dep.sh", 'echo "dep"\n')
+                project.write("main.sh", content)
+
+                output = project.compile("main.sh", mode="executable")
+                expected = project.run("main.sh")
+                actual = project.run(output)
+
+            self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
+            self.assertEqual(
+                normalize_shell_error_locations(actual.stdout),
+                normalize_shell_error_locations(expected.stdout),
+            )
+
+    def test_unknown_status_guarded_source_preserves_runtime_guard(self):
+        cases = {
+            "guard skips source": "needle\n",
+            "guard runs source": "other\n",
+        }
+
+        for name, config in cases.items():
+            with self.subTest(name=name), ScriptProject() as project:
+                project.write("config", config)
+                project.write("dep.sh", 'echo "dep"\n')
+                project.write("main.sh", textwrap.dedent("""\
+                    grep -q needle config || source ./dep.sh
+                    echo done
+                    """))
+
+                project.assert_compiled_matches(self, "main.sh")
+
     def test_source_inside_multiline_function_matches_bash(self):
         with ScriptProject() as project:
             project.write("runtime.sh", 'echo "runtime"\n')
@@ -1822,6 +1877,7 @@ class CompileRegressionTestCase(unittest.TestCase):
     def test_unsupported_source_families_fail_without_writing_output(self):
         cases = {
             "unknown scalar": ('source "$DEP"\n', 'source "$DEP"'),
+            "source positional arguments": ('source ./dep.sh arg1\n', 'source ./dep.sh arg1'),
             "unsupported command substitution loop pipeline": (
                 'for file in $(cat deps.txt | sort); do source "$file"; done\n',
                 'for file in $(cat deps.txt | sort); do source "$file"; done',
@@ -1892,6 +1948,10 @@ class CompileRegressionTestCase(unittest.TestCase):
             ),
             "divergent if branch state": (
                 'if [[ -n "$USE_A" ]]; then\n  DEP=./a.sh\nelse\n  DEP=./b.sh\nfi\nsource "$DEP"\n',
+                'source "$DEP"',
+            ),
+            "unknown status guarded source state": (
+                'grep -q yes config || source ./setdep.sh\nsource "$DEP"\n',
                 'source "$DEP"',
             ),
             "case block": (
@@ -2000,6 +2060,7 @@ class CompileRegressionTestCase(unittest.TestCase):
             with self.subTest(name=name), ScriptProject() as project:
                 project.write("dep.sh", 'echo "dep"\n')
                 project.write("prod.sh", 'echo "prod"\n')
+                project.write("setdep.sh", 'DEP=./dep.sh\n')
                 project.write("a.sh", 'echo "a"\n')
                 project.write("b.sh", 'echo "b"\n')
                 project.write("config", "enabled=true\n")
