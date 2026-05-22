@@ -213,6 +213,26 @@ class ContextModeTestCase(unittest.TestCase):
         self.assertIn('# modashc: source ./prod.sh -> prod.sh (mutually-exclusive: [[ "$MODE" == prod ]])', content)
         self.assertIn('# modashc: source ./dev.sh -> dev.sh (mutually-exclusive: else)', content)
 
+    def test_context_output_marks_mutually_exclusive_case_sources(self):
+        with ScriptProject() as project:
+            project.write("prod.sh", 'echo "prod body"\n')
+            project.write("dev.sh", 'echo "dev body"\n')
+            project.write("default.sh", 'echo "default body"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                case "$ENV" in
+                  prod|stage) source ./prod.sh ;;
+                  dev) source ./dev.sh ;;
+                  *) source ./default.sh ;;
+                esac
+                """))
+
+            output = project.compile("main.sh")
+            content = output.read_text()
+
+        self.assertIn('# modashc: source ./prod.sh -> prod.sh (mutually-exclusive: case "$ENV" in prod|stage)', content)
+        self.assertIn('# modashc: source ./dev.sh -> dev.sh (mutually-exclusive: case "$ENV" in dev)', content)
+        self.assertIn('# modashc: source ./default.sh -> default.sh (mutually-exclusive: case "$ENV" in *)', content)
+
     def test_context_output_classifies_bash_c_source_as_child_shell(self):
         with ScriptProject() as project:
             project.write("dep.sh", 'echo "dep body"\n')

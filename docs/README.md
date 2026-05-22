@@ -10,7 +10,7 @@ keep only in code comments or tests.
   code.
 - [Next-Generation Evaluator And IR Plan](evaluator-ir-plan.md): Deferred
   architecture plan and current implementation status for the source-effect IR,
-  evaluator, and remaining loop, glob, case, and function work.
+  evaluator, and remaining loop, glob, conditional, and function work.
 
 ## Planned Specs
 
@@ -24,8 +24,8 @@ These require more evaluator coverage before executable lowering can be exact.
 The intended approach is captured in the
 [Next-Generation Evaluator And IR Plan](evaluator-ir-plan.md):
 
-- Case-driven source discovery
 - Broader conditional predicate support
 - Complex array/list iteration
 - Broader glob semantics
+- Broader case pattern and fallthrough semantics
 - Runtime dispatch and user-defined source-path functions

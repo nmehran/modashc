@@ -14,7 +14,9 @@ Modeled `if` / `elif` / `else` blocks can lower source sites inside branches
 when branch predicates are side-effect-free and branch state is exact enough for
 later source resolution. Executable mode neutralizes source sites in statically
 unreachable branches instead of resolving or preserving them as live runtime
-sources.
+sources. Exact `case` blocks can lower source sites for known scalar subjects
+and modeled arm patterns, with non-matching arm sources neutralized in
+executable output.
 Unsupported forms fail closed.
 
 ## Goal
@@ -413,7 +415,7 @@ scope:
   source globs are implemented for one-match cases only.
 - Branch-aware `if` / `elif` / `else` source lowering is implemented for the
   side-effect-free predicate subset and fail-closed branch-state merge.
-- Exact `case` source lowering is planned next for known scalar subjects,
+- Exact `case` source lowering is implemented for known scalar subjects,
   mutually exclusive arms, and no-op unreachable source sites.
 - Executable mode fails before output when unsupported source forms would leave
   live runtime `source` commands.

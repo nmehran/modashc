@@ -155,6 +155,90 @@ class SourceEvaluatorTestCase(unittest.TestCase):
         self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.if-condition")
         self.assertEqual(cm.exception.diagnostic.location.line, 1)
 
+    def test_case_block_exact_subject_selects_matching_arm(self):
+        with ScriptProject() as project:
+            prod = project.write("prod.sh", 'echo "prod"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                ENV=prod
+                case "$ENV" in
+                  prod) source ./prod.sh ;;
+                  dev) source ./missing-dev.sh ;;
+                esac
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [prod])
+        self.assertEqual(result.events[0].occurrence_model, OccurrenceModel.MUTUALLY_EXCLUSIVE)
+        self.assertEqual(result.events[0].condition, 'case "$ENV" in prod')
+        self.assertEqual([disabled.source_site for disabled in result.disabled_sources], ["source ./missing-dev.sh"])
+
+    def test_case_block_default_arm_is_selected_when_no_pattern_matches(self):
+        with ScriptProject() as project:
+            default = project.write("default.sh", 'echo "default"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                ENV=qa
+                case "$ENV" in
+                  prod) source ./missing-prod.sh ;;
+                  *) source ./default.sh ;;
+                esac
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [default])
+        self.assertEqual(result.events[0].condition, 'case "$ENV" in *')
+        self.assertEqual([disabled.source_site for disabled in result.disabled_sources], ["source ./missing-prod.sh"])
+
+    def test_case_block_converged_arm_state_is_available_after_merge(self):
+        with ScriptProject() as project:
+            dep = project.write("dep.sh", 'echo "dep"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                ENV=prod
+                case "$ENV" in
+                  prod) DEP=./dep.sh ;;
+                  dev) DEP=./missing.sh ;;
+                esac
+                source "$DEP"
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [dep])
+        self.assertIsNone(result.events[0].condition)
+
+    def test_case_block_unknown_subject_raises_structured_diagnostic(self):
+        with ScriptProject() as project:
+            project.write("prod.sh", 'echo "prod"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                case "$ENV" in
+                  prod) source ./prod.sh ;;
+                esac
+                """))
+
+            with self.assertRaisesRegex(NotImplementedError, "case subject") as cm:
+                SourceEvaluator().evaluate(entry)
+
+        self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.case-subject")
+        self.assertEqual(cm.exception.diagnostic.location.line, 1)
+
+    def test_case_block_fallthrough_terminator_raises_structured_diagnostic(self):
+        with ScriptProject() as project:
+            project.write("prod.sh", 'echo "prod"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                ENV=prod
+                case "$ENV" in
+                  prod) source ./prod.sh ;&
+                  *) echo done ;;
+                esac
+                """))
+
+            with self.assertRaisesRegex(NotImplementedError, "case terminator") as cm:
+                SourceEvaluator().evaluate(entry)
+
+        self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.case-terminator")
+        self.assertEqual(cm.exception.diagnostic.location.line, 2)
+
     def test_context_control_flow_source_is_conditional_and_does_not_leak_state(self):
         with ScriptProject() as project:
             optional = project.write("optional.sh", 'NEXT=./next.sh\nsource ./nested.sh\n')

@@ -67,18 +67,21 @@ safe to lower, compilation fails before writing or overwriting the output file.
 - direct source globs only when the glob resolves to exactly one file
 - branch-aware `if` / `elif` / `else` blocks with side-effect-free file,
   non-empty, empty, and exact string predicates
+- exact `case` blocks over known scalar subjects, with literal, alternate,
+  default, quoted literal, and ordinary glob arm patterns
 - `bash -c "source ..."` classification in context mode
 
 Unsupported or ambiguous dynamic forms fail closed in executable mode. This
 includes direct source globs with multiple matches, unmatched or quoted globs,
 globstar/brace/extglob-style patterns, glob-affecting shell options,
-scalar word-list splitting, unsupported conditional predicates, case-driven
-sources, process substitution, user-defined source-path functions, nested
-dynamic substitutions, and multi-result `cat` or `find` output.
+scalar word-list splitting, unsupported conditional predicates, unsupported
+case subjects or arm patterns, process substitution, user-defined source-path
+functions, nested dynamic substitutions, and multi-result `cat` or `find`
+output.
 
-Control-flow evaluation beyond exact finite loops and modeled `if` blocks is
-intentionally fail-closed until case, broader glob, and function semantics are
-modeled. See
+Control-flow evaluation beyond exact finite loops, modeled `if` blocks, and
+exact `case` blocks is intentionally fail-closed until broader glob,
+conditional, and function semantics are modeled. See
 [Dynamic Source Resolution](docs/dynamic-source-resolution.md) for the current
 resolver contract and [Evaluator And IR Plan](docs/evaluator-ir-plan.md) for
 the remaining pattern families.

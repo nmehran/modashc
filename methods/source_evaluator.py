@@ -5,12 +5,14 @@ import os
 import re
 from collections import Counter
 from dataclasses import dataclass, field
+from fnmatch import fnmatchcase
 from pathlib import Path
 
 from methods.source_diagnostics import unsupported_source_error, with_source_diagnostic
 from methods.source_effects import (
     ArrayAssignment,
     Assignment,
+    CaseBlock,
     CdCommand,
     DisabledSourceSite,
     EvaluationResult,
@@ -213,6 +215,8 @@ class SourceEvaluator:
                 self._apply_for_loop(node, state, stack)
             elif isinstance(node, IfBlock):
                 self._apply_if_block(node, state, stack)
+            elif isinstance(node, CaseBlock):
+                self._apply_case_block(node, state, stack)
             elif isinstance(node, SourceSite):
                 self._apply_source_site(node, state, stack)
             elif isinstance(node, RawCommand):
@@ -495,6 +499,237 @@ class SourceEvaluator:
         if fallthrough_possible:
             possible_states.append(base_state)
         return possible_states
+
+    def _apply_case_block(self, node: CaseBlock, state: EvaluationState, stack: tuple[Path, ...]):
+        outer_occurrence_context = state.occurrence_context
+        outer_condition_context = state.condition_context
+        try:
+            subject_value = self._case_subject_value(node.subject, state)
+            self._validate_case_patterns(node)
+        except UnsupportedSourceError as exc:
+            if self.mode == "context":
+                subject_value = None
+            else:
+                raise self._unsupported_case(
+                    node,
+                    exc.code or "unsupported.source.case",
+                    str(exc),
+                    exc.hint,
+                ) from exc
+
+        if self.mode == "executable":
+            self._ensure_case_terminators_supported(node)
+
+        if self.mode == "context":
+            self._apply_context_case_block(node, state, stack, subject_value)
+            state.occurrence_context = outer_occurrence_context
+            state.condition_context = outer_condition_context
+            return
+
+        if subject_value is None:
+            if not self._nodes_may_source(node.arms):
+                self._apply_source_free_unknown_case_block(node, state, stack)
+                state.occurrence_context = outer_occurrence_context
+                state.condition_context = outer_condition_context
+                return
+            raise self._unsupported_case(
+                node,
+                "unsupported.source.case-subject",
+                "unsupported case subject",
+                "Use a literal, known scalar variable, or environment-provided subject.",
+            )
+
+        base_state = state.child_shell_copy()
+        arm_states = []
+        reachable_arms = self._case_arm_reachability(node, subject_value)
+        occurrence_model = (
+            OccurrenceModel.MUTUALLY_EXCLUSIVE
+            if len(node.arms) > 1
+            else OccurrenceModel.CONDITIONAL
+        )
+
+        for arm, is_reachable in zip(node.arms, reachable_arms):
+            condition = self._case_arm_condition(node, arm)
+            if not is_reachable:
+                self._disable_unreachable_sources(arm.body, condition)
+                arm_states.append(base_state.child_shell_copy())
+                continue
+
+            arm_state = state.child_shell_copy()
+            arm_state.occurrence_context = occurrence_model
+            arm_state.condition_context = condition
+            self._evaluate_nodes(arm.body, arm_state, stack)
+            arm_states.append(arm_state)
+
+        possible_states = [
+            arm_state
+            for arm_state, is_reachable in zip(arm_states, reachable_arms)
+            if is_reachable
+        ] or [base_state]
+        self._merge_possible_states(state, possible_states)
+        state.occurrence_context = outer_occurrence_context
+        state.condition_context = outer_condition_context
+
+    def _apply_context_case_block(
+        self,
+        node: CaseBlock,
+        state: EvaluationState,
+        stack: tuple[Path, ...],
+        subject_value: str | None,
+    ):
+        occurrence_model = (
+            OccurrenceModel.MUTUALLY_EXCLUSIVE
+            if len(node.arms) > 1
+            else OccurrenceModel.CONDITIONAL
+        )
+        arm_states = []
+
+        for arm in node.arms:
+            arm_state = state.child_shell_copy()
+            arm_state.occurrence_context = occurrence_model
+            arm_state.condition_context = self._case_arm_condition(node, arm)
+            self._evaluate_nodes(arm.body, arm_state, stack)
+            arm_states.append(arm_state)
+
+        if subject_value is None:
+            possible_states = arm_states
+            if not self._case_has_default_arm(node):
+                possible_states.append(state.child_shell_copy())
+        else:
+            reachable_arms = self._case_arm_reachability(node, subject_value)
+            possible_states = [
+                arm_state
+                for arm_state, is_reachable in zip(arm_states, reachable_arms)
+                if is_reachable
+            ] or [state.child_shell_copy()]
+
+        self._merge_possible_states(state, possible_states)
+
+    def _apply_source_free_unknown_case_block(self, node: CaseBlock, state: EvaluationState, stack: tuple[Path, ...]):
+        arm_states = []
+
+        for arm in node.arms:
+            arm_state = state.child_shell_copy()
+            arm_state.occurrence_context = OccurrenceModel.MUTUALLY_EXCLUSIVE
+            arm_state.condition_context = self._case_arm_condition(node, arm)
+            self._evaluate_nodes(arm.body, arm_state, stack)
+            arm_states.append(arm_state)
+
+        possible_states = arm_states
+        if not self._case_has_default_arm(node):
+            possible_states.append(state.child_shell_copy())
+        self._merge_possible_states(state, possible_states)
+
+    def _case_subject_value(self, subject: str, state: EvaluationState):
+        subject = subject.strip()
+        if '$(' in subject or '`' in subject:
+            raise UnsupportedSourceError(
+                f"unsupported dynamic case subject: {subject}",
+                code="unsupported.source.case-subject",
+                hint="Use a literal, known scalar variable, or environment-provided subject.",
+            )
+        if ARRAY_INDEX_PATTERN.search(subject):
+            raise UnsupportedSourceError(
+                f"unsupported array case subject: {subject}",
+                code="unsupported.source.case-subject",
+                hint="Array case subjects need explicit array semantics.",
+            )
+
+        value = self._condition_value(subject, state)
+        if value is not None:
+            return value
+
+        expanded = os.path.expandvars(strip_matching_quotes(subject))
+        return None if "$" in expanded else expanded
+
+    def _validate_case_patterns(self, node: CaseBlock):
+        for arm in node.arms:
+            for pattern in arm.patterns:
+                self._validate_case_pattern(pattern)
+
+    @staticmethod
+    def _validate_case_pattern(pattern: str):
+        stripped_pattern = pattern.strip()
+        if '$(' in stripped_pattern or '`' in stripped_pattern:
+            raise UnsupportedSourceError(
+                f"unsupported dynamic case pattern: {stripped_pattern}",
+                code="unsupported.source.case-pattern",
+                hint="Use literal case patterns in the modeled subset.",
+            )
+        variable_names = {
+            match.group(1) or match.group(2)
+            for match in SCALAR_REFERENCE_PATTERN.finditer(stripped_pattern)
+        }
+        if variable_names:
+            raise UnsupportedSourceError(
+                f"unsupported variable case pattern: {stripped_pattern}",
+                code="unsupported.source.case-pattern",
+                hint="Variable-expanded case patterns need explicit pattern expansion semantics.",
+            )
+        if any(contains_unquoted_token(stripped_pattern, token) for token in {"@(", "!(", "+(", "?(", "*("}):
+            raise UnsupportedSourceError(
+                f"unsupported extglob case pattern: {stripped_pattern}",
+                code="unsupported.source.case-pattern",
+                hint="Extglob case patterns need explicit shell-option semantics.",
+            )
+
+    def _ensure_case_terminators_supported(self, node: CaseBlock):
+        for arm in node.arms:
+            if arm.terminator != ";;":
+                raise self._unsupported_case(
+                    node,
+                    "unsupported.source.case-terminator",
+                    f"unsupported case terminator: {arm.terminator}",
+                    "Case fallthrough terminators need explicit fallthrough semantics.",
+                )
+
+    def _case_arm_reachability(self, node: CaseBlock, subject_value: str):
+        reachable = []
+        matched = False
+        for arm in node.arms:
+            is_match = not matched and self._case_arm_matches(arm, subject_value)
+            reachable.append(is_match)
+            matched = matched or is_match
+        return reachable
+
+    def _case_arm_matches(self, arm, subject_value: str):
+        return any(self._case_pattern_matches(pattern, subject_value) for pattern in arm.patterns)
+
+    @staticmethod
+    def _case_pattern_matches(pattern: str, subject_value: str):
+        stripped_pattern = pattern.strip()
+        quoted = (
+            len(stripped_pattern) >= 2
+            and stripped_pattern[0] == stripped_pattern[-1]
+            and stripped_pattern[0] in {"'", '"'}
+        )
+        pattern_value = strip_matching_quotes(stripped_pattern)
+        if quoted:
+            return subject_value == pattern_value
+        return fnmatchcase(subject_value, pattern_value)
+
+    @staticmethod
+    def _case_has_default_arm(node: CaseBlock):
+        return any(
+            any(SourceEvaluator._case_pattern_matches(pattern, "") for pattern in arm.patterns)
+            for arm in node.arms
+        )
+
+    @staticmethod
+    def _case_arm_condition(node: CaseBlock, arm):
+        return f"case {node.subject} in {'|'.join(arm.patterns)}"
+
+    @staticmethod
+    def _unsupported_case(node: CaseBlock, code: str, message: str, hint: str | None = None):
+        return unsupported_source_error(
+            str(node.location.path),
+            node.location.line - 1,
+            node.text,
+            node.text,
+            code,
+            message,
+            hint,
+        )
 
     @staticmethod
     def _merge_possible_states(target: EvaluationState, possible_states: list[EvaluationState]):
@@ -878,6 +1113,30 @@ class SourceEvaluator:
             elif isinstance(node, IfBlock):
                 for branch in node.branches:
                     self._disable_unreachable_sources(branch.body, branch.condition or "else")
+            elif isinstance(node, CaseBlock):
+                for arm in node.arms:
+                    self._disable_unreachable_sources(arm.body, self._case_arm_condition(node, arm))
+
+    def _nodes_may_source(self, arms):
+        for arm in arms:
+            if self._node_list_may_source(arm.body):
+                return True
+        return False
+
+    def _node_list_may_source(self, nodes):
+        for node in nodes:
+            if isinstance(node, SourceSite):
+                return True
+            if isinstance(node, RawCommand) and self._raw_command_may_source(node.text):
+                return True
+            if isinstance(node, ForLoop) and self._node_list_may_source(node.body):
+                return True
+            if isinstance(node, IfBlock):
+                if any(self._node_list_may_source(branch.body) for branch in node.branches):
+                    return True
+            if isinstance(node, CaseBlock) and self._nodes_may_source(node.arms):
+                return True
+        return False
 
     @staticmethod
     def _raw_command_may_source(command: str):

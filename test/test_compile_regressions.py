@@ -397,6 +397,128 @@ class CompileRegressionTestCase(unittest.TestCase):
 
                 project.assert_compiled_matches(self, "main.sh")
 
+    def test_case_block_sources_match_bash(self):
+        cases = {
+            "assigned subject": (
+                textwrap.dedent("""\
+                    ENV=prod
+                    case "$ENV" in
+                      prod) source ./prod.sh ;;
+                      dev) source ./missing-dev.sh ;;
+                    esac
+                    echo "main"
+                    """),
+                None,
+            ),
+            "environment subject": (
+                textwrap.dedent("""\
+                    case "$ENV" in
+                      prod) source ./prod.sh ;;
+                      dev) source ./dev.sh ;;
+                    esac
+                    echo "main"
+                    """),
+                {"ENV": "dev"},
+            ),
+            "default arm": (
+                textwrap.dedent("""\
+                    ENV=qa
+                    case "$ENV" in
+                      prod) source ./missing-prod.sh ;;
+                      *) source ./default.sh ;;
+                    esac
+                    echo "main"
+                    """),
+                None,
+            ),
+            "alternate patterns": (
+                textwrap.dedent("""\
+                    ENV=stage
+                    case "$ENV" in
+                      prod|stage) source ./prod.sh ;;
+                      dev) source ./missing-dev.sh ;;
+                    esac
+                    echo "main"
+                    """),
+                None,
+            ),
+            "glob pattern": (
+                textwrap.dedent("""\
+                    ENV=prod-eu
+                    case "$ENV" in
+                      prod-*) source ./prod.sh ;;
+                      dev) source ./missing-dev.sh ;;
+                    esac
+                    echo "main"
+                    """),
+                None,
+            ),
+            "quoted literal pattern": (
+                textwrap.dedent("""\
+                    ENV='prod-*'
+                    case "$ENV" in
+                      "prod-*") source ./prod.sh ;;
+                      *) source ./missing-default.sh ;;
+                    esac
+                    echo "main"
+                    """),
+                None,
+            ),
+            "no matching arm": (
+                textwrap.dedent("""\
+                    ENV=qa
+                    case "$ENV" in
+                      prod) source ./missing-prod.sh ;;
+                      dev) source ./missing-dev.sh ;;
+                    esac
+                    echo "main"
+                    """),
+                None,
+            ),
+            "inline arms": (
+                textwrap.dedent("""\
+                    ENV=prod
+                    case "$ENV" in prod) source ./prod.sh ;; dev) source ./missing-dev.sh ;; esac
+                    echo "main"
+                    """),
+                None,
+            ),
+            "unknown source-free case": (
+                textwrap.dedent("""\
+                    case "$ENV" in
+                      prod) echo "prod mode" ;;
+                      *) echo "other mode" ;;
+                    esac
+                    source ./prod.sh
+                    echo "main"
+                    """),
+                None,
+            ),
+        }
+
+        for name, (content, env) in cases.items():
+            with self.subTest(name=name), ScriptProject() as project:
+                project.write("prod.sh", 'echo "prod:$ENV"\n')
+                project.write("dev.sh", 'echo "dev:$ENV"\n')
+                project.write("default.sh", 'echo "default:$ENV"\n')
+                project.write("main.sh", content)
+
+                project.assert_compiled_matches(self, "main.sh", env=env)
+
+    def test_case_block_state_after_arm_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "after:$DEP"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                ENV=prod
+                case "$ENV" in
+                  prod) DEP=./dep.sh ;;
+                  dev) DEP=./missing.sh ;;
+                esac
+                source "$DEP"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
     def test_if_branch_local_state_matches_bash(self):
         with ScriptProject() as project:
             project.write("a.sh", 'echo "branch:a:$DEP"\n')
@@ -685,7 +807,23 @@ class CompileRegressionTestCase(unittest.TestCase):
             ),
             "case block": (
                 'case "$ENV" in\n  prod) source ./prod.sh ;;\nesac\n',
-                'prod) source ./prod.sh',
+                'case "$ENV" in',
+            ),
+            "case fallthrough": (
+                'ENV=prod\ncase "$ENV" in\n  prod) source ./prod.sh ;&\n  *) source ./dev.sh ;;\nesac\n',
+                'case "$ENV" in',
+            ),
+            "case dynamic subject": (
+                'case "$(cat env.txt)" in\n  prod) source ./prod.sh ;;\nesac\n',
+                'case "$(cat env.txt)" in',
+            ),
+            "case variable pattern": (
+                'ENV=prod\nPATTERN=prod\ncase "$ENV" in\n  "$PATTERN") source ./prod.sh ;;\nesac\n',
+                'case "$ENV" in',
+            ),
+            "case divergent state": (
+                'case "$ENV" in\n  prod) DEP=./a.sh ;;\n  dev) DEP=./b.sh ;;\nesac\nsource "$DEP"\n',
+                'source "$DEP"',
             ),
             "command builtin source": (
                 'command source ./dep.sh\n',

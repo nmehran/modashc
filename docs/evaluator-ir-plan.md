@@ -520,9 +520,9 @@ that divergent state; then executable mode fails before output.
 
 ### Phase 8: Case Statements
 
-Support exact subjects and mutually exclusive source arms. Reuse the branch
-state merge model from `if` blocks. Source sites in non-matching arms should be
-replaced with no-ops in executable output.
+Implemented for exact subjects and mutually exclusive source arms. The
+evaluator reuses the branch-state merge model from `if` blocks. Source sites in
+non-matching arms are replaced with no-ops in executable output.
 
 ### Phase 9: Modeled Functions
 
