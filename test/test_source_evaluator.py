@@ -201,6 +201,16 @@ class SourceEvaluatorTestCase(unittest.TestCase):
         self.assertEqual([event.path for event in result.events], [first, second])
         self.assertEqual([event.source_value for event in result.events], ["./plugins/a.sh", "./plugins/b.sh"])
 
+    def test_direct_glob_source_event_uses_matched_runtime_word(self):
+        with ScriptProject() as project:
+            dep = project.write("plugins/only.sh", 'echo "only"\n')
+            entry = project.write("main.sh", 'source ./plugins/*.sh\n')
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [dep])
+        self.assertEqual([event.source_value for event in result.events], ["./plugins/only.sh"])
+
     def test_unsupported_for_loop_words_raise_structured_diagnostic(self):
         cases = {
             "command substitution": 'for dep in $(cat deps.txt); do source "$dep"; done\n',

@@ -392,7 +392,7 @@ class SourceEvaluator:
             )
 
         source_path = Path(resolved_source.path)
-        source_value = self._source_runtime_value(resolved_expression, state)
+        source_value = resolved_source.source_value or self._source_runtime_value(resolved_expression, state)
         if is_context_control_flow:
             branch_state = state.conditional_copy()
             self._record_event(
