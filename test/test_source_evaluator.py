@@ -1031,6 +1031,64 @@ class SourceEvaluatorTestCase(unittest.TestCase):
 
         self.assertEqual([event.path for event in result.events], [first, second])
 
+    def test_producer_read_loop_sources_are_evaluated(self):
+        with ScriptProject() as project:
+            first = project.write("plugins/a.sh", 'echo "a"\n')
+            second = project.write("plugins/b.sh", 'echo "b"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                find ./plugins -type f -name '*.sh' -print | while read -r dep; do
+                  source "$dep"
+                done
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [first, second])
+        self.assertNotIn("dep", result.final_state.variables)
+
+        with ScriptProject() as project:
+            first = project.write("generated/a.sh", 'echo "a"\n')
+            second = project.write("generated/b.sh", 'echo "b"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                while read -r dep; do
+                  source "$dep"
+                done < <(find ./generated -type f -name '*.sh' -print)
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [first, second])
+        self.assertEqual(result.final_state.variables["dep"], "./generated/b.sh")
+
+    def test_practical_command_producer_loop_sources_are_evaluated(self):
+        with ScriptProject() as project:
+            first = project.write("a.sh", 'echo "a"\n')
+            second = project.write("b.sh", 'echo "b"\n')
+            project.write("deps.txt", "./b.sh\n./a.sh\n")
+            entry = project.write("main.sh", textwrap.dedent("""\
+                for dep in $(sort deps.txt); do
+                  source "$dep"
+                done
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [first, second])
+
+        with ScriptProject() as project:
+            first = project.write("deps/a.sh", 'echo "needle"\n')
+            second = project.write("deps/b.sh", 'echo "needle"\n')
+            project.write("deps/c.sh", 'echo "other"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                for dep in $(grep -lF needle ./deps/*.sh); do
+                  source "$dep"
+                done
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [first, second])
+
     def test_richer_array_sources_are_evaluated(self):
         with ScriptProject() as project:
             first = project.write("a.sh", 'echo "a"\n')

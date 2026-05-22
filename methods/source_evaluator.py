@@ -220,6 +220,7 @@ class LoopContinueSignal(Exception):
 class ReadLoopWords:
     variable: str
     values: tuple[str, ...]
+    child_shell: bool = False
 
 
 @dataclass
@@ -782,19 +783,20 @@ class SourceEvaluator:
             if not read_words.values:
                 self._disable_unreachable_sources(node.body, f"{node.keyword} {node.condition}")
                 return
+            loop_state = state.child_shell_copy() if read_words.child_shell else state
             for value in read_words.values:
-                state.variables[read_words.variable] = value
-                state.runtime_variables[read_words.variable] = value
-                state.ambiguous_variables.discard(read_words.variable)
-                state.loop_depth += 1
+                loop_state.variables[read_words.variable] = value
+                loop_state.runtime_variables[read_words.variable] = value
+                loop_state.ambiguous_variables.discard(read_words.variable)
+                loop_state.loop_depth += 1
                 try:
-                    self._evaluate_nodes(node.body, state, stack)
+                    self._evaluate_nodes(node.body, loop_state, stack)
                 except LoopContinueSignal:
                     continue
                 except LoopBreakSignal:
                     break
                 finally:
-                    state.loop_depth -= 1
+                    loop_state.loop_depth -= 1
             return
 
         for iteration in range(MAX_MODELED_LOOP_ITERATIONS):
@@ -856,7 +858,7 @@ class SourceEvaluator:
     def _read_loop_words(self, node: WhileLoop, state: EvaluationState):
         if node.keyword != "while":
             return None
-        if not node.trailing.startswith("<"):
+        if not node.trailing.startswith("<") and not node.producer:
             return None
 
         read_condition, include_incomplete, nonempty_word = self._split_read_loop_nonempty_tail(node.condition)
@@ -889,6 +891,23 @@ class SourceEvaluator:
         if nonempty_word is not None and self._read_loop_nonempty_variable(nonempty_word) != variable:
             raise self._unsupported_loop_condition(node, "unsupported read loop nonempty guard")
 
+        values = []
+        child_shell, lines = self._read_loop_input_lines(node, state, include_incomplete)
+        for line in lines:
+            value = self._read_loop_value(line, read_ifs)
+            values.append(value)
+        return ReadLoopWords(variable, tuple(values), child_shell=child_shell)
+
+    def _read_loop_input_lines(self, node: WhileLoop, state: EvaluationState, include_incomplete: bool):
+        if node.producer:
+            output = self._evaluate_safe_word_list_command(node.producer, node, state)
+            return True, self._read_loop_lines_from_content(output, include_incomplete)
+
+        process_substitution = self._read_loop_process_substitution(node.trailing)
+        if process_substitution is not None:
+            output = self._evaluate_safe_word_list_command(process_substitution, node, state)
+            return False, self._read_loop_lines_from_content(output, include_incomplete)
+
         trailing_words = parse_shell_words_preserving_quotes(node.trailing)
         if len(trailing_words) != 2 or trailing_words[0] != "<":
             raise self._unsupported_loop_condition(node, "unsupported read loop redirection")
@@ -896,12 +915,12 @@ class SourceEvaluator:
         input_path = self._word_list_path(strip_shell_word_quotes(trailing_words[1]), node, state)
         if not input_path.is_file():
             raise self._unsupported_loop_condition(node, "unsupported read loop input path")
+        return False, self._read_loop_lines(input_path, include_incomplete)
 
-        values = []
-        for line in self._read_loop_lines(input_path, include_incomplete):
-            value = self._read_loop_value(line, read_ifs)
-            values.append(value)
-        return ReadLoopWords(variable, tuple(values))
+    @staticmethod
+    def _read_loop_process_substitution(trailing: str):
+        match = re.fullmatch(r'<\s*<\((.*)\)\s*', trailing)
+        return match.group(1).strip() if match else None
 
     @staticmethod
     def _split_read_loop_nonempty_tail(condition: str):
@@ -928,6 +947,10 @@ class SourceEvaluator:
     def _read_loop_lines(path: Path, include_incomplete: bool):
         with path.open("r", newline="") as file:
             content = file.read()
+        return SourceEvaluator._read_loop_lines_from_content(content, include_incomplete)
+
+    @staticmethod
+    def _read_loop_lines_from_content(content: str, include_incomplete: bool):
         if not content:
             return []
         lines = content.split("\n")
@@ -1087,6 +1110,16 @@ class SourceEvaluator:
             return self._evaluate_find_word_list(words, node, state)
         if command_name == "printf":
             return self._evaluate_printf_word_list(words, node, state)
+        if command_name == "sort":
+            return self._evaluate_sort_word_list(words, node, state)
+        if command_name == "head":
+            return self._evaluate_head_word_list(words, node, state)
+        if command_name == "grep":
+            return self._evaluate_grep_word_list(words, node, state)
+        if command_name == "realpath":
+            return self._evaluate_realpath_word_list(words, node, state)
+        if command_name in {"dirname", "basename"}:
+            return self._evaluate_path_transform_word_list(command_name, words, node, state)
         raise self._unsupported_loop_words(node, f"unsupported command substitution: {command_name}")
 
     def _evaluate_cat_word_list(self, words: list[str], node, state: EvaluationState):
@@ -1100,7 +1133,7 @@ class SourceEvaluator:
             path = self._word_list_path(path_word, node, state)
             if not path.is_file():
                 raise self._unsupported_loop_words(node, "unsupported cat command substitution path")
-            output.append(path.read_text())
+            output.append(self._read_text_preserving_newlines(path))
         return ''.join(output)
 
     def _evaluate_find_word_list(self, words: list[str], node, state: EvaluationState):
@@ -1115,7 +1148,7 @@ class SourceEvaluator:
         roots, filters = parsed_find
         root_words = self._find_root_words(stripped_words)
         matches = self._find_word_list_matches(root_words, roots, filters, node, state)
-        return "\n".join(matches)
+        return self._lines_output(matches)
 
     @staticmethod
     def _find_root_words(words: list[str]):
@@ -1178,7 +1211,151 @@ class SourceEvaluator:
             self._resolve_exact_runtime_word(strip_shell_word_quotes(word), node, state, "loop word list")
             for word in words[2:]
         ]
-        return "\n".join(values)
+        return self._lines_output(values)
+
+    def _evaluate_sort_word_list(self, words: list[str], node, state: EvaluationState):
+        unique = False
+        path_words = []
+        for raw_word in words[1:]:
+            word = strip_shell_word_quotes(raw_word)
+            if word == "-u":
+                unique = True
+                continue
+            if word.startswith("-"):
+                raise self._unsupported_loop_words(node, "unsupported sort command substitution option")
+            path_words.append(raw_word)
+        if not path_words:
+            raise self._unsupported_loop_words(node, "unsupported sort command substitution without file operands")
+
+        lines = []
+        for _, path in self._word_list_path_pairs(path_words, node, state):
+            lines.extend(self._command_output_lines(self._read_text_preserving_newlines(path)))
+        sorted_lines = sorted(lines)
+        if unique:
+            sorted_lines = list(dict.fromkeys(sorted_lines))
+        return self._lines_output(sorted_lines)
+
+    def _evaluate_head_word_list(self, words: list[str], node, state: EvaluationState):
+        count = None
+        index = 1
+        if index < len(words):
+            first = strip_shell_word_quotes(words[index])
+            if first == "-n":
+                if index + 1 >= len(words):
+                    raise self._unsupported_loop_words(node, "unsupported head command substitution count")
+                count = self._head_count(strip_shell_word_quotes(words[index + 1]), node)
+                index += 2
+            elif re.fullmatch(r'-\d+', first):
+                count = self._head_count(first[1:], node)
+                index += 1
+        if count is None:
+            count = 10
+
+        path_words = words[index:]
+        if len(path_words) != 1:
+            raise self._unsupported_loop_words(node, "unsupported head command substitution operands")
+        _, path = self._word_list_path_pairs(path_words, node, state)[0]
+        return ''.join(self._read_text_preserving_newlines(path).splitlines(keepends=True)[:count])
+
+    def _evaluate_grep_word_list(self, words: list[str], node, state: EvaluationState):
+        literal = False
+        extended_regex = False
+        list_matches = False
+        index = 1
+        while index < len(words):
+            option = strip_shell_word_quotes(words[index])
+            if not option.startswith("-") or option == "-":
+                break
+            if option == "--":
+                index += 1
+                break
+            for flag in option[1:]:
+                if flag == "l":
+                    list_matches = True
+                elif flag == "F":
+                    literal = True
+                elif flag == "E":
+                    extended_regex = True
+                else:
+                    raise self._unsupported_loop_words(node, "unsupported grep command substitution option")
+            index += 1
+
+        if not list_matches or literal == extended_regex:
+            raise self._unsupported_loop_words(node, "unsupported grep command substitution mode")
+        if index >= len(words):
+            raise self._unsupported_loop_words(node, "unsupported grep command substitution pattern")
+        pattern = strip_shell_word_quotes(words[index])
+        path_words = words[index + 1:]
+        if not path_words:
+            raise self._unsupported_loop_words(node, "unsupported grep command substitution without file operands")
+
+        regex = None
+        if extended_regex:
+            self._ensure_supported_regex_pattern(pattern, node.text, "grep regex")
+            regex = re.compile(pattern)
+
+        output = []
+        for display_word, path in self._word_list_path_pairs(path_words, node, state):
+            content = self._read_text_preserving_newlines(path)
+            matched = pattern in content if literal else bool(regex.search(content))
+            if matched:
+                output.append(display_word)
+        return self._lines_output(output)
+
+    def _evaluate_realpath_word_list(self, words: list[str], node, state: EvaluationState):
+        if len(words) < 2:
+            raise self._unsupported_loop_words(node, "unsupported realpath command substitution without operands")
+        paths = self._word_list_path_pairs(words[1:], node, state)
+        return self._lines_output([str(path.resolve()) for _, path in paths])
+
+    def _evaluate_path_transform_word_list(self, command_name: str, words: list[str], node, state: EvaluationState):
+        if len(words) < 2:
+            raise self._unsupported_loop_words(node, f"unsupported {command_name} command substitution without operands")
+        values = [
+            self._resolve_exact_runtime_word(strip_shell_word_quotes(word), node, state, "loop word list")
+            for word in words[1:]
+        ]
+        transform = os.path.dirname if command_name == "dirname" else os.path.basename
+        return self._lines_output([transform(value) for value in values])
+
+    def _word_list_path_pairs(self, raw_words: list[str], node, state: EvaluationState):
+        pairs = []
+        for raw_word in raw_words:
+            stripped = strip_shell_word_quotes(raw_word)
+            if has_unquoted_glob(raw_word) or has_unquoted_brace_expansion(raw_word) or has_unquoted_extglob(raw_word):
+                try:
+                    for match in expand_glob_word(stripped, state.resolver_context(), node.text, raw_pattern=raw_word):
+                        pairs.append((match.word, Path(match.path)))
+                except UnsupportedSourceError as exc:
+                    raise self._unsupported_loop_words(node, str(exc)) from exc
+                continue
+            path = self._word_list_path(stripped, node, state)
+            if not path.is_file():
+                raise self._unsupported_loop_words(node, "unsupported command substitution path")
+            pairs.append((self._resolve_exact_runtime_word(stripped, node, state, "loop word list"), path))
+        return pairs
+
+    @staticmethod
+    def _head_count(value: str, node):
+        if not re.fullmatch(r'\d+', value):
+            raise SourceEvaluator._unsupported_loop_words(node, "unsupported head command substitution count")
+        return int(value)
+
+    @staticmethod
+    def _read_text_preserving_newlines(path: Path):
+        with path.open("r", newline="") as file:
+            return file.read()
+
+    @staticmethod
+    def _command_output_lines(content: str):
+        if not content:
+            return []
+        lines = content.split("\n")
+        return lines[:-1] if content.endswith("\n") else lines
+
+    @staticmethod
+    def _lines_output(lines: list[str]):
+        return "\n".join(lines) + ("\n" if lines else "")
 
     def _word_list_path(self, word: str, node, state: EvaluationState):
         resolved = self._resolve_exact_runtime_word(word, node, state, "loop word list")
@@ -1967,6 +2144,7 @@ class SourceEvaluator:
                 node.keyword,
                 node.condition,
                 node.trailing,
+                node.producer,
                 node.end_location.line if node.end_location else None,
                 tuple(SourceEvaluator._node_signature(child) for child in node.body),
             )
@@ -3242,16 +3420,23 @@ class SourceEvaluator:
         header_match = re.match(r'^(.*?;\s*do)\b', node.text)
         header_text = header_match.group(1) if header_match else node.text
         inline_do = bool(header_match)
+        replacement_prefix = "( " if read_words.child_shell else ""
         self._record_line_replacement(
             node.location,
             header_text,
             (
-                f"for {variable} in {self._shell_quote_words(values)}; do"
+                f"{replacement_prefix}for {variable} in {self._shell_quote_words(values)}; do"
                 if inline_do
-                else f"for {variable} in {self._shell_quote_words(values)}"
+                else f"{replacement_prefix}for {variable} in {self._shell_quote_words(values)}"
             ),
         )
-        if node.trailing:
+        if read_words.child_shell:
+            self._record_line_replacement(
+                node.end_location,
+                "done",
+                "done )",
+            )
+        elif node.trailing:
             self._record_line_replacement(
                 node.end_location,
                 f"done {node.trailing}",

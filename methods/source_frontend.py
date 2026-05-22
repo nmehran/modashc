@@ -54,6 +54,8 @@ C_FOR_LOOP_PATTERN = re.compile(r'^\s*for\s*\(\(\s*(.*?)\s*;\s*(.*?)\s*;\s*(.*?)
 C_FOR_HEADER_PATTERN = re.compile(r'^\s*for\s*\(\(\s*(.*?)\s*;\s*(.*?)\s*;\s*(.*?)\s*\)\)\s*$')
 WHILE_LOOP_PATTERN = re.compile(r'^\s*(while|until)\s+(.+?)\s*;\s*do(?:\s*(.*))?$')
 WHILE_HEADER_PATTERN = re.compile(r'^\s*(while|until)\s+(.+?)\s*$')
+PIPELINE_WHILE_LOOP_PATTERN = re.compile(r'^\s*(.+?)\s*\|\s*while\s+(.+?)\s*;\s*do(?:\s*(.*))?$')
+PIPELINE_WHILE_HEADER_PATTERN = re.compile(r'^\s*(.+?)\s*\|\s*while\s+(.+?)\s*$')
 DO_LINE_PATTERN = re.compile(r'^\s*do\s*$')
 INLINE_DONE_PATTERN = re.compile(r'^(.*?)(?:;\s*)?done(?:\s+(.*))?$')
 IF_COMMAND_PATTERN = re.compile(r'^\s*if\s+(.+?)\s*$')
@@ -992,28 +994,41 @@ class LineParserFrontend:
 
     def _parse_while_loop(self, script_path: Path, line_number: int, code_line: str, lines: list[str],
                           line_index: int):
-        match = WHILE_LOOP_PATTERN.match(code_line)
+        producer = ""
+        match = PIPELINE_WHILE_LOOP_PATTERN.match(code_line)
         do_line_index = line_index
         if match:
-            keyword, condition, inline_body = match.groups()
+            producer, condition, inline_body = match.groups()
+            keyword = "while"
         else:
-            match = WHILE_HEADER_PATTERN.match(code_line)
-            if not match or line_index + 1 >= len(lines):
-                return None, line_index + 1
+            match = WHILE_LOOP_PATTERN.match(code_line)
+            if match:
+                keyword, condition, inline_body = match.groups()
+            else:
+                match = PIPELINE_WHILE_HEADER_PATTERN.match(code_line)
+                if match:
+                    producer, condition = match.groups()
+                    keyword = "while"
+                else:
+                    match = WHILE_HEADER_PATTERN.match(code_line)
+                    if not match or line_index + 1 >= len(lines):
+                        return None, line_index + 1
+                    keyword, condition = match.groups()
 
-            do_line_index = line_index + 1
-            do_code_line = remove_comments(
-                lines[do_line_index],
-                ['#'],
-                exclusion_patterns=[r'\#\!.*'],
-                escape_exclusions=False,
-            )
-            do_match = DO_LINE_PATTERN.match(do_code_line)
-            if not do_match:
-                return None, line_index + 1
+                if line_index + 1 >= len(lines):
+                    return None, line_index + 1
 
-            keyword, condition = match.groups()
-            inline_body = ""
+                do_line_index = line_index + 1
+                do_code_line = remove_comments(
+                    lines[do_line_index],
+                    ['#'],
+                    exclusion_patterns=[r'\#\!.*'],
+                    escape_exclusions=False,
+                )
+                do_match = DO_LINE_PATTERN.match(do_code_line)
+                if not do_match:
+                    return None, line_index + 1
+                inline_body = ""
 
         if inline_body is None:
             inline_body = ""
@@ -1084,6 +1099,7 @@ class LineParserFrontend:
             body=self._parse_loop_body(script_path, body_lines),
             trailing=trailing,
             end_location=SourceLocation(script_path, end_line_number, 1),
+            producer=producer.strip(),
         ), next_line_index
 
     @staticmethod

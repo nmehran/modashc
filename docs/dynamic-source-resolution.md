@@ -12,7 +12,8 @@ word lists, exact `${array[@]}` expansions, safe command-substitution word
 lists, and deterministic ordinary file globs in finite loop word lists. Exact
 indexed, associative, appended, command-substitution, and file-populated arrays
 are modeled, as are bounded `while` / `until`, C-style `for ((...))`, and
-`while read` file enumeration.
+`while read` file enumeration from exact files, safe producer pipelines, and
+safe process substitutions.
 Direct source globs are accepted only when they resolve to exactly one file.
 Modeled `if` / `elif` / `else` blocks can lower source sites inside branches
 when branch predicates are side-effect-free and branch state is exact enough for
@@ -96,8 +97,9 @@ render `context-only` records, but the output must make that limitation clear.
 ## Safety Rules
 
 - Resolver input is parsed data, not shell text to execute.
-- File reads are allowed only for resolvers whose purpose is file-content path
-  lookup, such as safe `cat`.
+- File reads are allowed only for safe producer resolvers whose purpose is
+  path-list discovery, such as safe `cat`, `sort`, `head`, and `grep -lF` /
+  `grep -lE`.
 - Directory walks are allowed only for safe `find` subsets.
 - Multiple candidate paths are unsupported in executable mode unless the source
   form has deterministic multi-source semantics.
@@ -354,6 +356,11 @@ Accept only when the command substitution is a single safe producer:
 - `cat` with exact readable file operands
 - deterministic `find` with the existing safe predicate subset
 - `printf '%s\n' ...` with exact arguments
+- `sort` with exact readable file operands and optional `-u`
+- `head` with one exact readable file operand and optional `-n N` / `-N`
+- `grep -lF` or `grep -lE` with exact readable file operands
+- `realpath` over exact existing file operands
+- `dirname` / `basename` over exact operands
 
 Unquoted command-substitution output is split with the exact current `IFS`,
 including custom scalar `IFS` values. Quoted command substitution is accepted
@@ -379,6 +386,14 @@ while read -r dep || [[ -n "$dep" ]]; do
   source "$dep"
 done < deps.txt
 
+find ./plugins -type f -name '*.sh' -print | while read -r dep; do
+  source "$dep"
+done
+
+while read -r dep; do
+  source "$dep"
+done < <(find ./plugins -type f -name '*.sh' -print)
+
 for (( i=0; i<2; i++ )); do
   source "./deps/$i.sh"
 done
@@ -388,9 +403,12 @@ The evaluator models exact `while` / `until` conditions, exact arithmetic
 assignment and increment/decrement mutations, local `break` / `continue`, and a
 bounded iteration limit. It also models `while read` file enumeration, including
 the common `IFS= read -r` form for paths containing spaces and the
-`read ... || [[ -n "$var" ]]` guard for files without a final newline. C-style
-`for ((...))` loops are modeled when init, condition, and update clauses are
-exact arithmetic expressions.
+`read ... || [[ -n "$var" ]]` guard for files without a final newline. Read-loop
+input may come from an exact file redirection, safe producer pipeline, or safe
+process substitution. Pipeline read loops are lowered through an explicit
+subshell wrapper so parent-state behavior matches Bash. C-style `for ((...))`
+loops are modeled when init, condition, and update clauses are exact arithmetic
+expressions.
 
 Unknown loop conditions, unsupported C-style arithmetic, unsupported read
 options, multi-level loop control, and loops exceeding the modeled iteration
@@ -424,7 +442,6 @@ boundary rather than inline the file into the parent shell.
 These still need separate specs before implementation:
 
 - Broader glob semantics beyond ordinary deterministic file globs.
-- Custom-IFS scalar word-list splitting outside modeled `read` loops.
 - Conditional predicates outside the modeled side-effect-free subset.
 - Broader case pattern and fallthrough semantics.
 - Complex array/list-based source paths outside exact indexed, associative,
@@ -432,7 +449,8 @@ These still need separate specs before implementation:
 - Broader user-defined function semantics, including runtime-dynamic dispatch,
   recursive calls, non-equivalent branch-defined functions, and
   branch-dependent returns.
-- Process substitution and generated source streams.
+- Unsupported process substitution and generated source streams outside exact
+  read-loop producer input.
 
 ### Unsupported But Practical
 
@@ -495,6 +513,8 @@ scope:
   one-match cases only.
 - Exact custom-IFS scalar and command-substitution loop word splitting is
   implemented.
+- Safe producer word lists are implemented for `cat`, `find`, `printf`, `sort`,
+  `head`, `grep -lF` / `grep -lE`, `realpath`, `dirname`, and `basename`.
 - Branch-aware `if` / `elif` / `else` source lowering is implemented for the
   side-effect-free predicate subset and fail-closed branch-state merge.
 - Exact `case` source lowering is implemented for known scalar subjects,

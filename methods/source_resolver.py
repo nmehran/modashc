@@ -375,13 +375,67 @@ def _brace_expand_pattern(pattern: str, source_site: str):
     body = pattern[start + 1:end]
     if "{" in body or "}" in body:
         raise UnsupportedSourceError(f"unsupported nested brace source pattern: {source_site.strip()}")
-    if "," not in body:
+    sequence_options = _brace_sequence_options(body)
+    if sequence_options is not None:
+        options = sequence_options
+    elif "," in body:
+        options = body.split(",")
+    else:
         return [pattern]
 
     expanded = []
-    for option in body.split(","):
+    for option in options:
         expanded.extend(_brace_expand_pattern(f"{pattern[:start]}{option}{pattern[end + 1:]}", source_site))
     return expanded
+
+
+def _brace_sequence_options(body: str):
+    match = re.fullmatch(r'(-?\d+)\.\.(-?\d+)(?:\.\.(-?\d+))?', body)
+    if match:
+        start_text, end_text, step_text = match.groups()
+        start = int(start_text)
+        end = int(end_text)
+        if step_text is None:
+            step = 1 if start <= end else -1
+        else:
+            step = abs(int(step_text))
+            if step == 0:
+                return None
+            if start > end:
+                step = -step
+        width = max(len(start_text.lstrip("-")), len(end_text.lstrip("-")))
+        zero_padded = (
+            len(start_text.lstrip("-")) > 1 and start_text.lstrip("-").startswith("0")
+        ) or (
+            len(end_text.lstrip("-")) > 1 and end_text.lstrip("-").startswith("0")
+        )
+        stop = end + (1 if step > 0 else -1)
+        values = []
+        for value in range(start, stop, step):
+            if zero_padded:
+                sign = "-" if value < 0 else ""
+                values.append(f"{sign}{abs(value):0{width}d}")
+            else:
+                values.append(str(value))
+        return values
+
+    match = re.fullmatch(r'([A-Za-z])\.\.([A-Za-z])(?:\.\.(-?\d+))?', body)
+    if match:
+        start_text, end_text, step_text = match.groups()
+        start = ord(start_text)
+        end = ord(end_text)
+        if step_text is None:
+            step = 1 if start <= end else -1
+        else:
+            step = abs(int(step_text))
+            if step == 0:
+                return None
+            if start > end:
+                step = -step
+        stop = end + (1 if step > 0 else -1)
+        return [chr(value) for value in range(start, stop, step)]
+
+    return None
 
 
 def _glob_matches(pattern: str, current_directory: str, glob_options: set[str], include_hidden: bool):

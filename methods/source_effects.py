@@ -161,6 +161,7 @@ class WhileLoop(IRNode):
     body: tuple[IRNode, ...]
     trailing: str = ""
     end_location: SourceLocation | None = None
+    producer: str = ""
 
 
 @dataclass(frozen=True)

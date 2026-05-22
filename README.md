@@ -66,16 +66,19 @@ safe to lower, compilation fails before writing or overwriting the output file.
   and `mapfile` / `readarray -t` population from exact files
 - exact finite `for` loops over literal words, known scalar path variables,
   exact custom-IFS scalar word lists, `${array[@]}` expansions, or safe
-  `cat` / `find` / `printf` command-substitution word lists
+  `cat` / `find` / `printf` / `sort` / `head` / `grep -lF` or `grep -lE` /
+  `realpath` / `dirname` / `basename` command-substitution word lists
 - deterministic finite `for` loops over ordinary file globs, such as
   `for dep in ./plugins/*.sh; do source "$dep"; done`
 - bounded `while` / `until` loops with exact conditions, arithmetic mutations,
   local `break` / `continue`, and `while read` file enumeration, including
-  non-empty guards for files without a final newline
+  non-empty guards for files without a final newline, exact safe-producer
+  pipelines, and safe process-substitution input
 - bounded C-style `for ((...))` loops with exact arithmetic init, condition, and
   update clauses
 - option-aware finite loop globs for `nullglob`, `dotglob`, `globstar`,
-  `nocaseglob`, practical `GLOBIGNORE` filtering, and brace expansion
+  `nocaseglob`, practical `GLOBIGNORE` filtering, comma braces, and simple
+  brace sequences
 - direct source globs only when the glob resolves to exactly one file
 - branch-aware `if` / `elif` / `else` blocks with side-effect-free file,
   non-empty, empty, exact string, pattern, compound logical, arithmetic,
@@ -97,10 +100,11 @@ includes direct source globs with multiple matches, unmatched or quoted globs,
 `extglob` patterns, `set -f` / `noglob`, `failglob` unmatched globs,
 `GLOBIGNORE` patterns that remove every source match, unsupported command or
 glob-bearing file/bracket conditional predicates, unsupported case subjects or
-arm patterns, process substitution, unknown runtime-dynamic or recursive
-function dispatch, non-equivalent branch-defined functions, branch-dependent
-function returns, nested dynamic substitutions, and multi-result `cat` or
-`find` output where a single source path is required.
+arm patterns, unsupported process substitution outside modeled read-loop input,
+unknown runtime-dynamic or recursive function dispatch, non-equivalent
+branch-defined functions, branch-dependent function returns, nested dynamic
+substitutions, and multi-result source command substitution output where a
+single source path is required.
 
 Control-flow evaluation beyond exact finite loops, bounded C-style loops,
 bounded `while` / `until`, modeled `if` blocks, and exact `case` blocks is

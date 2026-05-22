@@ -383,6 +383,33 @@ class CompileRegressionTestCase(unittest.TestCase):
             project.assert_compiled_matches(self, "main.sh", env={"LC_ALL": "C"})
 
         with ScriptProject() as project:
+            project.write("deps/01.sh", 'echo "seq:01:$dep"\n')
+            project.write("deps/02.sh", 'echo "seq:02:$dep"\n')
+            project.write("deps/03.sh", 'echo "seq:03:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in ./deps/{01..03}.sh; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh", env={"LC_ALL": "C"})
+
+        with ScriptProject() as project:
+            project.write("deps/1.sh", 'echo "seq-step:1:$dep"\n')
+            project.write("deps/3.sh", 'echo "seq-step:3:$dep"\n')
+            project.write("deps/5.sh", 'echo "seq-step:5:$dep"\n')
+            project.write("letters/a.sh", 'echo "seq-letter:a:$dep"\n')
+            project.write("letters/b.sh", 'echo "seq-letter:b:$dep"\n')
+            project.write("letters/c.sh", 'echo "seq-letter:c:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in ./deps/{1..5..-2}.sh ./letters/{c..a..1}.sh; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh", env={"LC_ALL": "C"})
+
+        with ScriptProject() as project:
             project.write("main.sh", textwrap.dedent("""\
                 shopt -s nullglob
                 for dep in ./missing/*.sh; do
@@ -980,6 +1007,67 @@ class CompileRegressionTestCase(unittest.TestCase):
             project.assert_compiled_matches(self, "main.sh")
             self.assertNotIn("$(cat dep-path.txt)", project.path("compiled.sh").read_text())
 
+        with ScriptProject() as project:
+            project.write("a.sh", 'echo "sorted:a"\n')
+            project.write("b.sh", 'echo "sorted:b"\n')
+            project.write("deps.txt", "./b.sh\n./a.sh\n")
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in $(sort deps.txt); do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            self.assertNotIn("$(sort deps.txt)", project.path("compiled.sh").read_text())
+
+        with ScriptProject() as project:
+            project.write("a.sh", 'echo "head:a"\n')
+            project.write("b.sh", 'echo "head:b"\n')
+            project.write("deps.txt", "./a.sh\n./b.sh\n")
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in $(head -n 1 deps.txt); do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            self.assertNotIn("$(head -n 1 deps.txt)", project.path("compiled.sh").read_text())
+
+        with ScriptProject() as project:
+            project.write("deps/a.sh", 'echo "needle"\n')
+            project.write("deps/b.sh", 'echo "needle"\n')
+            project.write("deps/c.sh", 'echo "other"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in $(grep -lF needle ./deps/*.sh); do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            self.assertNotIn("$(grep -lF needle", project.path("compiled.sh").read_text())
+
+        with ScriptProject() as project:
+            project.write("plugins/a/init.sh", 'echo "dirname:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for dir in $(dirname ./plugins/a/file.txt); do
+                  dep="$dir/init.sh"
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            dep = project.write("a.sh", 'echo "realpath:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in $(realpath ./a.sh); do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            self.assertIn(str(dep), project.path("compiled.sh").read_text())
+
     def test_while_until_and_read_loops_match_bash(self):
         with ScriptProject() as project:
             project.write("deps/0.sh", 'echo "zero:$i"\n')
@@ -1073,6 +1161,38 @@ class CompileRegressionTestCase(unittest.TestCase):
                 """))
 
             project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("plugins/a.sh", 'echo "pipeline:a"; VALUE=a\n')
+            project.write("plugins/b.sh", 'echo "pipeline:b"; VALUE=b\n')
+            project.write("main.sh", textwrap.dedent("""\
+                find ./plugins -type f -name '*.sh' -print | while read -r dep; do
+                  echo "dep=$dep"
+                  source "$dep"
+                done
+                echo "value:${VALUE:-unset}"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            compiled = project.path("compiled.sh").read_text()
+            self.assertNotIn("find ./plugins", compiled)
+            self.assertIn("( for dep in './plugins/a.sh' './plugins/b.sh'; do", compiled)
+
+        with ScriptProject() as project:
+            project.write("plugins/a.sh", 'echo "process:a"; VALUE=a\n')
+            project.write("plugins/b.sh", 'echo "process:b"; VALUE=b\n')
+            project.write("main.sh", textwrap.dedent("""\
+                while read -r dep; do
+                  echo "dep=$dep"
+                  source "$dep"
+                done < <(find ./plugins -type f -name '*.sh' -print)
+                echo "value:${VALUE:-unset}"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            compiled = project.path("compiled.sh").read_text()
+            self.assertNotIn("<(find ./plugins", compiled)
+            self.assertIn("for dep in './plugins/a.sh' './plugins/b.sh'; do", compiled)
 
     def test_c_style_for_loops_match_bash(self):
         with ScriptProject() as project:
@@ -1633,6 +1753,10 @@ class CompileRegressionTestCase(unittest.TestCase):
             "unsupported command substitution loop pipeline": (
                 'for file in $(cat deps.txt | sort); do source "$file"; done\n',
                 'for file in $(cat deps.txt | sort); do source "$file"; done',
+            ),
+            "unsupported read loop producer pipeline": (
+                "sed -n '1p' deps.txt | while read -r file; do source \"$file\"; done\n",
+                "sed -n '1p' deps.txt | while read -r file; do",
             ),
             "unknown while condition source": (
                 'while [[ -n "$LOAD_DEP" ]]; do\n  source ./dep.sh\n  break\n done\n',

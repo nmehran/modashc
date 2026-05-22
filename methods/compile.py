@@ -429,9 +429,13 @@ def assert_no_unresolved_source_sites(content: str):
 
 
 def line_contains_unresolved_source(line: str):
-    if SOURCE_PATTERN.findall(line) or contains_nested_source_command(line):
+    if SOURCE_PATTERN.findall(line):
         return True
-    return any(contains_source_command(command) for command in get_commands(line))
+    if any(contains_source_command(command) for command in get_commands(line)):
+        return True
+    if "source" not in line and not re.search(r'(^|[\s;&|({])\.\s+', line):
+        return False
+    return contains_nested_source_command(line)
 
 
 def render_executable_script(entry_point: str, context: dict):

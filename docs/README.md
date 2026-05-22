@@ -28,7 +28,8 @@ The intended approach is captured in the
 - Remaining array/list iteration outside exact indexed, associative,
   command-substitution, and file-populated arrays
 - Remaining loop forms outside exact `for`, bounded C-style `for ((...))`,
-  bounded `while` / `until`, and modeled `while read` file enumeration
+  bounded `while` / `until`, and modeled `while read` file enumeration from
+  exact files and safe producers
 - Remaining glob semantics: `extglob`, direct source glob arguments, and full
   `GLOBIGNORE` edge behavior
 - Broader case pattern and fallthrough semantics

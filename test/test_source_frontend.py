@@ -317,16 +317,32 @@ class LineParserFrontendTestCase(unittest.TestCase):
             while IFS= read -r dep; do
               source "$dep"
             done < deps.txt
+            find ./plugins -name '*.sh' -print | while read -r plugin; do
+              source "$plugin"
+            done
+            while read -r generated; do
+              source "$generated"
+            done < <(find ./generated -name '*.sh' -print)
             """)
 
-        self.assertEqual([type(node) for node in ir.nodes], [WhileLoop, WhileLoop, WhileLoop])
-        self.assertEqual([node.keyword for node in ir.nodes], ["while", "until", "while"])
-        self.assertEqual([node.condition for node in ir.nodes], ["(( i < 2 ))", "false", "IFS= read -r dep"])
+        self.assertEqual([type(node) for node in ir.nodes], [WhileLoop, WhileLoop, WhileLoop, WhileLoop, WhileLoop])
+        self.assertEqual([node.keyword for node in ir.nodes], ["while", "until", "while", "while", "while"])
+        self.assertEqual([node.condition for node in ir.nodes], [
+            "(( i < 2 ))",
+            "false",
+            "IFS= read -r dep",
+            "read -r plugin",
+            "read -r generated",
+        ])
         self.assertEqual(ir.nodes[2].trailing, "< deps.txt")
+        self.assertEqual(ir.nodes[3].producer, "find ./plugins -name '*.sh' -print")
+        self.assertEqual(ir.nodes[4].trailing, "< <(find ./generated -name '*.sh' -print)")
         self.assertEqual([site.source_expression for site in ir.source_sites], [
             '"./deps/$i.sh"',
             "./once.sh",
             '"$dep"',
+            '"$plugin"',
+            '"$generated"',
         ])
 
     def test_parses_c_style_for_loop_nodes(self):

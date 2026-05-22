@@ -7,10 +7,13 @@ structured unsupported-source diagnostics, and an abstract evaluator that drives
 both executable and context rendering for the supported subset. Exact finite
 `for` loops over literal words, known scalar path variables, exact custom-IFS
 scalar word lists, exact `${array[@]}` expansions, safe command-substitution
-word lists, and deterministic file globs are implemented. Exact indexed,
-associative, appended, command-substitution, and file-populated arrays are
-modeled. Bounded `while` / `until`, C-style `for ((...))`, and `while read`
-file enumeration are also implemented. Branch-aware `if` / `elif` / `else`
+word lists, and deterministic file globs are implemented. Safe producers
+include `cat`, `find`, `printf`, `sort`, `head`, `grep -lF` / `grep -lE`,
+`realpath`, `dirname`, and `basename`. Exact indexed, associative, appended,
+command-substitution, and file-populated arrays are modeled. Bounded `while` /
+`until`, C-style `for ((...))`, and `while read` file enumeration are also
+implemented, including exact file input, safe producer pipelines, and safe
+process substitutions. Branch-aware `if` / `elif` / `else`
 lowering is implemented for the current side-effect-free predicate subset,
 including compound logical predicates, arithmetic predicates, regex and pattern
 matching, and safe `grep -q` file checks. Exact `case` blocks are implemented
@@ -304,10 +307,12 @@ original source site. Supported word inputs are:
 - literal words
 - exact array expansion
 - known scalar path variables that expand to a single word
-- known scalar values that split under default `IFS`
+- known scalar values that split under exact current `IFS`
 - deterministic ordinary file globs
-- safe `cat`, `find`, and `printf` command-substitution word lists
-- modeled `while read` file enumeration
+- safe `cat`, `find`, `printf`, `sort`, `head`, `grep -lF` / `grep -lE`,
+  `realpath`, `dirname`, and `basename` command-substitution word lists
+- modeled `while read` file enumeration from exact files, safe producer
+  pipelines, and safe process substitutions
 - bounded `while` / `until` conditions with exact arithmetic mutations
 
 Deferred word inputs are:
@@ -534,10 +539,12 @@ done
 The supported `for` forms include `for ...; do ... done` and newline-`do`
 variants. Word lists may contain literal words, known scalar path variables,
 exact custom-IFS scalar word lists, exact `${array[@]}` expansion, safe
-`cat` / `find` / `printf` command-substitution word lists, or deterministic
-ordinary file globs. Array population supports exact append/index assignment,
-command-substitution array assignment, and `mapfile` / `readarray -t` from
-exact files. `extglob` semantics remain unsupported until modeled explicitly.
+`cat` / `find` / `printf` / `sort` / `head` / `grep -lF` or `grep -lE` /
+`realpath` / `dirname` / `basename` command-substitution word lists, or
+deterministic ordinary file globs. Array population supports exact append/index
+assignment, command-substitution array assignment, and `mapfile` / `readarray -t`
+from exact files. `extglob` semantics remain unsupported until modeled
+explicitly.
 
 ### Phase 6: Deterministic Globs
 
@@ -590,9 +597,10 @@ definitions, and runtime-dynamic dispatch remain unsupported until bounded.
 Implemented for exact source-aware loops. The evaluator models `while` /
 `until` loops when conditions resolve through the existing predicate evaluator
 and loop mutations are exact arithmetic commands or assignments. It also models
-`while read` file enumeration, including `IFS= read -r` paths with spaces and
-non-empty guards for files without a final newline. C-style `for ((...))` loops
-are modeled when init, condition, and update clauses are exact arithmetic.
+`while read` file enumeration, including `IFS= read -r` paths with spaces,
+non-empty guards for files without a final newline, exact safe-producer
+pipelines, and safe process-substitution input. C-style `for ((...))` loops are
+modeled when init, condition, and update clauses are exact arithmetic.
 Loops have an explicit modeled iteration limit and fail closed when the
 condition, read redirection, loop control, or mutation cannot be proven exact.
 
