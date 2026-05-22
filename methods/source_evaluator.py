@@ -644,7 +644,20 @@ class SourceEvaluator:
                 state.loop_depth -= 1
 
     def _apply_c_style_for_loop(self, node: CStyleForLoop, state: EvaluationState, stack: tuple[Path, ...]):
-        self._apply_c_style_arithmetic_list(node.init, node, state)
+        try:
+            self._apply_c_style_arithmetic_list(node.init, node, state)
+        except UnsupportedSourceError as exc:
+            if self.mode == "context":
+                self._evaluate_context_loop_body(node.body, state, stack)
+                return
+            raise with_source_diagnostic(
+                exc,
+                str(node.location.path),
+                node.location.line - 1,
+                node.text,
+                node.text,
+                "unsupported.source.arithmetic",
+            ) from exc
 
         for iteration in range(MAX_MODELED_LOOP_ITERATIONS):
             try:
@@ -655,9 +668,7 @@ class SourceEvaluator:
                 )
             except UnsupportedSourceError as exc:
                 if self.mode == "context":
-                    if self._node_list_may_source(node.body):
-                        loop_state = state.conditional_copy()
-                        self._evaluate_nodes(node.body, loop_state, stack)
+                    self._evaluate_context_loop_body(node.body, state, stack)
                     return
                 raise with_source_diagnostic(
                     exc,
@@ -695,7 +706,19 @@ class SourceEvaluator:
             finally:
                 state.loop_depth -= 1
 
-            self._apply_c_style_arithmetic_list(node.update, node, state)
+            try:
+                self._apply_c_style_arithmetic_list(node.update, node, state)
+            except UnsupportedSourceError as exc:
+                if self.mode == "context":
+                    return
+                raise with_source_diagnostic(
+                    exc,
+                    str(node.location.path),
+                    node.location.line - 1,
+                    node.text,
+                    node.text,
+                    "unsupported.source.arithmetic",
+                ) from exc
 
         raise unsupported_source_error(
             str(node.location.path),
@@ -745,6 +768,11 @@ class SourceEvaluator:
         if expression:
             expressions.append(expression)
         return expressions
+
+    def _evaluate_context_loop_body(self, body, state: EvaluationState, stack: tuple[Path, ...]):
+        if self._node_list_may_source(body):
+            loop_state = state.conditional_copy()
+            self._evaluate_nodes(body, loop_state, stack)
 
     def _apply_while_loop(self, node: WhileLoop, state: EvaluationState, stack: tuple[Path, ...]):
         read_words = self._read_loop_words(node, state)
@@ -898,11 +926,14 @@ class SourceEvaluator:
 
     @staticmethod
     def _read_loop_lines(path: Path, include_incomplete: bool):
-        content = path.read_text()
-        lines = content.splitlines()
-        if content and not content.endswith("\n") and not include_incomplete:
+        with path.open("r", newline="") as file:
+            content = file.read()
+        if not content:
+            return []
+        lines = content.split("\n")
+        if content.endswith("\n"):
             return lines[:-1]
-        return lines
+        return lines if include_incomplete else lines[:-1]
 
     @staticmethod
     def _read_loop_value(line: str, read_ifs: str):

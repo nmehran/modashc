@@ -81,7 +81,7 @@ def strip_quotes(path):
 
 def get_valid_path(command, base_dir=None):
     if len(command) >= 1:
-        unquoted_command = strip_quotes(strip_matching_quotes(command.strip()))
+        unquoted_command = strip_quotes(strip_matching_quotes(command))
         expanded_command = os.path.expanduser(os.path.expandvars(unquoted_command))
 
         candidates = []
@@ -132,7 +132,7 @@ def resolve_variable_references(command, context):
 
 def resolve_command(command, context):
     """Resolve a path using dynamic context, supporting shell operations."""
-    command = resolve_variable_references(command.strip(), context)
+    command = resolve_variable_references(command, context)
 
     # Expand environment variables
     command = os.path.expandvars(command)

@@ -1063,6 +1063,17 @@ class CompileRegressionTestCase(unittest.TestCase):
             project.assert_compiled_matches(self, "main.sh")
             self.assertNotIn("deps.txt", project.path("compiled.sh").read_text())
 
+        with ScriptProject() as project:
+            project.write("a.sh\r", 'echo "crlf:$dep"\n')
+            project.write("deps.txt", "./a.sh\r\n")
+            project.write("main.sh", textwrap.dedent("""\
+                while read -r dep; do
+                  source "$dep"
+                done < deps.txt
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
     def test_c_style_for_loops_match_bash(self):
         with ScriptProject() as project:
             project.write("deps/0.sh", 'echo "zero:$i"\n')

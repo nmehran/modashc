@@ -185,6 +185,24 @@ class ContextModeTestCase(unittest.TestCase):
         self.assertIn('# modashc: source "$dep" -> plugins/b.sh', content)
         self.assertEqual(content.count('echo "glob a body"'), 1)
 
+    def test_context_output_preserves_unsupported_c_style_loop_without_failing(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "dep body"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for (( i=$(cat start.txt); i<2; i++ )); do
+                  source ./dep.sh
+                done
+                echo "main body"
+                """))
+
+            output = project.compile("main.sh")
+            content = output.read_text()
+
+        self.assertIn('echo "dep body"', content)
+        self.assertIn('# modashc: source ./dep.sh -> dep.sh (conditional)', content)
+        self.assertIn('for (( i=$(cat start.txt); i<2; i++ )); do', content)
+        self.assertIn('echo "main body"', content)
+
     def test_context_output_preserves_unresolved_source_without_failing(self):
         with ScriptProject() as project:
             project.write("main.sh", 'source "$OPTIONAL_DEP"\necho "main body"\n')
