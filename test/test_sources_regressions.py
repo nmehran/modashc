@@ -46,6 +46,14 @@ class SourceRegressionTestCase(unittest.TestCase):
             list(get_commands('cd subdir && source ./dep.sh || echo missing')),
             ['cd subdir', 'source ./dep.sh', 'echo missing'],
         )
+        self.assertEqual(
+            list(get_commands('if [[ -f ./dep.sh && -n "$LOAD_DEP" ]]; then source ./dep.sh; fi')),
+            ['if [[ -f ./dep.sh && -n "$LOAD_DEP" ]]', 'then source ./dep.sh', 'fi'],
+        )
+        self.assertEqual(
+            list(get_commands('[[ -f ./dep.sh ]] && source ./dep.sh')),
+            ['[[ -f ./dep.sh ]]', 'source ./dep.sh'],
+        )
 
     def test_get_commands_preserves_nested_shell_constructs(self):
         self.assertEqual(

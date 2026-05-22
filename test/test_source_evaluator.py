@@ -243,11 +243,70 @@ class SourceEvaluatorTestCase(unittest.TestCase):
             ["source ./missing.sh", "source ./missing-optional.sh"],
         )
 
+    def test_if_block_compound_condition_is_evaluated(self):
+        with ScriptProject() as project:
+            dep = project.write("dep.sh", 'echo "dep"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                LOAD_DEP=1
+                if [[ -f ./dep.sh && -n "$LOAD_DEP" ]]; then
+                  source ./dep.sh
+                fi
+                if [[ -f ./missing.sh || "$LOAD_DEP" == 1 ]]; then
+                  source ./dep.sh
+                fi
+                if [[ ! -f ./missing.sh ]]; then
+                  source ./dep.sh
+                fi
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [dep, dep, dep])
+
+    def test_if_block_arithmetic_regex_and_grep_conditions_are_evaluated(self):
+        with ScriptProject() as project:
+            arithmetic = project.write("arithmetic.sh", 'echo "arithmetic"\n')
+            numeric = project.write("numeric.sh", 'echo "numeric"\n')
+            regex = project.write("regex.sh", 'echo "regex"\n')
+            pattern = project.write("pattern.sh", 'echo "pattern"\n')
+            grep_dep = project.write("grep.sh", 'echo "grep"\n')
+            grep_regex = project.write("grep-regex.sh", 'echo "grep regex"\n')
+            project.write("config", "enabled=true\n")
+            entry = project.write("main.sh", textwrap.dedent("""\
+                COUNT=2
+                MODE=prod-eu
+                if (( COUNT > 1 )); then
+                  source ./arithmetic.sh
+                fi
+                if [[ "$COUNT" -gt 1 ]]; then
+                  source ./numeric.sh
+                fi
+                if [[ "$MODE" =~ ^prod ]]; then
+                  source ./regex.sh
+                fi
+                if [[ "$MODE" == prod* ]]; then
+                  source ./pattern.sh
+                fi
+                if grep -q enabled config; then
+                  source ./grep.sh
+                fi
+                if grep -Eq '^enabled=true$' config; then
+                  source ./grep-regex.sh
+                fi
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual(
+            [event.path for event in result.events],
+            [arithmetic, numeric, regex, pattern, grep_dep, grep_regex],
+        )
+
     def test_if_block_unsupported_condition_raises_structured_diagnostic(self):
         with ScriptProject() as project:
             project.write("dep.sh", 'echo "dep"\n')
             entry = project.write("main.sh", textwrap.dedent("""\
-                if grep -q enabled config; then
+                if awk 'BEGIN { exit 0 }'; then
                   source ./dep.sh
                 fi
                 """))

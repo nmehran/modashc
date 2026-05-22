@@ -402,6 +402,58 @@ class CompileRegressionTestCase(unittest.TestCase):
 
             project.assert_compiled_matches(self, "main.sh")
 
+    def test_compound_if_predicates_match_bash(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "compound dep"\n')
+            project.write("fallback.sh", 'echo "fallback dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                LOAD_DEP=1
+                if [[ -f ./dep.sh && -n "$LOAD_DEP" ]]; then
+                  source ./dep.sh
+                fi
+                if [[ -f ./missing.sh || "$LOAD_DEP" == 1 ]]; then
+                  source ./fallback.sh
+                fi
+                echo "main"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_arithmetic_regex_and_grep_if_predicates_match_bash(self):
+        with ScriptProject() as project:
+            project.write("arithmetic.sh", 'echo "arithmetic:$COUNT"\n')
+            project.write("numeric.sh", 'echo "numeric:$COUNT"\n')
+            project.write("regex.sh", 'echo "regex:$MODE"\n')
+            project.write("pattern.sh", 'echo "pattern:$MODE"\n')
+            project.write("grep.sh", 'echo "grep"\n')
+            project.write("grep-regex.sh", 'echo "grep regex"\n')
+            project.write("config", "enabled=true\n")
+            project.write("main.sh", textwrap.dedent("""\
+                COUNT=2
+                MODE=prod-eu
+                if (( COUNT > 1 )); then
+                  source ./arithmetic.sh
+                fi
+                if [[ "$COUNT" -gt 1 ]]; then
+                  source ./numeric.sh
+                fi
+                if [[ "$MODE" =~ ^prod ]]; then
+                  source ./regex.sh
+                fi
+                if [[ "$MODE" == prod* ]]; then
+                  source ./pattern.sh
+                fi
+                if grep -q enabled config; then
+                  source ./grep.sh
+                fi
+                if grep -Eq '^enabled=true$' config; then
+                  source ./grep-regex.sh
+                fi
+                echo "main"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
     def test_exact_if_unreachable_sources_match_bash(self):
         cases = {
             "unreachable else source": textwrap.dedent("""\
@@ -1015,12 +1067,20 @@ class CompileRegressionTestCase(unittest.TestCase):
                 'source ./plugins/*.sh',
             ),
             "unsupported if predicate": (
-                'if grep -q enabled config; then\n  source ./dep.sh\nfi\n',
-                'grep -q enabled config',
+                "if awk 'BEGIN { exit 0 }'; then\n  source ./dep.sh\nfi\n",
+                "awk 'BEGIN { exit 0 }'",
             ),
             "unsupported if glob predicate": (
                 'if [ -f ./plugins/*.sh ]; then\n  source ./dep.sh\nfi\n',
                 '[ -f ./plugins/*.sh ]',
+            ),
+            "unsupported grep basic regex predicate": (
+                'if grep -q "enabled.*" config; then\n  source ./dep.sh\nfi\n',
+                'grep -q "enabled.*" config',
+            ),
+            "unsupported POSIX regex predicate": (
+                'MODE=5\nif [[ "$MODE" =~ [[:digit:]] ]]; then\n  source ./dep.sh\nfi\n',
+                '[[ "$MODE" =~ [[:digit:]] ]]',
             ),
             "divergent if branch state": (
                 'if [[ -n "$USE_A" ]]; then\n  DEP=./a.sh\nelse\n  DEP=./b.sh\nfi\nsource "$DEP"\n',
@@ -1138,6 +1198,7 @@ class CompileRegressionTestCase(unittest.TestCase):
                 project.write("prod.sh", 'echo "prod"\n')
                 project.write("a.sh", 'echo "a"\n')
                 project.write("b.sh", 'echo "b"\n')
+                project.write("config", "enabled=true\n")
                 project.write("plugins/a.sh", 'echo "plugin"\n')
                 project.write("plugins/b.sh", 'echo "plugin b"\n')
                 project.write("main.sh", content)

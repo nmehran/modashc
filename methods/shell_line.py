@@ -9,6 +9,7 @@ def get_commands(line: str):
     in_single_quote = False
     in_double_quote = False
     in_backtick = False
+    in_double_bracket_test = False
     escaped = False
     paren_depth = 0
     index = 0
@@ -52,6 +53,27 @@ def get_commands(line: str):
 
         if char == '"' and not in_single_quote:
             in_double_quote = not in_double_quote
+            current.append(char)
+            index += 1
+            continue
+
+        if (
+            not in_single_quote
+            and not in_double_quote
+            and not in_double_bracket_test
+            and line.startswith('[[', index)
+        ):
+            in_double_bracket_test = True
+            current.append('[[')
+            index += 2
+            continue
+
+        if in_double_bracket_test:
+            if not in_single_quote and not in_double_quote and line.startswith(']]', index):
+                in_double_bracket_test = False
+                current.append(']]')
+                index += 2
+                continue
             current.append(char)
             index += 1
             continue

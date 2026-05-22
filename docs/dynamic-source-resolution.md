@@ -15,11 +15,13 @@ Modeled `if` / `elif` / `else` blocks can lower source sites inside branches
 when branch predicates are side-effect-free and branch state is exact enough for
 later source resolution. Executable mode neutralizes source sites in statically
 unreachable branches instead of resolving or preserving them as live runtime
-sources. Exact `case` blocks can lower source sites for known scalar subjects
-and modeled arm patterns, with non-matching arm sources neutralized in
-executable output. Bounded local function calls can lower sources when the
-function definition is known, arguments are exact, and source-relevant function
-body effects are modeled.
+sources. The current modeled condition subset includes exact file/string tests,
+compound logical predicates, arithmetic predicates, regex matching, and safe
+`grep -q` file checks. Exact `case` blocks can lower source sites for known
+scalar subjects and modeled arm patterns, with non-matching arm sources
+neutralized in executable output. Bounded local function calls can lower sources
+when the function definition is known, arguments are exact, and source-relevant
+function body effects are modeled.
 Unsupported forms fail closed.
 
 ## Goal
@@ -350,6 +352,7 @@ These still need separate specs before implementation:
 
 - Broader glob semantics beyond ordinary deterministic file globs.
 - Custom-IFS scalar word-list splitting.
+- Conditional predicates outside the modeled side-effect-free subset.
 - Broader case pattern and fallthrough semantics.
 - Complex array/list-based source paths.
 - Broader user-defined function semantics, including dynamic dispatch,
@@ -361,11 +364,9 @@ These still need separate specs before implementation:
 These are intentionally tracked as practical future work, not permanently
 unsupported forms:
 
-- Compound conditional predicates such as `[[ -f ./a.sh && -n "$LOAD" ]]`.
 - Glob-bearing conditional predicates such as `[ -f ./plugins/*.sh ]`.
-- Command predicates such as `if grep -q enabled config; then ...`.
-- Arithmetic predicates such as `if (( COUNT > 0 )); then ...`.
-- Pattern/regex predicates such as `[[ "$MODE" =~ ^prod ]]`.
+- Command predicates outside the safe `grep -q` file-check subset.
+- Regex predicates requiring POSIX classes or unsupported Bash ERE behavior.
 - Nested modeled control flow inside branch bodies when the current line
   frontend cannot preserve exact nested locations.
 - Branch-divergent cwd, variables, arrays, or shell options followed by later

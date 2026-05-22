@@ -8,14 +8,15 @@ both executable and context rendering for the supported subset. Exact finite
 `for` loops over literal words, known scalar path variables, default-IFS scalar
 word lists, and exact `${array[@]}` expansions are implemented, along with
 deterministic ordinary file-glob loop expansion. Branch-aware `if` / `elif` /
-`else` lowering is
-implemented for the current side-effect-free predicate subset, and exact
-`case` blocks are implemented for known subjects and the modeled pattern
-subset. Bounded local function calls are implemented when the definition is
-known, arguments are exact, and source-relevant body effects are modeled. It
-remains fail-closed for broader glob semantics, custom-IFS word splitting,
-unsupported conditional predicates, broader case pattern semantics, broader
-function control flow, dynamic function dispatch, and runtime dispatch.
+`else` lowering is implemented for the current side-effect-free predicate
+subset, including compound logical predicates, arithmetic predicates, regex
+matching, and safe `grep -q` file checks. Exact `case` blocks are implemented
+for known subjects and the modeled pattern subset. Bounded local function calls
+are implemented when the definition is known, arguments are exact, and
+source-relevant body effects are modeled. It remains fail-closed for broader
+glob semantics, custom-IFS word splitting, unsupported command predicates,
+broader case pattern semantics, broader function control flow, dynamic function
+dispatch, and runtime dispatch.
 
 ## Problem
 
@@ -317,16 +318,20 @@ Implemented predicates include:
 - `[[ -n "$KNOWN" ]]`
 - `[[ -z "$KNOWN" ]]`
 - exact string equality
+- compound `[[ ... && ... ]]`, `[[ ... || ... ]]`, and `!` predicates when
+  each atom is modeled
+- integer tests such as `[[ "$COUNT" -gt 1 ]]`
+- arithmetic predicates such as `(( COUNT > 0 ))`
+- regex predicates such as `[[ "$MODE" =~ ^prod ]]`
+- safe literal or extended-regex `grep -q` file predicates
 - `[ -f path ]`, `[ -d path ]`, `[ -e path ]`
 - `test -f path`, `test -d path`, `test -e path`
 
 Unsupported but practical predicates to track:
 
-- compound predicates with `&&` or `||`
 - glob-bearing file predicates such as `[ -f ./plugins/*.sh ]`
-- command predicates such as `grep -q`
-- arithmetic predicates using `(( ... ))`
-- pattern or regex predicates such as `=~`
+- command predicates outside the safe `grep -q` subset
+- regex predicates requiring POSIX classes or unsupported Bash ERE behavior
 - nested branch semantics that exceed the current line frontend
 - divergent branch state followed by later state-dependent source resolution
 
