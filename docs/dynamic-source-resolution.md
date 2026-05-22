@@ -2,11 +2,31 @@
 
 ## Status
 
-Initial implementation. The compiler supports static sources,
+Current implementation. The compiler supports static sources,
 variable/env-expanded paths, path command substitutions such as `dirname`,
-`basename`, and `realpath`, plus the first Python-only dynamic resolver subset:
-safe `cat`, safe `find`, safe `eval source`, and context-only `bash -c source`
-classification. Unsupported forms fail closed.
+`basename`, and `realpath`, plus Python-only dynamic resolvers for safe `cat`,
+safe `find`, safe `eval source`, and context-only `bash -c source`
+classification. The source-effect evaluator also supports exact finite `for`
+loops over literal words, known scalar path variables, exact custom-IFS scalar
+word lists, exact `${array[@]}` expansions, safe command-substitution word
+lists, and deterministic ordinary file globs in finite loop word lists. Exact
+indexed, associative, appended, command-substitution, and file-populated arrays
+are modeled, as are bounded `while` / `until`, C-style `for ((...))`, and
+`while read` file enumeration from exact files, safe producer pipelines, and
+safe process substitutions.
+Direct source globs are accepted only when they resolve to exactly one file.
+Modeled `if` / `elif` / `else` blocks can lower source sites inside branches
+when branch predicates are side-effect-free and branch state is exact enough for
+later source resolution. Executable mode neutralizes source sites in statically
+unreachable branches instead of resolving or preserving them as live runtime
+sources. The current modeled condition subset includes exact file/string tests,
+compound logical predicates, arithmetic predicates, regex and pattern matching,
+and safe `grep -q` file checks. Exact `case` blocks can lower source sites for
+known scalar subjects and modeled arm patterns, with non-matching arm sources
+neutralized in executable output. Bounded local function calls can lower sources
+when the function definition is known, arguments are exact, and source-relevant
+function body effects are modeled.
+Unsupported forms fail closed.
 
 ## Goal
 
@@ -77,11 +97,13 @@ render `context-only` records, but the output must make that limitation clear.
 ## Safety Rules
 
 - Resolver input is parsed data, not shell text to execute.
-- File reads are allowed only for resolvers whose purpose is file-content path
-  lookup, such as safe `cat`.
+- File reads are allowed only for safe producer resolvers whose purpose is
+  path-list discovery, such as safe `cat`, `sort`, `head`, and `grep -lF` /
+  `grep -lE`.
 - Directory walks are allowed only for safe `find` subsets.
-- Multiple candidate paths are unsupported in executable mode unless the source
-  form has deterministic multi-source semantics.
+- Multiple candidate paths and direct source positional arguments are
+  unsupported in executable mode unless the source form has deterministic
+  multi-source or argument semantics.
 - Ambiguous current-directory state is unsupported.
 - Any command separator, redirection, pipe, process substitution, background
   operator, or unapproved command substitution in a dynamic source expression is
@@ -100,9 +122,10 @@ Resolvers should be tried from most explicit to most specialized:
 3. Path command resolver: `dirname`, `basename`, `realpath`
 4. Safe `cat` resolver
 5. Safe `find` resolver
-6. Safe `eval source` resolver
-7. Safe `bash -c source` classifier
-8. Unsupported dynamic diagnostic
+6. Direct one-match glob resolver
+7. Safe `eval source` resolver
+8. Safe `bash -c source` classifier
+9. Unsupported dynamic diagnostic
 
 The resolver registry should make this ordering explicit in code and tests.
 
@@ -130,6 +153,31 @@ source "$THIS_DIR/dep.sh"
 
 source "$(dirname "$BASH_SOURCE")/dep.sh"
 source "$(realpath ./dep.sh)"
+
+for dep in ./a.sh ./b.sh; do
+  source "$dep"
+done
+
+deps=(./a.sh ./b.sh)
+for dep in "${deps[@]}"; do
+  source "$dep"
+done
+
+for dep in ./plugins/*.sh; do
+  source "$dep"
+done
+
+source ./single-plugin/*.sh
+
+if [[ -f ./optional.sh ]]; then
+  source ./optional.sh
+fi
+
+if [[ "$MODE" == prod ]]; then
+  source ./prod.sh
+else
+  source ./dev.sh
+fi
 ```
 
 ## Implemented Resolver Subset
@@ -233,6 +281,140 @@ The last example should be rejected at the `eval` layer initially. A later
 implementation may allow nested resolver dispatch only if diagnostics remain
 clear and the parser can prove there is still one source command.
 
+### Deterministic Globs
+
+Target loop forms:
+
+```bash
+for dep in ./plugins/*.sh; do
+  source "$dep"
+done
+
+for dep in "./plugin dir#tag"/*.sh; do
+  source "$dep"
+done
+```
+
+Target direct-source form:
+
+```bash
+source ./single-plugin/*.sh
+```
+
+Accept loop globs only when:
+
+- The glob metacharacters are unquoted.
+- The pattern is an ordinary file glob using `*`, `?`, `[]`, deterministic
+  brace expansion, or modeled `globstar` recursion.
+- Expansion is cwd-aware and deterministic.
+- Every match is a regular file.
+- Modeled shell state is limited to `nullglob`, `dotglob`, `globstar`,
+  `nocaseglob`, `failglob`, and practical `GLOBIGNORE` filtering.
+
+Accept direct source globs only when the glob resolves to exactly one regular
+file. Multiple direct-source matches are rejected because Bash would source the
+first expanded word and pass the remaining words as positional arguments to that
+sourced file, which is not equivalent to sourcing every match.
+
+Reject examples:
+
+```bash
+source ./plugins/*.sh          # multiple matches
+for dep in "./plugins/*.sh"; do source "$dep"; done
+set -f
+for dep in ./plugins/*.sh; do source "$dep"; done
+shopt -s extglob
+for dep in ./plugins/@(a|b).sh; do source "$dep"; done
+GLOBIGNORE=./plugins/a.sh:./plugins/b.sh
+for dep in ./plugins/*.sh; do source "$dep"; done
+```
+
+Currently rejected glob-affecting state includes `set -f`, `extglob`, direct
+source globs with multiple matches, and cases where `GLOBIGNORE` removes every
+matched source path.
+
+### Command-Substitution Word Lists
+
+Target loop forms:
+
+```bash
+for dep in $(cat deps.txt); do
+  source "$dep"
+done
+
+for dep in $(find ./plugins -type f -name '*.sh' -print); do
+  source "$dep"
+done
+
+deps=($(cat deps.txt))
+for dep in "${deps[@]}"; do
+  source "$dep"
+done
+```
+
+Accept only when the command substitution is a single safe producer:
+
+- `cat` with exact readable file operands
+- deterministic `find` with the existing safe predicate subset
+- `printf '%s\n' ...` with exact arguments
+- `sort` with exact readable file operands and optional `-u`
+- `head` with one exact readable file operand and optional `-n N` / `-N`
+- `grep -lF` or `grep -lE` with exact readable file operands
+- `realpath` over exact existing file operands
+- `dirname` / `basename` over exact operands
+
+Unquoted command-substitution output is split with the exact current `IFS`,
+including custom scalar `IFS` values. Quoted command substitution is accepted
+only when it produces exactly one non-empty line. Pipes, command separators,
+nested substitutions, and backticks remain fail-closed.
+
+### Bounded `while` / `until` And Read Loops
+
+Target forms:
+
+```bash
+i=0
+while (( i < 2 )); do
+  source "./deps/$i.sh"
+  ((i++))
+done
+
+while IFS= read -r dep; do
+  source "$dep"
+done < deps.txt
+
+while read -r dep || [[ -n "$dep" ]]; do
+  source "$dep"
+done < deps.txt
+
+find ./plugins -type f -name '*.sh' -print | while read -r dep; do
+  source "$dep"
+done
+
+while read -r dep; do
+  source "$dep"
+done < <(find ./plugins -type f -name '*.sh' -print)
+
+for (( i=0; i<2; i++ )); do
+  source "./deps/$i.sh"
+done
+```
+
+The evaluator models exact `while` / `until` conditions, exact arithmetic
+assignment and increment/decrement mutations, local `break` / `continue`, and a
+bounded iteration limit. It also models `while read` file enumeration, including
+the common `IFS= read -r` form for paths containing spaces and the
+`read ... || [[ -n "$var" ]]` guard for files without a final newline. Read-loop
+input may come from an exact file redirection, safe producer pipeline, or safe
+process substitution. Pipeline read loops use an explicit subshell wrapper
+unless exact `lastpipe` / `monitor` shell state proves the loop runs in the
+parent shell. C-style `for ((...))` loops are modeled when init, condition, and
+update clauses are exact arithmetic expressions.
+
+Unknown loop conditions, unsupported C-style arithmetic, unsupported read
+options, multi-level loop control, and loops exceeding the modeled iteration
+limit fail before executable output is written.
+
 ### `bash -c "source ..."`
 
 Target forms:
@@ -258,33 +440,45 @@ boundary rather than inline the file into the parent shell.
 
 ## Future Pattern Families
 
-These need separate specs before implementation:
+These still need separate specs before implementation:
 
-- Loop-driven source sites:
-  ```bash
-  for file in ./plugins/*.sh; do
-    source "$file"
-  done
-  ```
-- Conditional sources:
-  ```bash
-  if [[ -f ./local.sh ]]; then
-    source ./local.sh
-  fi
-  ```
-- Case-driven source selection.
-- Array/list-based source paths.
-- Glob expansion as dependency source.
-- User-defined functions that compute source paths.
-- Process substitution and generated source streams.
+- Broader glob semantics beyond ordinary deterministic file globs.
+- Direct source positional arguments, including direct source glob multi-match
+  argument semantics.
+- Conditional predicates outside the modeled side-effect-free subset.
+- Broader case pattern and fallthrough semantics.
+- Complex array/list-based source paths outside exact indexed, associative,
+  append, command-substitution, and file-populated arrays.
+- Broader user-defined function semantics, including runtime-dynamic dispatch,
+  recursive calls, non-equivalent branch-defined functions, and
+  branch-dependent returns.
+- Unsupported process substitution and generated source streams outside exact
+  read-loop producer input.
+
+### Unsupported But Practical
+
+These are intentionally tracked as practical future work, not permanently
+unsupported forms:
+
+- Glob-bearing conditional predicates such as `[ -f ./plugins/*.sh ]`.
+- Direct source positional arguments such as `source ./dep.sh arg1`.
+- Command predicates outside the safe `grep -q` file-check subset.
+- Regex predicates requiring POSIX classes or unsupported Bash ERE behavior.
+- Nested modeled control flow inside branch bodies when the current line
+  frontend cannot preserve exact nested locations.
+- Branch-divergent cwd, variables, arrays, or shell options followed by later
+  source resolution that depends on that divergent state.
+- Case subjects or arm patterns outside the exact modeled case subset.
+- Case patterns that need shell normalization for mixed quoting, backslash
+  escapes, or POSIX character classes.
+- Case fallthrough terminators, `;&` and `;;&`.
 
 These are not merely more dynamic resolvers. They require control-flow and
 multi-result semantics, and they should be designed separately.
 
-In the current resolver-driven compiler, executable mode fails closed when a
-source command appears inside these unsupported families. That prevents output
-from silently preserving runtime `source` behavior that the compiler has not
-lowered.
+Executable mode fails closed when a source command appears inside these
+unsupported families. That prevents output from silently preserving runtime
+`source` behavior that the compiler has not lowered.
 
 ## Test Requirements
 
@@ -309,17 +503,42 @@ scope:
 - `ResolvedSource` records describe exact dependency resolution.
 - `methods.source_resolver` owns source command detection, heredoc guards, safe
   dynamic source resolvers, and unsupported-source classification.
-- `methods.sources` owns traversal, cwd tracking, variable state, and path
-  context.
+- `methods.source_evaluator` owns traversal, cwd tracking, variable state, and
+  source-event production.
+- `methods.sources` owns path-resolution helpers and the `get_sources()`
+  compatibility wrapper over source-effect evaluation.
 - Safe `cat`, safe `find`, safe `eval source`, and context-only
   `bash -c source` classification are implemented.
+- Exact finite `for` loop lowering is implemented for literal words, known
+  scalar path variables, and exact `${array[@]}` expansion.
+- Deterministic file-glob loop lowering is implemented, including `nullglob`,
+  `dotglob`, `globstar`, `nocaseglob`, deterministic brace expansion, and
+  practical `GLOBIGNORE` filtering. Direct source globs are implemented for
+  one-match cases only.
+- Exact custom-IFS scalar and command-substitution loop word splitting is
+  implemented.
+- Safe producer word lists are implemented for `cat`, `find`, `printf`, `sort`,
+  `head`, `grep -lF` / `grep -lE`, `realpath`, `dirname`, and `basename`.
+- Branch-aware `if` / `elif` / `else` source lowering is implemented for the
+  side-effect-free predicate subset and fail-closed branch-state merge.
+- Exact `case` source lowering is implemented for known scalar subjects,
+  mutually exclusive arms, and no-op unreachable source sites.
+- Bounded local function source lowering is implemented for known definitions,
+  exact arguments, positional source expressions, parent-state mutations,
+  exact assignment prefixes, scalar `local` assignments, exact `return` /
+  `shift`, exact dynamic dispatch, same-line post-definition calls, and nested
+  modeled control flow. It also supports source-equivalent branch-defined
+  functions and exact function-call status for chained source sites.
 - Executable mode fails before output when unsupported source forms would leave
   live runtime `source` commands.
 
-Structured diagnostic objects are still deferred. Current diagnostics are raised
-as explicit `UnsupportedSourceError` messages that include the rejected source
-site wherever possible.
+Structured diagnostic objects are implemented for unsupported source failures.
+Current diagnostics are raised as explicit `UnsupportedSourceError` instances
+with stable codes, source locations, rejected fragments, messages, and hints.
 
-Future resolver increments should stay small, tested, and fail-closed. Loop,
-conditional, case, array, glob, and runtime-dispatch support should not be added
-as one-off resolver patches; those belong to a separate evaluator or IR design.
+Future resolver increments should stay small, tested, and fail-closed. Case,
+complex array, broader conditional, `extglob`, direct source positional and
+glob argument semantics, recursive functions, non-equivalent branch-defined
+functions, branch-dependent function returns, and runtime-dispatch support
+should not be added as one-off resolver patches; those belong in the
+evaluator/IR design.

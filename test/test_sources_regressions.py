@@ -7,7 +7,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from methods.sources import get_commands, get_sources
+from methods.shell_line import get_commands
+from methods.sources import get_sources
 from test.support import ScriptProject
 
 
@@ -45,9 +46,31 @@ class SourceRegressionTestCase(unittest.TestCase):
             list(get_commands('cd subdir && source ./dep.sh || echo missing')),
             ['cd subdir', 'source ./dep.sh', 'echo missing'],
         )
+        self.assertEqual(
+            list(get_commands('if [[ -f ./dep.sh && -n "$LOAD_DEP" ]]; then source ./dep.sh; fi')),
+            ['if [[ -f ./dep.sh && -n "$LOAD_DEP" ]]', 'then source ./dep.sh', 'fi'],
+        )
+        self.assertEqual(
+            list(get_commands('[[ -f ./dep.sh ]] && source ./dep.sh')),
+            ['[[ -f ./dep.sh ]]', 'source ./dep.sh'],
+        )
+
+    def test_get_commands_preserves_nested_shell_constructs(self):
+        self.assertEqual(
+            list(get_commands('cat <(echo before; source ./dep.sh); echo done')),
+            ['cat <(echo before; source ./dep.sh)', 'echo done'],
+        )
+        self.assertEqual(
+            list(get_commands('echo `echo before; source ./dep.sh`; echo done')),
+            ['echo `echo before; source ./dep.sh`', 'echo done'],
+        )
+        self.assertEqual(
+            list(get_commands('(source ./dep.sh; echo nested); echo done')),
+            ['(source ./dep.sh; echo nested)', 'echo done'],
+        )
 
     def test_command_wrapped_source_is_detected_as_source_command(self):
-        from methods.source_resolver import contains_source_command
+        from methods.source_resolver import contains_nested_source_command, contains_source_command
 
         self.assertTrue(contains_source_command('command source ./dep.sh'))
         self.assertTrue(contains_source_command('command -p source ./dep.sh'))
@@ -61,6 +84,20 @@ class SourceRegressionTestCase(unittest.TestCase):
         self.assertFalse(contains_source_command('command -v source'))
         self.assertFalse(contains_source_command('command -V source'))
         self.assertFalse(contains_source_command('FOO=bar echo source ./dep.sh'))
+        self.assertTrue(contains_nested_source_command('(source ./dep.sh)'))
+        self.assertTrue(contains_nested_source_command('(. ./dep.sh)'))
+        self.assertTrue(contains_nested_source_command('cat <(source ./dep.sh)'))
+        self.assertTrue(contains_nested_source_command('echo "$(source ./dep.sh)"'))
+        self.assertTrue(contains_nested_source_command('echo `source ./dep.sh`'))
+        self.assertTrue(contains_nested_source_command('echo $(( $(source ./dep.sh) + 1 ))'))
+        self.assertTrue(contains_nested_source_command('echo "$(if true; then source ./dep.sh; fi)"'))
+        self.assertTrue(contains_nested_source_command('cat <(for f in ./dep.sh; do source "$f"; done)'))
+        self.assertTrue(contains_nested_source_command('echo `case "$ENV" in prod) . ./dep.sh ;; esac`'))
+        self.assertFalse(contains_nested_source_command('echo "source ./dep.sh"'))
+        self.assertFalse(contains_nested_source_command("echo 'source ./dep.sh'"))
+        self.assertFalse(contains_nested_source_command('echo $((1 + 2))'))
+        self.assertFalse(contains_nested_source_command('tokens=(source ./dep.sh)'))
+        self.assertFalse(contains_nested_source_command('declare -a tokens=(source ./dep.sh)'))
 
     def test_heredoc_detection_ignores_quotes_and_arithmetic(self):
         from methods.source_resolver import extract_heredoc_delimiters
@@ -112,6 +149,40 @@ class SourceRegressionTestCase(unittest.TestCase):
                 os.chdir(before)
 
         self.assertEqual(after, before)
+
+    def test_get_sources_uses_ir_evaluator_for_modeled_control_flow(self):
+        with ScriptProject() as project:
+            project.write("loop-a.sh", 'echo "loop a"\n')
+            project.write("loop-b.sh", 'echo "loop b"\n')
+            project.write("if-dep.sh", 'echo "if dep"\n')
+            project.write("case-dep.sh", 'echo "case dep"\n')
+            project.write("main.sh", "\n".join([
+                "for dep in ./loop-a.sh ./loop-b.sh; do",
+                '  source "$dep"',
+                "done",
+                "MODE=prod",
+                'if [[ "$MODE" == prod ]]; then',
+                "  source ./if-dep.sh",
+                "fi",
+                "ENV=prod",
+                'case "$ENV" in',
+                "  prod) source ./case-dep.sh ;;",
+                "esac",
+                "",
+            ]))
+
+            actual = [
+                path.relative_to(project.root).as_posix()
+                for path in project.sources("main.sh")
+            ]
+
+        self.assertEqual(actual, [
+            "loop-a.sh",
+            "loop-b.sh",
+            "if-dep.sh",
+            "case-dep.sh",
+            "main.sh",
+        ])
 
     def test_relative_source_resolution_does_not_fall_back_to_process_cwd(self):
         before = os.getcwd()

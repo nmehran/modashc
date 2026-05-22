@@ -1,3 +1,4 @@
+import re
 import sys
 import textwrap
 import unittest
@@ -7,6 +8,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from methods.source_effects import DiagnosticSeverity
 from test.support import ScriptProject
 
 
@@ -94,15 +96,741 @@ class CompileRegressionTestCase(unittest.TestCase):
         cases = {
             "variable dirname": 'THIS_DIR="$(dirname "$BASH_SOURCE")"\nsource "$THIS_DIR/dep.sh"\necho "main"\n',
             "inline dirname": 'source "$(dirname "$BASH_SOURCE")/dep.sh"\necho "main"\n',
+            "inline dirname bare": 'source "$(dirname dep.sh)/dep.sh"\necho "main"\n',
+            "inline basename trailing slash": 'source "./plugins/$(basename ./plugins/dep.sh/)"\necho "main"\n',
+            "inline basename suffix": 'source "./plugins/$(basename ./plugins/dep.sh .sh).sh"\necho "main"\n',
             "realpath": 'source "$(realpath ./dep.sh)"\necho "main"\n',
         }
 
         for name, content in cases.items():
             with self.subTest(name=name), ScriptProject() as project:
                 project.write("dep.sh", 'echo "dep"\n')
+                project.write("plugins/dep.sh", 'echo "plugin dep"\n')
                 project.write("main.sh", content)
 
                 project.assert_compiled_matches(self, "main.sh")
+
+    def test_exact_array_index_source_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("deps/feature.sh", 'echo "feature"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                deps=(./unused.sh ./deps/feature.sh)
+                source "${deps[1]}"
+                echo "main"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_non_source_array_words_match_bash(self):
+        with ScriptProject() as project:
+            project.write("main.sh", textwrap.dedent("""\
+                tokens=(source ./dep.sh)
+                printf '%s:%s\n' "${tokens[0]}" "${tokens[1]}"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_exact_literal_for_loop_sources_match_bash(self):
+        with ScriptProject() as project:
+            project.write("a.sh", 'echo "dep:a:$dep"\n')
+            project.write("b.sh", 'echo "dep:b:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in ./a.sh ./b.sh; do
+                  echo "before:$dep"
+                  source "$dep"
+                  echo "after:$dep"
+                done
+                echo "final:$dep"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_exact_array_for_loop_sources_match_bash(self):
+        with ScriptProject() as project:
+            project.write("deps/a.sh", 'echo "array:a"\n')
+            project.write("deps/b.sh", 'echo "array:b"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                deps=(./deps/a.sh ./deps/b.sh)
+                for dep in "${deps[@]}"; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_exact_newline_do_for_loop_sources_match_bash(self):
+        with ScriptProject() as project:
+            project.write("a.sh", 'echo "newline:a"\n')
+            project.write("b.sh", 'echo "newline:b"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in ./a.sh ./b.sh
+                do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_exact_scalar_for_loop_sources_match_bash(self):
+        with ScriptProject() as project:
+            project.write("deps/a.sh", 'echo "scalar:a"\n')
+            project.write("deps/b.sh", 'echo "scalar:b"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                FIRST=./deps/a.sh
+                SECOND=./deps/b.sh
+                for dep in "$FIRST" "$SECOND"; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("deps/a.sh", 'echo "scalar wordlist:a:$dep"\n')
+            project.write("deps/b.sh", 'echo "scalar wordlist:b:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                DEPS="./deps/a.sh   ./deps/b.sh"
+                for dep in $DEPS; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("deps dir#tag/a dep.sh", 'echo "quoted scalar special:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                DEP="./deps dir#tag/a dep.sh"
+                for dep in "$DEP"; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("plugins/b.sh", 'echo "scalar glob:b:$dep"\n')
+            project.write("plugins/a.sh", 'echo "scalar glob:a:$dep"\n')
+            project.write("plugins/readme.txt", 'echo "not sourced"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                DEPS="./plugins/*.sh"
+                for dep in $DEPS; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_empty_scalar_for_loop_sources_match_bash_without_live_source(self):
+        with ScriptProject() as project:
+            project.write("a.sh", 'echo "should not run"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                dep=./a.sh
+                DEPS=""
+                for dep in $DEPS; do source "$dep"; done
+                echo "done:$dep"
+                """))
+
+            output = project.compile("main.sh", mode="executable")
+            expected = project.run("main.sh")
+            actual = project.run(output)
+            compiled_content = output.read_text()
+
+        self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
+        self.assertEqual(actual.stdout, expected.stdout)
+        self.assertNotIn('source "$dep"', compiled_content)
+
+    def test_exact_for_loop_repeated_same_line_sources_match_bash(self):
+        with ScriptProject() as project:
+            project.write("a.sh", 'echo "repeat:a"\n')
+            project.write("b.sh", 'echo "repeat:b"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in ./a.sh ./b.sh; do
+                  source "$dep"; source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_exact_for_loop_special_paths_match_bash(self):
+        with ScriptProject() as project:
+            project.write("deps dir#tag/a dep.sh", 'echo "special:a:$dep"\n')
+            project.write("deps dir#tag/b dep.sh", 'echo "special:b:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in "./deps dir#tag/a dep.sh" "./deps dir#tag/b dep.sh"; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_exact_for_loop_absolute_paths_match_bash(self):
+        with ScriptProject() as project:
+            first = project.write("deps/a.sh", 'echo "absolute:a"\n')
+            second = project.write("deps/b.sh", 'echo "absolute:b"\n')
+            project.write("main.sh", textwrap.dedent(f"""\
+                for dep in "{first}" "{second}"; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_exact_for_loop_cwd_sensitive_source_expression_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("one dir/dep.sh", 'echo "cwd:one:$PWD"\n')
+            project.write("two#dir/dep.sh", 'echo "cwd:two:$PWD"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for dir in "one dir" two#dir; do
+                  cd "$dir"
+                  source ./dep.sh
+                  cd ..
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_glob_for_loop_sources_match_bash(self):
+        with ScriptProject() as project:
+            project.write("plugins/b.sh", 'echo "plugin:b:$dep"\n')
+            project.write("plugins/a.sh", 'echo "plugin:a:$dep"\n')
+            project.write("plugins/readme.txt", 'echo "not sourced"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in ./plugins/*.sh; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh", env={"LC_ALL": "C"})
+
+    def test_glob_for_loop_special_paths_match_bash(self):
+        with ScriptProject() as project:
+            project.write("plugin {dir}#tag/b dep.sh", 'echo "special:b:$dep"\n')
+            project.write("plugin {dir}#tag/a dep.sh", 'echo "special:a:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in "./plugin {dir}#tag"/*.sh; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh", env={"LC_ALL": "C"})
+
+    def test_glob_for_loop_after_cd_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("plugins/b.sh", 'echo "cd:b:$PWD:$dep"\n')
+            project.write("plugins/a.sh", 'echo "cd:a:$PWD:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                cd plugins
+                for dep in ./*.sh; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh", env={"LC_ALL": "C"})
+
+    def test_glob_option_for_loop_sources_match_bash(self):
+        with ScriptProject() as project:
+            project.write("plugins/.hidden.sh", 'echo "dotglob:hidden:$dep"\n')
+            project.write("plugins/a.sh", 'echo "dotglob:a:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                shopt -s dotglob
+                for dep in ./plugins/*.sh; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh", env={"LC_ALL": "C"})
+
+        with ScriptProject() as project:
+            project.write("plugins/a.sh", 'echo "globstar:a:$dep"\n')
+            project.write("plugins/nested/b.sh", 'echo "globstar:b:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                shopt -s globstar
+                for dep in ./plugins/**/*.sh; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh", env={"LC_ALL": "C"})
+
+        with ScriptProject() as project:
+            project.write("plugins/one/a.sh", 'echo "no globstar one-level:$dep"\n')
+            project.write("plugins/one/deep/b.sh", 'echo "no globstar deep:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in ./plugins/**/*.sh; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh", env={"LC_ALL": "C"})
+
+        with ScriptProject() as project:
+            project.write("plugins/a.sh", 'echo "nocase:a:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                shopt -s nocaseglob
+                for dep in ./plugins/*.SH; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh", env={"LC_ALL": "C"})
+
+    def test_brace_and_nullglob_for_loop_sources_match_bash(self):
+        with ScriptProject() as project:
+            project.write("plugins/a.sh", 'echo "brace:a:$dep"\n')
+            project.write("plugins/b.sh", 'echo "brace:b:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in ./plugins/{a,b}.sh; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh", env={"LC_ALL": "C"})
+
+        with ScriptProject() as project:
+            project.write("deps/01.sh", 'echo "seq:01:$dep"\n')
+            project.write("deps/02.sh", 'echo "seq:02:$dep"\n')
+            project.write("deps/03.sh", 'echo "seq:03:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in ./deps/{01..03}.sh; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh", env={"LC_ALL": "C"})
+
+        with ScriptProject() as project:
+            project.write("deps/1.sh", 'echo "seq-step:1:$dep"\n')
+            project.write("deps/3.sh", 'echo "seq-step:3:$dep"\n')
+            project.write("deps/5.sh", 'echo "seq-step:5:$dep"\n')
+            project.write("letters/a.sh", 'echo "seq-letter:a:$dep"\n')
+            project.write("letters/b.sh", 'echo "seq-letter:b:$dep"\n')
+            project.write("letters/c.sh", 'echo "seq-letter:c:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in ./deps/{1..5..-2}.sh ./letters/{c..a..1}.sh; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh", env={"LC_ALL": "C"})
+
+        with ScriptProject() as project:
+            project.write("main.sh", textwrap.dedent("""\
+                shopt -s nullglob
+                for dep in ./missing/*.sh; do
+                  source "$dep"
+                done
+                echo done
+                """))
+
+            output = project.compile("main.sh", mode="executable")
+            expected = project.run("main.sh")
+            actual = project.run(output)
+            compiled_content = output.read_text()
+
+        self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
+        self.assertEqual(actual.stdout, expected.stdout)
+        self.assertNotIn('source "$dep"', compiled_content)
+
+    def test_globignore_for_loop_sources_match_bash(self):
+        with ScriptProject() as project:
+            project.write("plugins/.hidden.sh", 'echo "globignore:hidden:$dep"\n')
+            project.write("plugins/a.sh", 'echo "globignore:a:$dep"\n')
+            project.write("plugins/b.sh", 'echo "globignore:b:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                GLOBIGNORE=./plugins/b.sh
+                for dep in ./plugins/*.sh; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh", env={"LC_ALL": "C"})
+
+    def test_direct_source_glob_with_single_match_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("plugins/only.sh", 'echo "single glob"\n')
+            project.write("main.sh", 'source ./plugins/*.sh\necho "main"\n')
+
+            project.assert_compiled_matches(self, "main.sh", env={"LC_ALL": "C"})
+
+    def test_direct_source_glob_with_quoted_literal_path_chars_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("plugin {dir}#tag/only dep.sh", 'echo "special single glob"\n')
+            project.write("main.sh", 'source "./plugin {dir}#tag"/*.sh\necho "main"\n')
+
+            project.assert_compiled_matches(self, "main.sh", env={"LC_ALL": "C"})
+
+    def test_if_block_source_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("optional.sh", 'echo "optional:$LOAD_OPTIONAL"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                if [[ -n "$LOAD_OPTIONAL" ]]; then
+                  source ./optional.sh
+                fi
+                echo "main"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh", env={"LOAD_OPTIONAL": "1"})
+            project.assert_compiled_matches(self, "main.sh", env={"LOAD_OPTIONAL": ""})
+
+    def test_if_else_branch_sources_match_bash(self):
+        with ScriptProject() as project:
+            project.write("prod.sh", 'echo "prod:$MODE"\n')
+            project.write("dev.sh", 'echo "dev:$MODE"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                if [[ "$MODE" == prod ]]; then
+                  source ./prod.sh
+                else
+                  source ./dev.sh
+                fi
+                echo "main"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh", env={"MODE": "prod"})
+            project.assert_compiled_matches(self, "main.sh", env={"MODE": "dev"})
+
+    def test_if_elif_branch_sources_match_bash(self):
+        with ScriptProject() as project:
+            project.write("prod.sh", 'echo "prod:$MODE"\n')
+            project.write("stage.sh", 'echo "stage:$MODE"\n')
+            project.write("dev.sh", 'echo "dev:$MODE"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                if [[ "$MODE" == prod ]]; then
+                  source ./prod.sh
+                elif [[ "$MODE" == stage ]]; then
+                  source ./stage.sh
+                else
+                  source ./dev.sh
+                fi
+                echo "main"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh", env={"MODE": "prod"})
+            project.assert_compiled_matches(self, "main.sh", env={"MODE": "stage"})
+            project.assert_compiled_matches(self, "main.sh", env={"MODE": "dev"})
+
+    def test_if_bracket_and_test_predicates_match_bash(self):
+        with ScriptProject() as project:
+            project.write("bracket.sh", 'echo "bracket"\n')
+            project.write("testdep.sh", 'echo "test predicate"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                if [ -f ./bracket.sh ]; then
+                  source ./bracket.sh
+                fi
+                if test -f ./testdep.sh; then
+                  source ./testdep.sh
+                fi
+                echo "main"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_compound_if_predicates_match_bash(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "compound dep"\n')
+            project.write("fallback.sh", 'echo "fallback dep"\n')
+            project.write("mismatch.sh", 'echo "should not be inlined"\n')
+            project.write("variable-pattern.sh", 'echo "variable pattern dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                LOAD_DEP=1
+                MODE=prod-eu
+                PATTERN=prod*
+                if [[ -f ./dep.sh && -n "$LOAD_DEP" ]]; then
+                  source ./dep.sh
+                fi
+                if [[ -f ./missing.sh || "$LOAD_DEP" == 1 ]]; then
+                  source ./fallback.sh
+                fi
+                if [[ "$MODE" != prod* ]]; then
+                  source ./mismatch.sh
+                fi
+                if [[ "$MODE" == $PATTERN ]]; then
+                  source ./variable-pattern.sh
+                fi
+                echo "main"
+                """))
+
+            output = project.compile("main.sh", mode="executable")
+            expected = project.run("main.sh")
+            actual = project.run(output)
+            compiled_content = output.read_text()
+
+        self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
+        self.assertEqual(actual.stdout, expected.stdout)
+        self.assertNotIn("should not be inlined", compiled_content)
+
+    def test_arithmetic_regex_and_grep_if_predicates_match_bash(self):
+        with ScriptProject() as project:
+            project.write("arithmetic.sh", 'echo "arithmetic:$COUNT"\n')
+            project.write("numeric.sh", 'echo "numeric:$COUNT"\n')
+            project.write("regex.sh", 'echo "regex:$MODE"\n')
+            project.write("pattern.sh", 'echo "pattern:$MODE"\n')
+            project.write("grep.sh", 'echo "grep"\n')
+            project.write("grep-regex.sh", 'echo "grep regex"\n')
+            project.write("config", "enabled=true\n")
+            project.write("main.sh", textwrap.dedent("""\
+                COUNT=2
+                MODE=prod-eu
+                if (( COUNT > 1 )); then
+                  source ./arithmetic.sh
+                fi
+                if [[ "$COUNT" -gt 1 ]]; then
+                  source ./numeric.sh
+                fi
+                if [[ "$MODE" =~ ^prod ]]; then
+                  source ./regex.sh
+                fi
+                if [[ "$MODE" == prod* ]]; then
+                  source ./pattern.sh
+                fi
+                if grep -q enabled config; then
+                  source ./grep.sh
+                fi
+                if grep -Eq '^enabled=true$' config; then
+                  source ./grep-regex.sh
+                fi
+                echo "main"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_exact_if_unreachable_sources_match_bash(self):
+        cases = {
+            "unreachable else source": textwrap.dedent("""\
+                MODE=prod
+                if [[ "$MODE" == prod ]]; then
+                  source ./prod.sh
+                else
+                  source ./missing.sh
+                fi
+                echo "main"
+                """),
+            "unreachable then source": textwrap.dedent("""\
+                MODE=dev
+                if [[ "$MODE" == prod ]]; then
+                  source ./missing.sh
+                else
+                  source ./dev.sh
+                fi
+                echo "main"
+                """),
+            "missing optional file guard": textwrap.dedent("""\
+                if [[ -f ./missing-optional.sh ]]; then
+                  source ./missing-optional.sh
+                fi
+                echo "main"
+                """),
+            "inline unreachable source": textwrap.dedent("""\
+                MODE=prod
+                if [[ "$MODE" == prod ]]; then source ./prod.sh; else source ./missing.sh; fi
+                echo "main"
+                """),
+            "unreachable command source": textwrap.dedent("""\
+                MODE=prod
+                if [[ "$MODE" == prod ]]; then
+                  echo "prod"
+                else
+                  eval "source ./missing.sh"
+                fi
+                echo "main"
+                """),
+            "unreachable command dot source": textwrap.dedent("""\
+                MODE=prod
+                if [[ "$MODE" == prod ]]; then
+                  echo "prod"
+                else
+                  eval ". ./missing.sh"
+                fi
+                echo "main"
+                """),
+        }
+
+        for name, content in cases.items():
+            with self.subTest(name=name), ScriptProject() as project:
+                project.write("prod.sh", 'echo "prod"\n')
+                project.write("dev.sh", 'echo "dev"\n')
+                project.write("main.sh", content)
+
+                project.assert_compiled_matches(self, "main.sh")
+
+    def test_case_block_sources_match_bash(self):
+        cases = {
+            "assigned subject": (
+                textwrap.dedent("""\
+                    ENV=prod
+                    case "$ENV" in
+                      prod) source ./prod.sh ;;
+                      dev) source ./missing-dev.sh ;;
+                    esac
+                    echo "main"
+                    """),
+                None,
+            ),
+            "environment subject": (
+                textwrap.dedent("""\
+                    case "$ENV" in
+                      prod) source ./prod.sh ;;
+                      dev) source ./dev.sh ;;
+                    esac
+                    echo "main"
+                    """),
+                {"ENV": "dev"},
+            ),
+            "default arm": (
+                textwrap.dedent("""\
+                    ENV=qa
+                    case "$ENV" in
+                      prod) source ./missing-prod.sh ;;
+                      *) source ./default.sh ;;
+                    esac
+                    echo "main"
+                    """),
+                None,
+            ),
+            "alternate patterns": (
+                textwrap.dedent("""\
+                    ENV=stage
+                    case "$ENV" in
+                      prod|stage) source ./prod.sh ;;
+                      dev) source ./missing-dev.sh ;;
+                    esac
+                    echo "main"
+                    """),
+                None,
+            ),
+            "glob pattern": (
+                textwrap.dedent("""\
+                    ENV=prod-eu
+                    case "$ENV" in
+                      prod-*) source ./prod.sh ;;
+                      dev) source ./missing-dev.sh ;;
+                    esac
+                    echo "main"
+                    """),
+                None,
+            ),
+            "quoted literal pattern": (
+                textwrap.dedent("""\
+                    ENV='prod-*'
+                    case "$ENV" in
+                      "prod-*") source ./prod.sh ;;
+                      *) source ./missing-default.sh ;;
+                    esac
+                    echo "main"
+                    """),
+                None,
+            ),
+            "no matching arm": (
+                textwrap.dedent("""\
+                    ENV=qa
+                    case "$ENV" in
+                      prod) source ./missing-prod.sh ;;
+                      dev) source ./missing-dev.sh ;;
+                    esac
+                    echo "main"
+                    """),
+                None,
+            ),
+            "inline arms": (
+                textwrap.dedent("""\
+                    ENV=prod
+                    case "$ENV" in prod) source ./prod.sh ;; dev) source ./missing-dev.sh ;; esac
+                    echo "main"
+                    """),
+                None,
+            ),
+            "quoted subject containing in": (
+                textwrap.dedent("""\
+                    case "value in prod" in
+                      *prod) source ./prod.sh ;;
+                      *) source ./missing-default.sh ;;
+                    esac
+                    echo "main"
+                    """),
+                None,
+            ),
+            "unknown source-free case": (
+                textwrap.dedent("""\
+                    case "$ENV" in
+                      prod) echo "prod mode" ;;
+                      *) echo "other mode" ;;
+                    esac
+                    source ./prod.sh
+                    echo "main"
+                    """),
+                None,
+            ),
+        }
+
+        for name, (content, env) in cases.items():
+            with self.subTest(name=name), ScriptProject() as project:
+                project.write("prod.sh", 'echo "prod:$ENV"\n')
+                project.write("dev.sh", 'echo "dev:$ENV"\n')
+                project.write("default.sh", 'echo "default:$ENV"\n')
+                project.write("main.sh", content)
+
+                project.assert_compiled_matches(self, "main.sh", env=env)
+
+    def test_case_block_state_after_arm_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "after:$DEP"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                ENV=prod
+                case "$ENV" in
+                  prod) DEP=./dep.sh ;;
+                  dev) DEP=./missing.sh ;;
+                esac
+                source "$DEP"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_if_branch_local_state_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("a.sh", 'echo "branch:a:$DEP"\n')
+            project.write("b.sh", 'echo "branch:b:$DEP"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                if [[ -n "$USE_A" ]]; then
+                  DEP=./a.sh
+                  source "$DEP"
+                else
+                  DEP=./b.sh
+                  source "$DEP"
+                fi
+                echo "main"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh", env={"USE_A": "1"})
+            project.assert_compiled_matches(self, "main.sh", env={"USE_A": ""})
+
+    def test_if_branch_local_cd_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("enabled/dep.sh", 'echo "enabled:$PWD"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                if [[ -n "$LOAD_ENABLED" ]]; then
+                  cd enabled
+                  source ./dep.sh
+                fi
+                echo "main"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh", env={"LOAD_ENABLED": "1"})
+            project.assert_compiled_matches(self, "main.sh", env={"LOAD_ENABLED": ""})
+
+    def test_if_converged_state_after_branch_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "after:$DEP"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                if [[ -n "$FLAG" ]]; then
+                  DEP=./dep.sh
+                else
+                  DEP=./dep.sh
+                fi
+                source "$DEP"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh", env={"FLAG": "1"})
+            project.assert_compiled_matches(self, "main.sh", env={"FLAG": ""})
 
     def test_environment_absolute_source_matches_bash(self):
         with ScriptProject() as project:
@@ -197,6 +925,474 @@ class CompileRegressionTestCase(unittest.TestCase):
 
             project.assert_compiled_matches(self, "main.sh")
 
+    def test_runtime_source_reference_before_source_on_same_line_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "dep after bash source"\n')
+            project.write("main.sh", 'echo "$BASH_SOURCE"; source ./dep.sh\n')
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_loop_heredoc_source_text_is_not_treated_as_dependency(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "loop dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in ./dep.sh; do
+                  cat <<EOF
+                source "$dep"
+                EOF
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_command_substitution_loop_word_lists_match_bash(self):
+        with ScriptProject() as project:
+            project.write("a.sh", 'echo "a"\n')
+            project.write("b.sh", 'echo "b"\n')
+            project.write("deps.txt", "./a.sh\n./b.sh\n")
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in $(cat deps.txt); do
+                  source "$dep"
+                done
+                echo done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            self.assertNotIn("$(cat deps.txt)", project.path("compiled.sh").read_text())
+
+        with ScriptProject() as project:
+            project.write("plugins/b.sh", 'echo "b"\n')
+            project.write("plugins/a.sh", 'echo "a"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in $(find ./plugins -type f -name '*.sh' -print); do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            self.assertNotIn("$(find ./plugins", project.path("compiled.sh").read_text())
+
+        with ScriptProject() as project:
+            project.write("plugins/a.sh", 'echo "absolute find dep"\n')
+            project.write("main.sh", textwrap.dedent(f"""\
+                for dep in $(find {project.root}/plugins -type f -name '*.sh' -print); do
+                  echo "dep=$dep"
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            compiled = project.path("compiled.sh").read_text()
+            self.assertNotIn("$(find ", compiled)
+            self.assertIn(str(project.root / "plugins" / "a.sh"), compiled)
+
+        with ScriptProject() as project:
+            project.write("plugins/a.sh", 'echo "a"\n')
+            project.write("plugins/b.sh", 'echo "b"\n')
+            project.write("deps.txt", "./plugins/*.sh\n")
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in $(cat deps.txt); do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            self.assertNotIn("$(cat deps.txt)", project.path("compiled.sh").read_text())
+
+        with ScriptProject() as project:
+            project.write("deps dir#tag/a dep.sh", 'echo "special loop dep"\n')
+            project.write("dep-path.txt", "./deps dir#tag/a dep.sh\n")
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in "$(cat dep-path.txt)"; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            self.assertNotIn("$(cat dep-path.txt)", project.path("compiled.sh").read_text())
+
+        with ScriptProject() as project:
+            project.write("a.sh", 'echo "sorted:a"\n')
+            project.write("b.sh", 'echo "sorted:b"\n')
+            project.write("deps.txt", "./b.sh\n./a.sh\n")
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in $(sort deps.txt); do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            self.assertNotIn("$(sort deps.txt)", project.path("compiled.sh").read_text())
+
+        with ScriptProject() as project:
+            project.write("a.sh", 'echo "head:a"\n')
+            project.write("b.sh", 'echo "head:b"\n')
+            project.write("deps.txt", "./a.sh\n./b.sh\n")
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in $(head -n 1 deps.txt); do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            self.assertNotIn("$(head -n 1 deps.txt)", project.path("compiled.sh").read_text())
+
+        with ScriptProject() as project:
+            project.write("deps/a.sh", 'echo "needle"\n')
+            project.write("deps/b.sh", 'echo "needle"\n')
+            project.write("deps/c.sh", 'echo "other"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in $(grep -lF needle ./deps/*.sh); do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            self.assertNotIn("$(grep -lF needle", project.path("compiled.sh").read_text())
+
+        with ScriptProject() as project:
+            project.write("plugins/a/init.sh", 'echo "dirname:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for dir in $(dirname ./plugins/a/file.txt); do
+                  dep="$dir/init.sh"
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "dirname bare:$dir"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for dir in $(dirname dep.sh); do
+                  source "$dir/dep.sh"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("plugins/dep.sh", 'echo "basename trailing:$name"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for name in $(basename ./plugins/dep.sh/); do
+                  source "./plugins/$name"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("plugins/dep.sh", 'echo "basename suffix:$name"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for name in $(basename ./plugins/dep.sh .sh); do
+                  source "./plugins/$name.sh"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("plugins/-dep.sh", 'echo "basename dash:$name"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for name in $(basename -- ./plugins/-dep.sh .sh); do
+                  source "./plugins/$name.sh"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            dep = project.write("a.sh", 'echo "realpath:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in $(realpath ./a.sh); do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            self.assertIn(str(dep), project.path("compiled.sh").read_text())
+
+    def test_while_until_and_read_loops_match_bash(self):
+        with ScriptProject() as project:
+            project.write("deps/0.sh", 'echo "zero:$i"\n')
+            project.write("deps/1.sh", 'echo "one:$i"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                i=0
+                while (( i < 2 )); do
+                  source "./deps/$i.sh"
+                  ((i++))
+                done
+                echo "i=$i"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            self.assertNotIn("deps.txt", project.path("compiled.sh").read_text())
+
+        with ScriptProject() as project:
+            project.write("deps/0.sh", 'echo "zero:$i"\n')
+            project.write("deps/1.sh", 'echo "one:$i"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                i=0
+                until (( i == 2 )); do
+                  source "./deps/$i.sh"
+                  ((i++))
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            self.assertNotIn("mapfile", project.path("compiled.sh").read_text())
+
+        with ScriptProject() as project:
+            project.write("deps dir#tag/a dep.sh", 'echo "special read dep"\n')
+            project.write("regular.sh", 'echo "regular read dep"\n')
+            project.write("deps.txt", "./deps dir#tag/a dep.sh\n./regular.sh\n")
+            project.write("main.sh", textwrap.dedent("""\
+                while IFS= read -r dep; do
+                  source "$dep"
+                done < deps.txt
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            self.assertNotIn("$(cat deps.txt)", project.path("compiled.sh").read_text())
+
+        with ScriptProject() as project:
+            project.write("inline.sh", 'echo "inline read dep"\n')
+            project.write("deps.txt", "./inline.sh\n")
+            project.write("main.sh", 'while IFS= read -r dep; do echo "$dep"; source "$dep"; done < deps.txt\n')
+
+            project.assert_compiled_matches(self, "main.sh")
+            compiled = project.path("compiled.sh").read_text()
+            self.assertNotIn("deps.txt", compiled)
+            self.assertIn("for dep in './inline.sh'; do", compiled)
+
+        with ScriptProject() as project:
+            project.write("a.sh", 'echo "a guarded read dep"\n')
+            project.write("b.sh", 'echo "b guarded read dep"\n')
+            project.write("deps.txt", "./a.sh\n./b.sh")
+            project.write("main.sh", textwrap.dedent("""\
+                while read -r dep || [[ -n "$dep" ]]; do
+                  echo "$dep"
+                  source "$dep"
+                done < deps.txt
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            compiled = project.path("compiled.sh").read_text()
+            self.assertNotIn("deps.txt", compiled)
+            self.assertIn("for dep in './a.sh' './b.sh'", compiled)
+
+        with ScriptProject() as project:
+            project.write("a.sh", 'echo "plain read dep should not run"\n')
+            project.write("deps.txt", "./a.sh")
+            project.write("main.sh", textwrap.dedent("""\
+                while read -r dep; do
+                  echo "$dep"
+                  source "$dep"
+                done < deps.txt
+                echo done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            self.assertNotIn("deps.txt", project.path("compiled.sh").read_text())
+
+        with ScriptProject() as project:
+            project.write("a.sh\r", 'echo "crlf:$dep"\n')
+            project.write("deps.txt", "./a.sh\r\n")
+            project.write("main.sh", textwrap.dedent("""\
+                while read -r dep; do
+                  source "$dep"
+                done < deps.txt
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("plugins/a.sh", 'echo "pipeline:a"; VALUE=a\n')
+            project.write("plugins/b.sh", 'echo "pipeline:b"; VALUE=b\n')
+            project.write("main.sh", textwrap.dedent("""\
+                find ./plugins -type f -name '*.sh' -print | while read -r dep; do
+                  echo "dep=$dep"
+                  source "$dep"
+                done
+                echo "value:${VALUE:-unset}"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            compiled = project.path("compiled.sh").read_text()
+            self.assertNotIn("find ./plugins", compiled)
+            self.assertIn("( for dep in './plugins/a.sh' './plugins/b.sh'; do", compiled)
+
+        with ScriptProject() as project:
+            project.write("plugins/a.sh", 'echo "lastpipe:a"; VALUE=a\n')
+            project.write("main.sh", textwrap.dedent("""\
+                shopt -s lastpipe
+                find ./plugins -type f -name '*.sh' -print | while read -r dep; do
+                  echo "dep=$dep"
+                  source "$dep"
+                done
+                echo "value:${VALUE:-unset}"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            compiled = project.path("compiled.sh").read_text()
+            self.assertNotIn("( for dep", compiled)
+            self.assertIn("for dep in './plugins/a.sh'; do", compiled)
+
+        with ScriptProject() as project:
+            project.write("plugins/a.sh", 'echo "monitor:a"; VALUE=a\n')
+            project.write("main.sh", textwrap.dedent("""\
+                set -m
+                shopt -s lastpipe
+                find ./plugins -type f -name '*.sh' -print | while read -r dep; do
+                  echo "dep=$dep"
+                  source "$dep"
+                done
+                echo "value:${VALUE:-unset}"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            compiled = project.path("compiled.sh").read_text()
+            self.assertIn("( for dep in './plugins/a.sh'; do", compiled)
+
+        with ScriptProject() as project:
+            project.write("plugins/a.sh", 'echo "process:a"; VALUE=a\n')
+            project.write("plugins/b.sh", 'echo "process:b"; VALUE=b\n')
+            project.write("main.sh", textwrap.dedent("""\
+                while read -r dep; do
+                  echo "dep=$dep"
+                  source "$dep"
+                done < <(find ./plugins -type f -name '*.sh' -print)
+                echo "value:${VALUE:-unset}"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            compiled = project.path("compiled.sh").read_text()
+            self.assertNotIn("<(find ./plugins", compiled)
+            self.assertIn("for dep in './plugins/a.sh' './plugins/b.sh'; do", compiled)
+
+    def test_c_style_for_loops_match_bash(self):
+        with ScriptProject() as project:
+            project.write("deps/0.sh", 'echo "zero:$i"\n')
+            project.write("deps/1.sh", 'echo "one:$i"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for (( i=0; i<2; i++ )); do
+                  echo "i=$i"
+                  source "./deps/$i.sh"
+                done
+                echo "final:$i"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("deps/1.sh", 'echo "one:$j:$i"\n')
+            project.write("deps/2.sh", 'echo "two:$j:$i"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for (( i=0, j=1; j<3; i++, j++ )); do
+                  source "./deps/$j.sh"
+                done
+                echo "final:$i:$j"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_custom_ifs_loop_word_splitting_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("a.sh", 'echo "a:$dep"\n')
+            project.write("b.sh", 'echo "b:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                IFS=:
+                DEPS="./a.sh:./b.sh"
+                for dep in $DEPS; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("a.sh", 'echo "a:$dep"\n')
+            project.write("b.sh", 'echo "b:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                IFS=$'\\n'
+                DEPS=$'./a.sh\\n./b.sh'
+                for dep in $DEPS; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("a.sh", 'echo "a:$dep"\n')
+            project.write("b.sh", 'echo "b:$dep"\n')
+            project.write("deps.txt", "./a.sh:./b.sh\n")
+            project.write("main.sh", textwrap.dedent("""\
+                IFS=:
+                for dep in $(cat deps.txt); do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            self.assertNotIn("$(cat deps.txt)", project.path("compiled.sh").read_text())
+
+        with ScriptProject() as project:
+            project.write("a.sh", 'echo "a:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                IFS=:
+                DEPS=":./a.sh"
+                for dep in $DEPS; do
+                  echo "<$dep>"
+                  if [[ -n "$dep" ]]; then
+                    source "$dep"
+                  fi
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_richer_array_sources_match_bash(self):
+        with ScriptProject() as project:
+            project.write("a.sh", 'echo "a"\n')
+            project.write("c.sh", 'echo "c"\n')
+            project.write("prod.sh", 'echo "prod"\n')
+            project.write("mapped.sh", 'echo "mapped"\n')
+            project.write("deps.txt", "./mapped.sh\n")
+            project.write("main.sh", textwrap.dedent("""\
+                deps=(./a.sh)
+                deps+=(./b.sh)
+                i=2
+                deps[$i]=./c.sh
+                source "${deps[0]}"
+                source "${deps[$i]}"
+                declare -A by_env=([prod]=./prod.sh)
+                ENV=prod
+                source "${by_env[$ENV]}"
+                mapfile -t loaded < deps.txt
+                source "${loaded[0]}"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            compiled = project.path("compiled.sh").read_text()
+            self.assertNotIn("mapfile", compiled)
+            self.assertNotIn("deps.txt", compiled)
+            self.assertIn("loaded=('./mapped.sh')", compiled)
+
+        with ScriptProject() as project:
+            project.write("a.sh", 'echo "a"\n')
+            project.write("b.sh", 'echo "b"\n')
+            project.write("deps.txt", "./a.sh\n./b.sh\n")
+            project.write("main.sh", textwrap.dedent("""\
+                project_deps=($(cat deps.txt))
+                for dep in "${project_deps[@]}"; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
     def test_heredoc_source_text_is_not_treated_as_dependency(self):
         with ScriptProject() as project:
             project.write("dep.sh", 'echo "dep should not run"\n')
@@ -229,6 +1425,56 @@ class CompileRegressionTestCase(unittest.TestCase):
 
             project.assert_compiled_matches(self, "main.sh")
 
+    def test_shell_option_command_status_controls_chained_sources(self):
+        def normalize_shell_error_locations(output: str):
+            return re.sub(r'/tmp/[^:\n]+/(?:main|compiled)\.sh: line \d+', '<script>: line N', output)
+
+        cases = {
+            "invalid shopt": "shopt -s madeup || source ./dep.sh\necho done\n",
+            "mixed shopt applies known option but fails": (
+                "shopt -s madeup nullglob || source ./dep.sh\n"
+                "for dep in ./missing/*.sh; do source \"$dep\"; done\n"
+                "echo done\n"
+            ),
+            "invalid compact set flag": "set -z || source ./dep.sh\necho done\n",
+            "invalid set option": "set -o madeup || source ./dep.sh\necho done\n",
+            "valid monitor set flag": "set -m || source ./dep.sh\necho done\n",
+            "set positional arguments": "set -- || source ./dep.sh\necho done\n",
+            "set bare option listing": "set -o || source ./dep.sh\necho done\n",
+        }
+
+        for name, content in cases.items():
+            with self.subTest(name=name), ScriptProject() as project:
+                project.write("dep.sh", 'echo "dep"\n')
+                project.write("main.sh", content)
+
+                output = project.compile("main.sh", mode="executable")
+                expected = project.run("main.sh")
+                actual = project.run(output)
+
+            self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
+            self.assertEqual(
+                normalize_shell_error_locations(actual.stdout),
+                normalize_shell_error_locations(expected.stdout),
+            )
+
+    def test_unknown_status_guarded_source_preserves_runtime_guard(self):
+        cases = {
+            "guard skips source": "needle\n",
+            "guard runs source": "other\n",
+        }
+
+        for name, config in cases.items():
+            with self.subTest(name=name), ScriptProject() as project:
+                project.write("config", config)
+                project.write("dep.sh", 'echo "dep"\n')
+                project.write("main.sh", textwrap.dedent("""\
+                    grep -q needle config || source ./dep.sh
+                    echo done
+                    """))
+
+                project.assert_compiled_matches(self, "main.sh")
+
     def test_source_inside_multiline_function_matches_bash(self):
         with ScriptProject() as project:
             project.write("runtime.sh", 'echo "runtime"\n')
@@ -243,6 +1489,363 @@ class CompileRegressionTestCase(unittest.TestCase):
                 """))
 
             project.assert_compiled_matches(self, "main.sh")
+
+    def test_source_inside_compact_function_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("runtime.sh", 'echo "runtime"\n')
+            project.write("main.sh", 'helper(){ echo "before"; source ./runtime.sh; echo "after"; }\nhelper\n')
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("runtime.sh", 'echo "runtime keyword"\n')
+            project.write("main.sh", 'function helper { source ./runtime.sh; }\nhelper\n')
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("runtime.sh", 'echo "runtime split brace"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                helper()
+                {
+                  source ./runtime.sh
+                }
+                helper
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_function_source_argument_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("a.sh", 'echo "a:$1"\n')
+            project.write("b.sh", 'echo "b:$1"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                load_dep() {
+                  source "$1"
+                }
+
+                load_dep ./a.sh
+                load_dep ./b.sh
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("deps dir#tag/a dep.sh", 'echo "special function arg:$1"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                load_dep() {
+                  source "$1"
+                }
+
+                load_dep "./deps dir#tag/a dep.sh"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_function_defined_by_sourced_file_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("lib.sh", textwrap.dedent("""\
+                load_dep() {
+                  source "$1"
+                }
+                """))
+            project.write("dep.sh", 'echo "dep from sourced function"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                source ./lib.sh
+                load_dep ./dep.sh
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_function_source_state_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("deps/inside.sh", 'echo "inside:$DEP:$PWD"\n')
+            project.write("outside.sh", 'echo "outside:$DEP:$PWD"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                DEP=./outside.sh
+                load_inside() {
+                  local DEP=./inside.sh
+                  cd deps
+                  source "$DEP"
+                }
+
+                load_inside
+                cd ..
+                source "$DEP"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("deps/inside.sh", 'echo "expanded local:$DEP"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                ROOT=./deps
+                load_inside() {
+                  local DEP="${ROOT}/inside.sh"
+                  source "$DEP"
+                }
+
+                load_inside
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("deps/inside.sh", 'echo "inside prefix:$DEP"\n')
+            project.write("outside.sh", 'echo "outside restored:$DEP"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                DEP=./outside.sh
+                load_dep() {
+                  source "$DEP"
+                }
+
+                DEP="./deps/inside.sh" load_dep
+                source "$DEP"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("outer.sh", 'echo "outer arg:$DEP"\n')
+            project.write("inner.sh", 'echo "inner prefix:$DEP"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                DEP=./outer.sh
+                load_dep() {
+                  source "$1"
+                  source "$DEP"
+                }
+
+                DEP=./inner.sh load_dep "$DEP"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("outer.sh", 'echo "outer redirected:$DEP"\n')
+            project.write("inner.sh", 'echo "inner redirected:$DEP"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                DEP=./outer.sh
+                load_dep() {
+                  local DEP=./inner.sh
+                  source "$DEP"
+                } > out.txt
+
+                load_dep
+                cat out.txt
+                source "$DEP"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_function_control_flow_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "shifted:$1"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                load_dep() {
+                  shift
+                  source "$1"
+                }
+
+                load_dep ignored ./dep.sh
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("missing.sh", 'echo "should not run"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                load_dep() {
+                  return 0
+                  source ./missing.sh
+                }
+
+                load_dep
+                echo done
+                """))
+
+            output = project.compile("main.sh", mode="executable")
+            expected = project.run("main.sh")
+            actual = project.run(output)
+            compiled_content = output.read_text()
+
+        self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
+        self.assertEqual(actual.stdout, expected.stdout)
+        self.assertNotIn("should not run", compiled_content)
+
+        with ScriptProject() as project:
+            project.write("after.sh", 'echo "after should not run"\n')
+            project.write("fallback.sh", 'echo "fallback runs"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                load_dep() {
+                  return 1
+                }
+
+                load_dep && source ./after.sh
+                load_dep || source ./fallback.sh
+                """))
+
+            output = project.compile("main.sh", mode="executable")
+            expected = project.run("main.sh")
+            actual = project.run(output)
+            compiled_content = output.read_text()
+
+        self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
+        self.assertEqual(actual.stdout, expected.stdout)
+        self.assertNotIn("after should not run", compiled_content)
+
+        with ScriptProject() as project:
+            project.write("after.sh", 'echo "after shift should not run"\n')
+            project.write("fallback.sh", 'echo "fallback shift runs"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                shift_too_far() {
+                  shift 9
+                }
+
+                shift_too_far ignored && source ./after.sh
+                shift_too_far ignored || source ./fallback.sh
+                """))
+
+            output = project.compile("main.sh", mode="executable")
+            expected = project.run("main.sh")
+            actual = project.run(output)
+            compiled_content = output.read_text()
+
+        self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
+        self.assertEqual(actual.stdout, expected.stdout)
+        self.assertNotIn("after shift should not run", compiled_content)
+
+        with ScriptProject() as project:
+            project.write("after.sh", 'echo "after implicit status"\n')
+            project.write("fallback.sh", 'echo "fallback implicit status"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                load_ok() {
+                  true
+                }
+                load_fail() {
+                  false
+                }
+
+                load_ok && source ./after.sh
+                load_ok || source ./skipped-ok.sh
+                load_fail && source ./skipped-fail.sh
+                load_fail || source ./fallback.sh
+                """))
+
+            output = project.compile("main.sh", mode="executable")
+            expected = project.run("main.sh")
+            actual = project.run(output)
+            compiled_content = output.read_text()
+
+        self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
+        self.assertEqual(actual.stdout, expected.stdout)
+        self.assertNotIn("skipped-ok", compiled_content)
+        self.assertNotIn("skipped-fail", compiled_content)
+
+    def test_nested_function_control_flow_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "nested function dep"\n')
+            project.write("missing.sh", 'echo "missing"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                load_dep() {
+                  if [[ -f ./dep.sh ]]; then
+                    source ./dep.sh
+                  else
+                    source ./missing.sh
+                  fi
+                }
+
+                load_dep
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_dynamic_function_dispatch_and_same_line_tail_match_bash(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "dynamic dispatch"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                load_dep() { source "$1"; }; FN=load_dep
+                "$FN" ./dep.sh
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "same line tail"\n')
+            project.write("main.sh", 'load_dep() { source ./dep.sh; }; load_dep\n')
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "same line function body"\n')
+            project.write("tail.sh", 'echo "same line tail source"\n')
+            project.write(
+                "main.sh",
+                'load_dep() { source ./dep.sh; }; load_dep; source ./tail.sh\n',
+            )
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "same line chained body"\n')
+            project.write("tail.sh", 'echo "same line chained tail"\n')
+            project.write(
+                "main.sh",
+                'load_dep() { source ./dep.sh; }; load_dep && source ./tail.sh\n',
+            )
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_branch_dependent_function_definitions_match_bash_when_equivalent(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "branch function dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                if [[ -n "$USE_ALT" ]]; then
+                  load_dep() { source ./dep.sh; }
+                else
+                  load_dep() { source ./dep.sh; }
+                fi
+
+                load_dep
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            project.assert_compiled_matches(self, "main.sh", env={"USE_ALT": "1"})
+
+    def test_branch_dependent_function_definitions_reject_when_different(self):
+        with ScriptProject() as project:
+            project.write("a.sh", 'echo "a"\n')
+            project.write("b.sh", 'echo "b"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                if [[ -n "$USE_A" ]]; then
+                  load_dep() { source ./a.sh; }
+                else
+                  load_dep() { source ./b.sh; }
+                fi
+
+                load_dep
+                """))
+            output = project.path("compiled.sh")
+
+            with self.assertRaisesRegex(NotImplementedError, "branch-dependent function"):
+                project.compile("main.sh", output=output, mode="executable")
+
+            self.assertFalse(output.exists())
+
+    def test_unresolved_dynamic_function_dispatch_rejects_before_output(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                load_dep() {
+                  source ./dep.sh
+                }
+                "$FN"
+                """))
+            output = project.path("compiled.sh")
+
+            with self.assertRaisesRegex(NotImplementedError, "dynamic function dispatch"):
+                project.compile("main.sh", output=output, mode="executable")
+
+            self.assertFalse(output.exists())
 
     def test_duplicate_sources_execute_each_time_bash_would_execute_them(self):
         with ScriptProject() as project:
@@ -274,18 +1877,162 @@ class CompileRegressionTestCase(unittest.TestCase):
     def test_unsupported_source_families_fail_without_writing_output(self):
         cases = {
             "unknown scalar": ('source "$DEP"\n', 'source "$DEP"'),
-            "array reference": ('deps=(./dep.sh)\nsource "${deps[0]}"\n', 'source "${deps[0]}"'),
-            "for loop": (
-                'for file in ./plugins/*.sh; do source "$file"; done\n',
-                'do source "$file"',
+            "source positional arguments": ('source ./dep.sh arg1\n', 'source ./dep.sh arg1'),
+            "unsupported command substitution loop pipeline": (
+                'for file in $(cat deps.txt | sort); do source "$file"; done\n',
+                'for file in $(cat deps.txt | sort); do source "$file"; done',
             ),
-            "if block": (
-                'if [[ -f ./dep.sh ]]; then\n  source ./dep.sh\nfi\n',
-                'source ./dep.sh',
+            "unsupported read loop producer pipeline": (
+                "sed -n '1p' deps.txt | while read -r file; do source \"$file\"; done\n",
+                "sed -n '1p' deps.txt | while read -r file; do",
+            ),
+            "unknown while condition source": (
+                'while [[ -n "$LOAD_DEP" ]]; do\n  source ./dep.sh\n  break\n done\n',
+                'while [[ -n "$LOAD_DEP" ]]',
+            ),
+            "unmatched glob loop": (
+                'for file in ./missing/*.sh; do source "$file"; done\n',
+                'for file in ./missing/*.sh; do source "$file"; done',
+            ),
+            "quoted glob loop": (
+                'for file in "./plugins/*.sh"; do source "$file"; done\n',
+                'for file in "./plugins/*.sh"; do source "$file"; done',
+            ),
+            "failglob unmatched loop": (
+                'shopt -s failglob\nfor file in ./missing/*.sh; do source "$file"; done\n',
+                'for file in ./missing/*.sh; do source "$file"; done',
+            ),
+            "extglob loop": (
+                'shopt -s extglob\nfor file in ./plugins/@(a|b).sh; do source "$file"; done\n',
+                'for file in ./plugins/@(a|b).sh; do source "$file"; done',
+            ),
+            "noglob loop": (
+                'set -f\nfor file in ./plugins/*.sh; do source "$file"; done\n',
+                'for file in ./plugins/*.sh; do source "$file"; done',
+            ),
+            "globignore removes all loop matches": (
+                'GLOBIGNORE=./plugins/a.sh:./plugins/b.sh\nfor file in ./plugins/*.sh; do source "$file"; done\n',
+                'for file in ./plugins/*.sh; do source "$file"; done',
+            ),
+            "direct source glob multiple matches": (
+                'source ./plugins/*.sh\n',
+                'source ./plugins/*.sh',
+            ),
+            "unsupported if predicate": (
+                "if awk 'BEGIN { exit 0 }'; then\n  source ./dep.sh\nfi\n",
+                "awk 'BEGIN { exit 0 }'",
+            ),
+            "unsupported if glob predicate": (
+                'if [ -f ./plugins/*.sh ]; then\n  source ./dep.sh\nfi\n',
+                '[ -f ./plugins/*.sh ]',
+            ),
+            "unsupported bracket string glob predicate": (
+                'MODE=prod\nif [ "$MODE" = prod* ]; then\n  source ./dep.sh\nfi\n',
+                '[ "$MODE" = prod* ]',
+            ),
+            "unsupported grep basic regex predicate": (
+                'if grep -q "enabled.*" config; then\n  source ./dep.sh\nfi\n',
+                'grep -q "enabled.*" config',
+            ),
+            "unsupported POSIX regex predicate": (
+                'MODE=5\nif [[ "$MODE" =~ [[:digit:]] ]]; then\n  source ./dep.sh\nfi\n',
+                '[[ "$MODE" =~ [[:digit:]] ]]',
+            ),
+            "unsupported Python regex predicate": (
+                'MODE=5\nif [[ "$MODE" =~ \\d+ ]]; then\n  source ./dep.sh\nfi\n',
+                '[[ "$MODE" =~ \\d+ ]]',
+            ),
+            "unsupported grep Python regex predicate": (
+                'if grep -Eq "\\d+" config; then\n  source ./dep.sh\nfi\n',
+                'grep -Eq "\\d+" config',
+            ),
+            "divergent if branch state": (
+                'if [[ -n "$USE_A" ]]; then\n  DEP=./a.sh\nelse\n  DEP=./b.sh\nfi\nsource "$DEP"\n',
+                'source "$DEP"',
+            ),
+            "unknown status guarded source state": (
+                'grep -q yes config || source ./setdep.sh\nsource "$DEP"\n',
+                'source "$DEP"',
             ),
             "case block": (
                 'case "$ENV" in\n  prod) source ./prod.sh ;;\nesac\n',
-                'prod) source ./prod.sh',
+                'case "$ENV" in',
+            ),
+            "case fallthrough": (
+                'ENV=prod\ncase "$ENV" in\n  prod) source ./prod.sh ;&\n  *) source ./dev.sh ;;\nesac\n',
+                'case "$ENV" in',
+            ),
+            "case dynamic subject": (
+                'case "$(cat env.txt)" in\n  prod) source ./prod.sh ;;\nesac\n',
+                'case "$(cat env.txt)" in',
+            ),
+            "case variable pattern": (
+                'ENV=prod\nPATTERN=prod\ncase "$ENV" in\n  "$PATTERN") source ./prod.sh ;;\nesac\n',
+                'case "$ENV" in',
+            ),
+            "case divergent state": (
+                'case "$ENV" in\n  prod) DEP=./a.sh ;;\n  dev) DEP=./b.sh ;;\nesac\nsource "$DEP"\n',
+                'source "$DEP"',
+            ),
+            "case hidden eval source": (
+                'case "$ENV" in\n  prod) COMMAND="source ./prod.sh"; eval "$COMMAND" ;;\nesac\n',
+                'case "$ENV" in',
+            ),
+            "case escaped pattern": (
+                'ENV="prod*"\ncase "$ENV" in\n  prod\\*) source ./prod.sh ;;\n  *) source ./b.sh ;;\nesac\n',
+                'case "$ENV" in',
+            ),
+            "case mixed-quoted pattern": (
+                'ENV="prod-eu"\ncase "$ENV" in\n  prod"-"*) source ./prod.sh ;;\nesac\n',
+                'case "$ENV" in',
+            ),
+            "case POSIX class pattern": (
+                'ENV=5\ncase "$ENV" in\n  [[:digit:]]) source ./prod.sh ;;\nesac\n',
+                'case "$ENV" in',
+            ),
+            "subshell source": (
+                '(source ./dep.sh)\n',
+                '(source ./dep.sh)',
+            ),
+            "subshell dot source": (
+                '(. ./dep.sh)\n',
+                '(. ./dep.sh)',
+            ),
+            "separated subshell source": (
+                'echo before; ( source ./dep.sh ); echo after\n',
+                '( source ./dep.sh )',
+            ),
+            "command substitution source": (
+                'echo "$(source ./dep.sh)"\n',
+                'echo "$(source ./dep.sh)"',
+            ),
+            "process substitution source": (
+                'cat <(source ./dep.sh)\n',
+                'cat <(source ./dep.sh)',
+            ),
+            "backtick substitution source": (
+                'echo `source ./dep.sh`\n',
+                'echo `source ./dep.sh`',
+            ),
+            "arithmetic nested source": (
+                'echo $(( $(source ./dep.sh) + 1 ))\n',
+                'echo $(( $(source ./dep.sh) + 1 ))',
+            ),
+            "command substitution if source": (
+                'echo "$(if true; then source ./dep.sh; fi)"\n',
+                'echo "$(if true; then source ./dep.sh; fi)"',
+            ),
+            "process substitution loop source": (
+                'cat <(for f in ./dep.sh; do source "$f"; done)\n',
+                'cat <(for f in ./dep.sh; do source "$f"; done)',
+            ),
+            "backtick case dot source": (
+                'echo `case "$ENV" in prod) . ./dep.sh ;; esac`\n',
+                'echo `case "$ENV" in prod) . ./dep.sh ;; esac`',
+            ),
+            "branch-dependent function return": (
+                'load_dep() {\n  if [[ -n "$SKIP" ]]; then return 0; fi\n  source ./dep.sh\n}\nload_dep\n',
+                'if [[ -n "$SKIP" ]]',
             ),
             "command builtin source": (
                 'command source ./dep.sh\n',
@@ -307,21 +2054,18 @@ class CompileRegressionTestCase(unittest.TestCase):
                 'FOO=bar command source ./dep.sh\n',
                 'FOO=bar command source ./dep.sh',
             ),
-            "compact function source": (
-                'helper(){ source ./dep.sh; }\nhelper\n',
-                'helper(){ source ./dep.sh',
-            ),
-            "compact function keyword source": (
-                'function helper { source ./dep.sh; }\nhelper\n',
-                'function helper { source ./dep.sh',
-            ),
         }
 
         for name, (content, expected_fragment) in cases.items():
             with self.subTest(name=name), ScriptProject() as project:
                 project.write("dep.sh", 'echo "dep"\n')
                 project.write("prod.sh", 'echo "prod"\n')
+                project.write("setdep.sh", 'DEP=./dep.sh\n')
+                project.write("a.sh", 'echo "a"\n')
+                project.write("b.sh", 'echo "b"\n')
+                project.write("config", "enabled=true\n")
                 project.write("plugins/a.sh", 'echo "plugin"\n')
+                project.write("plugins/b.sh", 'echo "plugin b"\n')
                 project.write("main.sh", content)
                 output = project.write("compiled.sh", "existing output\n")
 
@@ -329,6 +2073,12 @@ class CompileRegressionTestCase(unittest.TestCase):
                     project.compile("main.sh", output=output, mode="executable")
 
                 self.assertIn(expected_fragment, str(cm.exception))
+                self.assertIsNotNone(cm.exception.diagnostic)
+                self.assertEqual(cm.exception.diagnostic.severity, DiagnosticSeverity.ERROR)
+                self.assertEqual(cm.exception.diagnostic.location.path, project.path("main.sh"))
+                self.assertGreater(cm.exception.diagnostic.location.line, 0)
+                self.assertIn(expected_fragment, cm.exception.diagnostic.fragment)
+                self.assertTrue(cm.exception.diagnostic.code.startswith("unsupported.source."))
                 self.assertEqual(output.read_text(), "existing output\n")
 
     def test_runtime_dynamic_sources_raise_clear_diagnostic(self):
@@ -404,6 +2154,12 @@ class CompileRegressionTestCase(unittest.TestCase):
                     project.compile("main.sh", output=output, mode="executable")
 
                 self.assertIn(expected_fragment, str(cm.exception))
+                self.assertIsNotNone(cm.exception.diagnostic)
+                self.assertEqual(cm.exception.diagnostic.severity, DiagnosticSeverity.ERROR)
+                self.assertEqual(cm.exception.diagnostic.location.path, project.path("main.sh"))
+                self.assertGreater(cm.exception.diagnostic.location.line, 0)
+                self.assertIn(expected_fragment, cm.exception.diagnostic.fragment)
+                self.assertTrue(cm.exception.diagnostic.code.startswith("unsupported.source."))
                 self.assertFalse(output.exists())
 
     def test_bash_c_source_is_rejected_for_executable_mode(self):
@@ -411,8 +2167,12 @@ class CompileRegressionTestCase(unittest.TestCase):
             project.write("dep.sh", 'echo "dep"\n')
             project.write("main.sh", 'bash -c "source ./dep.sh"\n')
 
-            with self.assertRaisesRegex(NotImplementedError, "child-shell|unsupported"):
+            with self.assertRaisesRegex(NotImplementedError, "child-shell|unsupported") as cm:
                 project.compile("main.sh", mode="executable")
+
+        self.assertIsNotNone(cm.exception.diagnostic)
+        self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.command-resolution")
+        self.assertEqual(cm.exception.diagnostic.fragment, 'bash -c "source ./dep.sh"')
 
 
 if __name__ == "__main__":

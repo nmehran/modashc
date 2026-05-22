@@ -1,14 +1,18 @@
+import glob
 import os
 import re
-import shlex
 from dataclasses import dataclass
-from fnmatch import fnmatch
+from fnmatch import fnmatch, fnmatchcase
 
 from methods.regex.patterns import SOURCE_PATTERN, create_command_pattern
 from methods.regex.utilities import extract_bash_commands, strip_matching_quotes
+from methods.shell_line import get_commands
 
 ASSIGNMENT_WORD_PATTERN = re.compile(r'^[a-zA-Z_]\w*(?:\+)?=.*$')
 BASH_COMMAND_PATTERN = create_command_pattern(r'bash|/bin/bash|/usr/bin/bash', regex=True)
+UNSUPPORTED_GLOB_OPTIONS = frozenset({
+    'extglob',
+})
 COMMAND_LEVEL_SOURCE_PATTERNS = (
     ('eval', None),
     (r'bash|/bin/bash|/usr/bin/bash', BASH_COMMAND_PATTERN),
@@ -16,7 +20,19 @@ COMMAND_LEVEL_SOURCE_PATTERNS = (
 
 
 class UnsupportedSourceError(NotImplementedError):
-    pass
+    def __init__(self, message: str | None = None, *, diagnostic=None, code: str | None = None,
+                 hint: str | None = None):
+        if diagnostic is not None and message is None:
+            message = f"{diagnostic.message}: {diagnostic.fragment}"
+        super().__init__(message or "unsupported source")
+        self.diagnostic = diagnostic
+        self.code = diagnostic.code if diagnostic is not None else code
+        self.hint = diagnostic.hint if diagnostic is not None else hint
+
+    def with_diagnostic(self, diagnostic):
+        if self.diagnostic is not None:
+            return self
+        return UnsupportedSourceError(str(self), diagnostic=diagnostic, code=self.code, hint=self.hint)
 
 
 @dataclass(frozen=True)
@@ -27,6 +43,16 @@ class ResolvedSource:
     execution_model: str = "parent-source"
     confidence: str = "exact"
     replacement_kind: str = "source"
+    source_value: str | None = None
+    source_column: int | None = None
+    occurrence_model: str | None = None
+    condition: str | None = None
+
+
+@dataclass(frozen=True)
+class GlobMatch:
+    word: str
+    path: str
 
 
 @dataclass(frozen=True)
@@ -132,10 +158,443 @@ def is_heredoc_end(line: str, heredoc: HeredocDelimiter):
 
 
 def parse_shell_words(command: str):
-    try:
-        return shlex.split(command, posix=True)
-    except ValueError as exc:
-        raise UnsupportedSourceError(f"unsupported source command syntax: {command.strip()} ({exc})") from exc
+    return [strip_shell_word_quotes(word) for word in parse_shell_words_preserving_quotes(command)]
+
+
+def strip_shell_word_quotes(word: str):
+    output = []
+    in_single_quote = False
+    in_double_quote = False
+    escaped = False
+
+    for char in word:
+        if escaped:
+            output.append(char)
+            escaped = False
+            continue
+
+        if char == '\\' and not in_single_quote:
+            escaped = True
+            continue
+
+        if char == "'" and not in_double_quote:
+            in_single_quote = not in_single_quote
+            continue
+
+        if char == '"' and not in_single_quote:
+            in_double_quote = not in_double_quote
+            continue
+
+        output.append(char)
+
+    return ''.join(output)
+
+
+def parse_shell_words_preserving_quotes(command: str):
+    words = []
+    current = []
+    in_single_quote = False
+    in_double_quote = False
+    escaped = False
+    index = 0
+    current_started = False
+
+    while index < len(command):
+        char = command[index]
+        if escaped:
+            current.append(char)
+            escaped = False
+            current_started = True
+            index += 1
+            continue
+
+        if char == '\\' and not in_single_quote:
+            current.append(char)
+            escaped = True
+            current_started = True
+            index += 1
+            continue
+
+        if char == "'" and not in_double_quote:
+            in_single_quote = not in_single_quote
+            current.append(char)
+            current_started = True
+            index += 1
+            continue
+
+        if char == '"' and not in_single_quote:
+            in_double_quote = not in_double_quote
+            current.append(char)
+            current_started = True
+            index += 1
+            continue
+
+        if not in_single_quote and command.startswith('$(', index):
+            body, end_index = _read_balanced_body(command, index + 2)
+            if end_index is None:
+                raise UnsupportedSourceError(
+                    f"unsupported source command syntax: {command.strip()} (unterminated command substitution)"
+                )
+            current.append(f"$({body})")
+            current_started = True
+            index = end_index + 1
+            continue
+
+        if not in_single_quote and char == '`':
+            body, end_index = _read_backtick_body(command, index + 1)
+            if body is None:
+                raise UnsupportedSourceError(
+                    f"unsupported source command syntax: {command.strip()} (unterminated backtick substitution)"
+                )
+            current.append(f"`{body}`")
+            current_started = True
+            index = end_index + 1
+            continue
+
+        if char.isspace() and not in_single_quote and not in_double_quote:
+            word = ''.join(current).strip()
+            if current_started:
+                words.append(word)
+            current = []
+            current_started = False
+            index += 1
+            continue
+
+        current.append(char)
+        current_started = True
+        index += 1
+
+    if escaped or in_single_quote or in_double_quote:
+        raise UnsupportedSourceError(f"unsupported source command syntax: {command.strip()} (unterminated quote)")
+
+    word = ''.join(current).strip()
+    if current_started:
+        words.append(word)
+
+    return words
+
+
+def contains_unquoted_token(text: str, token: str):
+    in_single_quote = False
+    in_double_quote = False
+    escaped = False
+    index = 0
+
+    while index < len(text):
+        char = text[index]
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+
+        if char == '\\' and not in_single_quote:
+            escaped = True
+            index += 1
+            continue
+
+        if char == "'" and not in_double_quote:
+            in_single_quote = not in_single_quote
+            index += 1
+            continue
+
+        if char == '"' and not in_single_quote:
+            in_double_quote = not in_double_quote
+            index += 1
+            continue
+
+        if not in_single_quote and not in_double_quote and text.startswith(token, index):
+            return True
+
+        index += 1
+
+    return False
+
+
+def has_unquoted_glob(text: str):
+    in_single_quote = False
+    in_double_quote = False
+    escaped = False
+
+    for char in text:
+        if escaped:
+            escaped = False
+            continue
+
+        if char == '\\' and not in_single_quote:
+            escaped = True
+            continue
+
+        if char == "'" and not in_double_quote:
+            in_single_quote = not in_single_quote
+            continue
+
+        if char == '"' and not in_single_quote:
+            in_double_quote = not in_double_quote
+            continue
+
+        if not in_single_quote and not in_double_quote and char in {'*', '?', '['}:
+            return True
+
+    return False
+
+
+def has_unquoted_extglob(text: str):
+    return any(contains_unquoted_token(text, token) for token in {"@(", "?(", "*(", "+(", "!("})
+
+
+def has_unquoted_brace_expansion(text: str):
+    return contains_unquoted_token(text, "{") and contains_unquoted_token(text, "}")
+
+
+def _brace_expand(pattern: str, raw_pattern: str, source_site: str):
+    if not has_unquoted_brace_expansion(raw_pattern):
+        return [pattern]
+    return _brace_expand_pattern(pattern, source_site)
+
+
+def _brace_expand_pattern(pattern: str, source_site: str):
+    start = pattern.find("{")
+    if start < 0:
+        return [pattern]
+
+    depth = 0
+    end = -1
+    for index in range(start, len(pattern)):
+        char = pattern[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                end = index
+                break
+
+    if end < 0:
+        raise UnsupportedSourceError(f"unsupported brace source pattern: {source_site.strip()}")
+
+    body = pattern[start + 1:end]
+    if "{" in body or "}" in body:
+        raise UnsupportedSourceError(f"unsupported nested brace source pattern: {source_site.strip()}")
+    sequence_options = _brace_sequence_options(body)
+    if sequence_options is not None:
+        options = sequence_options
+    elif "," in body:
+        options = body.split(",")
+    else:
+        return [pattern]
+
+    expanded = []
+    for option in options:
+        expanded.extend(_brace_expand_pattern(f"{pattern[:start]}{option}{pattern[end + 1:]}", source_site))
+    return expanded
+
+
+def _brace_sequence_options(body: str):
+    match = re.fullmatch(r'(-?\d+)\.\.(-?\d+)(?:\.\.(-?\d+))?', body)
+    if match:
+        start_text, end_text, step_text = match.groups()
+        start = int(start_text)
+        end = int(end_text)
+        if step_text is None:
+            step = 1 if start <= end else -1
+        else:
+            step = abs(int(step_text))
+            if step == 0:
+                return None
+            if start > end:
+                step = -step
+        width = max(len(start_text.lstrip("-")), len(end_text.lstrip("-")))
+        zero_padded = (
+            len(start_text.lstrip("-")) > 1 and start_text.lstrip("-").startswith("0")
+        ) or (
+            len(end_text.lstrip("-")) > 1 and end_text.lstrip("-").startswith("0")
+        )
+        stop = end + (1 if step > 0 else -1)
+        values = []
+        for value in range(start, stop, step):
+            if zero_padded:
+                sign = "-" if value < 0 else ""
+                values.append(f"{sign}{abs(value):0{width}d}")
+            else:
+                values.append(str(value))
+        return values
+
+    match = re.fullmatch(r'([A-Za-z])\.\.([A-Za-z])(?:\.\.(-?\d+))?', body)
+    if match:
+        start_text, end_text, step_text = match.groups()
+        start = ord(start_text)
+        end = ord(end_text)
+        if step_text is None:
+            step = 1 if start <= end else -1
+        else:
+            step = abs(int(step_text))
+            if step == 0:
+                return None
+            if start > end:
+                step = -step
+        stop = end + (1 if step > 0 else -1)
+        return [chr(value) for value in range(start, stop, step)]
+
+    return None
+
+
+def _glob_matches(pattern: str, current_directory: str, glob_options: set[str], include_hidden: bool):
+    if 'nocaseglob' in glob_options:
+        return _manual_glob_matches(pattern, current_directory, glob_options, include_hidden)
+
+    recursive = 'globstar' in glob_options
+    if os.path.isabs(pattern):
+        return sorted(glob.glob(pattern, recursive=recursive, include_hidden=include_hidden))
+    return sorted(glob.glob(
+        pattern,
+        root_dir=current_directory,
+        recursive=recursive,
+        include_hidden=include_hidden,
+    ))
+
+
+def _manual_glob_matches(pattern: str, current_directory: str, glob_options: set[str], include_hidden: bool):
+    absolute_pattern = pattern if os.path.isabs(pattern) else os.path.join(current_directory, pattern)
+    absolute_pattern = os.path.normpath(absolute_pattern)
+    root, pattern_parts = _glob_static_root(absolute_pattern)
+    if not os.path.isdir(root):
+        return []
+
+    recursive = 'globstar' in glob_options and '**' in pattern_parts
+    max_depth = None if recursive else len(pattern_parts)
+    matches = []
+
+    for directory, dirnames, filenames in os.walk(root):
+        dirnames.sort()
+        filenames.sort()
+        relative_directory = os.path.relpath(directory, root)
+        directory_parts = [] if relative_directory == os.curdir else relative_directory.split(os.sep)
+
+        if max_depth is not None and len(directory_parts) >= max_depth:
+            dirnames[:] = []
+
+        for name in [*dirnames, *filenames]:
+            candidate_parts = [*directory_parts, name]
+            if max_depth is not None and len(candidate_parts) > max_depth:
+                continue
+            if not _glob_parts_match(pattern_parts, candidate_parts, glob_options, include_hidden):
+                continue
+            candidate = os.path.join(root, *candidate_parts)
+            matches.append(candidate if os.path.isabs(pattern) else _relative_glob_word(candidate, current_directory, pattern))
+
+    return sorted(matches)
+
+
+def _glob_static_root(absolute_pattern: str):
+    drive, tail = os.path.splitdrive(absolute_pattern)
+    parts = [part for part in tail.split(os.sep) if part]
+    root_parts = []
+    while parts and not _glob_segment_has_magic(parts[0]):
+        root_parts.append(parts.pop(0))
+
+    root = drive + os.sep + os.path.join(*root_parts) if root_parts else drive + os.sep
+    return os.path.normpath(root), parts
+
+
+def _glob_segment_has_magic(segment: str):
+    return any(char in segment for char in "*?[")
+
+
+def _glob_parts_match(pattern_parts: list[str], candidate_parts: list[str], glob_options: set[str],
+                      include_hidden: bool):
+    if not pattern_parts:
+        return not candidate_parts
+
+    pattern = pattern_parts[0]
+    if pattern == "**" and "globstar" in glob_options:
+        if _glob_parts_match(pattern_parts[1:], candidate_parts, glob_options, include_hidden):
+            return True
+        if not candidate_parts:
+            return False
+        if _hidden_glob_segment_blocked(pattern, candidate_parts[0], include_hidden):
+            return False
+        return _glob_parts_match(pattern_parts, candidate_parts[1:], glob_options, include_hidden)
+
+    if not candidate_parts:
+        return False
+    if _hidden_glob_segment_blocked(pattern, candidate_parts[0], include_hidden):
+        return False
+    if not _glob_segment_matches(pattern, candidate_parts[0], glob_options):
+        return False
+    return _glob_parts_match(pattern_parts[1:], candidate_parts[1:], glob_options, include_hidden)
+
+
+def _hidden_glob_segment_blocked(pattern: str, candidate: str, include_hidden: bool):
+    return candidate.startswith(".") and not include_hidden and not pattern.startswith(".")
+
+
+def _glob_segment_matches(pattern: str, candidate: str, glob_options: set[str]):
+    if 'nocaseglob' in glob_options:
+        return fnmatchcase(candidate.lower(), pattern.lower())
+    return fnmatchcase(candidate, pattern)
+
+
+def _relative_glob_word(path: str, current_directory: str, pattern: str):
+    relative = os.path.relpath(path, current_directory)
+    if pattern.startswith("./") and not relative.startswith(os.pardir):
+        return f"./{relative}"
+    return relative
+
+
+def _globignore_patterns(context: dict):
+    globignore = context.get('runtime_vars', context.get('vars', {})).get('GLOBIGNORE', '')
+    if not globignore:
+        return []
+    return [pattern for pattern in globignore.split(":") if pattern]
+
+
+def _apply_globignore(matches: list[str], patterns: list[str]):
+    if not patterns:
+        return matches
+    return [
+        match
+        for match in matches
+        if not any(fnmatchcase(match, pattern) for pattern in patterns)
+    ]
+
+
+def expand_glob_word(pattern: str, context: dict, source_site: str, raw_pattern: str | None = None):
+    raw_pattern = raw_pattern if raw_pattern is not None else pattern
+
+    glob_options = set(context.get('glob_options', set()))
+    enabled_unsupported_options = sorted(glob_options & UNSUPPORTED_GLOB_OPTIONS)
+    if enabled_unsupported_options:
+        option_list = ', '.join(enabled_unsupported_options)
+        raise UnsupportedSourceError(f"unsupported glob shell option {option_list}: {source_site.strip()}")
+
+    if 'noglob' in context.get('shell_options', set()):
+        raise UnsupportedSourceError(f"unsupported noglob source pattern: {source_site.strip()}")
+
+    current_directory = context['current_directory']
+    globignore_patterns = _globignore_patterns(context)
+    include_hidden = 'dotglob' in glob_options or bool(globignore_patterns)
+    matches = []
+    for expanded_pattern in _brace_expand(pattern, raw_pattern, source_site):
+        pattern_matches = _glob_matches(expanded_pattern, current_directory, glob_options, include_hidden)
+        filtered_matches = _apply_globignore(pattern_matches, globignore_patterns)
+        if not filtered_matches and pattern_matches and 'nullglob' not in glob_options:
+            raise UnsupportedSourceError(f"unsupported GLOBIGNORE source pattern: {source_site.strip()}")
+        matches.extend(filtered_matches)
+
+    if not matches:
+        if 'nullglob' in glob_options:
+            return ()
+        raise UnsupportedSourceError(f"unsupported unmatched source glob: {source_site.strip()}")
+
+    glob_matches = []
+    for match in matches:
+        path = match if os.path.isabs(match) else os.path.join(current_directory, match)
+        resolved_path = os.path.abspath(path)
+        if not os.path.isfile(resolved_path):
+            raise UnsupportedSourceError(f"unsupported non-file source glob match: {source_site.strip()}")
+        glob_matches.append(GlobMatch(word=match, path=resolved_path))
+
+    return tuple(glob_matches)
 
 
 def source_command_index(command: str):
@@ -189,6 +648,212 @@ def source_command_index(command: str):
 
 def contains_source_command(command: str):
     return source_command_index(command) is not None
+
+
+def contains_nested_source_command(command: str):
+    """Detect live source commands inside shell constructs we do not lower.
+
+    This intentionally does not treat quoted text as shell code, but it does
+    inspect command substitutions, process substitutions, and parenthesized
+    subshells because those run nested shell code at runtime.
+    """
+    return _contains_nested_source_command(command, depth=0)
+
+
+def _contains_nested_source_command(text: str, depth: int):
+    if depth > 8:
+        return True
+
+    in_single_quote = False
+    in_double_quote = False
+    escaped = False
+    index = 0
+
+    while index < len(text):
+        char = text[index]
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+
+        if char == '\\' and not in_single_quote:
+            escaped = True
+            index += 1
+            continue
+
+        if char == "'" and not in_double_quote:
+            in_single_quote = not in_single_quote
+            index += 1
+            continue
+
+        if char == '"' and not in_single_quote:
+            in_double_quote = not in_double_quote
+            index += 1
+            continue
+
+        if in_single_quote:
+            index += 1
+            continue
+
+        if char == '`':
+            body, end_index = _read_backtick_body(text, index + 1)
+            if body is None:
+                return True
+            if _shell_body_contains_source(body, depth + 1):
+                return True
+            index = end_index + 1
+            continue
+
+        if text.startswith('$((', index):
+            body, end_index = _read_balanced_body(text, index + 3)
+            if end_index is None:
+                return True
+            if _contains_nested_source_command(body, depth + 1):
+                return True
+            index = end_index + 1
+            continue
+
+        if text.startswith('$(', index):
+            body, end_index = _read_balanced_body(text, index + 2)
+            if end_index is None:
+                return True
+            if _shell_body_contains_source(body, depth + 1):
+                return True
+            index = end_index + 1
+            continue
+
+        if not in_double_quote and (text.startswith('<(', index) or text.startswith('>(', index)):
+            body, end_index = _read_balanced_body(text, index + 2)
+            if end_index is None:
+                return True
+            if _shell_body_contains_source(body, depth + 1):
+                return True
+            index = end_index + 1
+            continue
+
+        if not in_double_quote and text.startswith('((', index):
+            body, end_index = _read_balanced_body(text, index + 2)
+            if end_index is None:
+                return True
+            if _contains_nested_source_command(body, depth + 1):
+                return True
+            index = end_index + 1
+            continue
+
+        if not in_double_quote and char == '(' and _is_array_assignment_paren(text, index):
+            body, end_index = _read_balanced_body(text, index + 1)
+            if end_index is None:
+                return True
+            index = end_index + 1
+            continue
+
+        if not in_double_quote and char == '(':
+            body, end_index = _read_balanced_body(text, index + 1)
+            if end_index is None:
+                return True
+            if _shell_body_contains_source(body, depth + 1):
+                return True
+            index = end_index + 1
+            continue
+
+        index += 1
+
+    return False
+
+
+def _shell_body_contains_source(body: str, depth: int):
+    for line in body.splitlines() or [body]:
+        if any(contains_source_command(command) for command in get_commands(line)):
+            return True
+    return _contains_nested_source_command(body, depth)
+
+
+def _is_array_assignment_paren(text: str, paren_index: int):
+    if paren_index == 0 or text[paren_index - 1] != '=':
+        return False
+
+    word_start = paren_index - 2
+    while word_start >= 0 and not text[word_start].isspace() and text[word_start] not in ';&|':
+        word_start -= 1
+
+    assignment_name = text[word_start + 1:paren_index - 1]
+    return bool(re.fullmatch(r'[a-zA-Z_]\w*(?:\[[^\]]+\])?\+?', assignment_name))
+
+
+def _read_backtick_body(text: str, start_index: int):
+    body = []
+    escaped = False
+    index = start_index
+
+    while index < len(text):
+        char = text[index]
+        if escaped:
+            body.append(char)
+            escaped = False
+            index += 1
+            continue
+
+        if char == '\\':
+            body.append(char)
+            escaped = True
+            index += 1
+            continue
+
+        if char == '`':
+            return ''.join(body), index
+
+        body.append(char)
+        index += 1
+
+    return None, None
+
+
+def _read_balanced_body(text: str, start_index: int):
+    body = []
+    in_single_quote = False
+    in_double_quote = False
+    escaped = False
+    depth = 1
+    index = start_index
+
+    while index < len(text):
+        char = text[index]
+        if escaped:
+            body.append(char)
+            escaped = False
+            index += 1
+            continue
+
+        if char == '\\' and not in_single_quote:
+            body.append(char)
+            escaped = True
+            index += 1
+            continue
+
+        if char == "'" and not in_double_quote:
+            in_single_quote = not in_single_quote
+            body.append(char)
+            index += 1
+            continue
+
+        if char == '"' and not in_single_quote:
+            in_double_quote = not in_double_quote
+            body.append(char)
+            index += 1
+            continue
+
+        if not in_single_quote and not in_double_quote:
+            if char == '(':
+                depth += 1
+            elif char == ')':
+                depth -= 1
+                if depth == 0:
+                    return ''.join(body), index
+
+        body.append(char)
+        index += 1
+
+    return None, None
 
 
 def starts_unsupported_control_block(command: str):
@@ -316,6 +981,7 @@ class SourceResolver:
             'maxdepth': None,
             'mindepth': 0,
             'has_print': False,
+            'quit': False,
         }
 
         while index < len(words):
@@ -349,6 +1015,7 @@ class SourceResolver:
             elif token == '-quit':
                 if not filters['has_print']:
                     raise UnsupportedSourceError("unsupported find source command: -quit requires earlier -print")
+                filters['quit'] = True
             else:
                 raise UnsupportedSourceError(f"unsupported find source predicate: {token}")
             index += 1
@@ -357,7 +1024,7 @@ class SourceResolver:
 
     @staticmethod
     def find_candidate_matches(roots: list[str], filters: dict, context: dict):
-        matches = set()
+        matches = []
         current_directory = context['current_directory']
 
         for root in roots:
@@ -396,7 +1063,9 @@ class SourceResolver:
                     ):
                         continue
 
-                    matches.add(os.path.abspath(candidate))
+                    matches.append(os.path.abspath(candidate))
+                    if filters.get('quit'):
+                        return matches
                     if len(matches) > 1:
                         return sorted(matches)
 
@@ -432,6 +1101,24 @@ class SourceResolver:
                                   execution_model: str = "parent-source", replacement_kind: str = "source"):
         if '`' in source_expression:
             raise UnsupportedSourceError(f"unsupported backtick source command: {source_site.strip()}")
+
+        if has_unquoted_glob(source_expression):
+            words = parse_shell_words(source_expression)
+            if len(words) != 1:
+                raise UnsupportedSourceError(f"unsupported source glob arguments: {source_site.strip()}")
+
+            matches = expand_glob_word(words[0], context, source_site, raw_pattern=source_expression)
+            if len(matches) != 1:
+                raise UnsupportedSourceError(f"unsupported ambiguous source glob output: {source_site.strip()}")
+
+            return ResolvedSource(
+                path=matches[0].path,
+                source_expression=source_expression.strip(),
+                source_site=source_site.strip(),
+                execution_model=execution_model,
+                replacement_kind=replacement_kind,
+                source_value=matches[0].word,
+            )
 
         if resolved_path := self.resolve_path(source_expression, context):
             return ResolvedSource(

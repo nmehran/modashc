@@ -2,25 +2,36 @@
 
 ## Status
 
-Deferred design. The current compiler remains resolver-driven and fail-closed
-for loops, conditionals, arrays, globs, case statements, and runtime dispatch.
-This document captures the intended next architecture so future work can be
-planned without losing the reasoning.
+Partially implemented. The compiler now has a source-effect IR frontend,
+structured unsupported-source diagnostics, and an abstract evaluator that drives
+both executable and context rendering for the supported subset. Exact finite
+`for` loops over literal words, known scalar path variables, exact custom-IFS
+scalar word lists, exact `${array[@]}` expansions, safe command-substitution
+word lists, and deterministic file globs are implemented. Safe producers
+include `cat`, `find`, `printf`, `sort`, `head`, `grep -lF` / `grep -lE`,
+`realpath`, `dirname`, and `basename`. Exact indexed, associative, appended,
+command-substitution, and file-populated arrays are modeled. Bounded `while` /
+`until`, C-style `for ((...))`, and `while read` file enumeration are also
+implemented, including exact file input, safe producer pipelines, and safe
+process substitutions. Branch-aware `if` / `elif` / `else`
+lowering is implemented for the current side-effect-free predicate subset,
+including compound logical predicates, arithmetic predicates, regex and pattern
+matching, and safe `grep -q` file checks. Exact `case` blocks are implemented
+for known subjects and the modeled pattern subset. Bounded local function calls
+are implemented when the definition is known, arguments are exact, and
+source-relevant body effects are modeled. It remains fail-closed for broader
+glob semantics,
+unsupported command predicates, broader case pattern semantics, recursive
+functions, runtime-dynamic function dispatch, and child-shell runtime dispatch.
 
 ## Problem
 
 The current compiler can resolve a useful exact subset of Bash source patterns,
-but it does not model Bash control flow. Patterns like these are currently
-unsupported by design:
+but it does not fully model Bash control flow. Patterns like these drive the
+remaining work when their predicates, patterns, or state effects fall outside
+the exact modeled subsets:
 
 ```bash
-for file in ./plugins/*.sh; do
-  source "$file"
-done
-
-deps=(./base.sh ./feature.sh)
-source "${deps[0]}"
-
 if [[ -f ./local.sh ]]; then
   source ./local.sh
 fi
@@ -31,9 +42,11 @@ case "$ENV" in
 esac
 ```
 
-Supporting those safely requires a compiler model, not more ad hoc source
-regexes. The next step should be a small Bash-oriented IR plus an abstract
-evaluator that can prove source behavior over a supported subset.
+Supporting those safely requires continuing the compiler model, not adding more
+ad hoc source regexes. Branch-aware `if` lowering, exact `case` lowering, and
+bounded function calls are implemented for their first subsets. The next steps
+are broader practical conditional predicates, broader case patterns, and
+broader function control-flow semantics.
 
 ## Goals
 
@@ -128,6 +141,7 @@ Evaluation produces source events, diagnostics, and final state:
 ```python
 EvaluationResult(
     events=[SourceEvent(...)],
+    disabled_sources=[DisabledSourceSite(...)],
     diagnostics=[Diagnostic(...)],
     final_state=EvaluationState(...),
 )
@@ -211,13 +225,18 @@ deps=(./a.sh "./b path.sh")
 source "${deps[0]}"
 ```
 
-Supported forms can include:
+Supported forms include:
 
 - `${array[0]}`
+- `${array[$index]}` when the index is exact
+- `${assoc[$key]}` when the key is exact
 - `${array[@]}` in loop word lists
-- simple indexed assignment, such as `deps[1]=./b.sh`
+- append and indexed assignment, such as `deps+=(./b.sh)` and
+  `deps[1]=./b.sh`
+- command-substitution array assignment, such as `deps=($(cat deps.txt))`
+- `mapfile` / `readarray -t` population from an exact file
 
-Associative arrays and computed indexes should be deferred unless exact.
+Associative arrays and computed indexes remain fail-closed unless exact.
 
 ### Shell Options
 
@@ -233,58 +252,120 @@ should preserve option state before each source event.
 
 ### Functions
 
-Functions should be parsed into `FunctionDef` nodes and stored in state. A
-function call is evaluable only when:
+Functions are parsed into `FunctionDef` nodes and stored in state. A function
+call is evaluable only when:
 
 - the function definition is known
 - arguments are exact or unused by source-relevant expressions
 - the function body contains only supported constructs
-- recursion is bounded and explicit
+- recursion is absent
 
 Function calls that mutate cwd or variables must update parent state, matching
-Bash function semantics.
+Bash function semantics. The current subset supports exact positional
+arguments such as `$1`, source-relevant scalar `local` assignments, cwd and
+variable mutation in parent state, exact assignment prefixes, and functions
+defined by sourced files, exact dynamic dispatch, exact `return` / `shift`,
+same-line post-definition calls, nested modeled control flow, source-equivalent
+branch-defined functions, and exact function-call status for chained source
+sites. Recursive calls, branch-dependent returns, non-equivalent
+branch-defined functions, and runtime-dynamic dispatch remain fail-closed until
+explicitly modeled.
 
 ## Control-Flow Semantics
 
 ### Loops
 
-Start with exact finite loops:
+Exact finite loops are supported when the word list is already concrete:
 
 ```bash
+for file in ./a.sh ./b.sh; do
+  source "$file"
+done
+
+deps=(./a.sh ./b.sh)
+for file in "${deps[@]}"; do
+  source "$file"
+done
+
 for file in ./plugins/*.sh; do
   source "$file"
 done
+
+for file in $(cat deps.txt); do
+  source "$file"
+done
+
+while IFS= read -r file; do
+  source "$file"
+done < deps.txt
 ```
 
-The evaluator can unroll when the word list is exact and finite:
+The evaluator lowers these by proving the finite values, recording source events
+for each iteration, and rendering executable output as a runtime dispatch at the
+original source site. Supported word inputs are:
 
 - literal words
 - exact array expansion
-- deterministic glob expansion
-- safe `find` output only if modeled as a word-list producer
+- known scalar path variables that expand to a single word
+- known scalar values that split under exact current `IFS`
+- deterministic ordinary file globs
+- safe `cat`, `find`, `printf`, `sort`, `head`, `grep -lF` / `grep -lE`,
+  `realpath`, `dirname`, and `basename` command-substitution word lists
+- modeled `while read` file enumeration from exact files, safe producer
+  pipelines, and safe process substitutions
+- bounded `while` / `until` conditions with exact arithmetic mutations
 
-Unroll limits should be explicit. Exceeding the limit produces a structured
+Deferred word inputs are:
+
+- broader glob semantics under shell options such as `extglob` and full
+  `GLOBIGNORE`
+- command-substitution word lists outside the safe producer subset
+- loops whose conditions or mutations cannot be proven exact
+
+Iteration limits are explicit. Exceeding the limit produces a structured
 unsupported diagnostic.
 
 ### Conditionals
 
-Conditionals need two modes:
+Conditionals now use two modes:
 
-- **Provable condition**: evaluate only the reachable branch.
-- **Unknown condition**: context mode may record conditional dependencies;
-  executable mode should reject unless a lowering strategy preserves Bash
-  behavior.
+- **Exact condition**: evaluate the selected branch state when the predicate is
+  known from modeled variables or filesystem predicates, and neutralize source
+  sites in unreachable branches in executable output.
+- **Unknown side-effect-free condition**: preserve the original branch in
+  executable output, replace only modeled source sites inside it, and merge
+  branch state only when source-relevant state converges.
 
-Safe provable conditions can include:
+Implemented predicates include:
 
 - `[[ -f path ]]`
 - `[[ -d path ]]`
+- `[[ -e path ]]`
 - `[[ -n "$KNOWN" ]]`
+- `[[ -z "$KNOWN" ]]`
 - exact string equality
+- `[[ "$KNOWN" == pattern* ]]` and `[[ "$KNOWN" == $KNOWN_PATTERN ]]`
+  pattern predicates
+- compound `[[ ... && ... ]]`, `[[ ... || ... ]]`, and `!` predicates when
+  each atom is modeled
+- integer tests such as `[[ "$COUNT" -gt 1 ]]`
+- arithmetic predicates such as `(( COUNT > 0 ))`
+- regex predicates such as `[[ "$MODE" =~ ^prod ]]`
+- safe literal or extended-regex `grep -q` file predicates
+- `[ -f path ]`, `[ -d path ]`, `[ -e path ]`
+- `test -f path`, `test -d path`, `test -e path`
+
+Unsupported but practical predicates to track:
+
+- glob-bearing file predicates such as `[ -f ./plugins/*.sh ]`
+- command predicates outside the safe `grep -q` subset
+- regex predicates requiring POSIX classes or unsupported Bash ERE behavior
+- nested branch semantics that exceed the current line frontend
+- divergent branch state followed by later state-dependent source resolution
 
 ### Case Statements
 
-Case support should start with exact subject values:
+Case support starts with exact subject values:
 
 ```bash
 case "$ENV" in
@@ -293,17 +374,45 @@ case "$ENV" in
 esac
 ```
 
-If the subject is unknown, context mode may record mutually exclusive arms as
-context-only dependencies. Executable mode should reject until it can preserve
-runtime branching.
+Supported subjects:
+
+- literal values
+- known scalar variables
+- known environment variables
+- known assignments before the `case`
+
+Supported arm patterns:
+
+- literal patterns
+- quoted literal patterns
+- alternates such as `prod|stage`
+- default `*`
+- ordinary Bash case globs using `*`, `?`, or bracket classes, when the subject
+  is exact
+
+Executable mode evaluates the first matching arm, applies its source-relevant
+state, and neutralizes source sites in unreachable arms. If no arm matches, the
+case contributes no source-relevant state. Context mode may record all arm
+dependencies with mutually exclusive provenance because the output is
+readable-first.
+
+Executable mode rejects unknown or runtime-dynamic subjects, fallthrough
+terminators (`;&`, `;;&`), extglob-dependent patterns, and case bodies whose
+source-relevant behavior cannot be modeled.
 
 ### Globs
 
-Glob expansion should be deterministic and cwd-aware:
+Ordinary file-glob expansion is implemented for finite loop word lists and for
+direct source expressions with exactly one match. Option-aware loop glob
+expansion is implemented for `nullglob`, `dotglob`, `globstar`, `nocaseglob`,
+deterministic brace expansion, and practical `GLOBIGNORE` filtering. Broader
+glob expansion should remain deterministic and cwd-aware:
 
 - sort matches lexically
-- support ordinary file globs first
-- reject nullglob/failglob/extglob unless option state is modeled
+- support direct source glob multi-match semantics only when Bash source
+  argument behavior is modeled
+- reject `extglob`, `set -f`, and all-ignored `GLOBIGNORE` matches unless their
+  semantics are fully modeled
 - reject ambiguous directory state
 
 ## Diagnostics
@@ -359,25 +468,66 @@ Already complete:
 - child-shell classification in context mode
 - fail-closed unsupported families
 
-### Phase 1: Structured Diagnostics
+### Phase 1: Parser Frontend Contract And Feasibility
+
+Implemented for the current line frontend. The parser boundary is replaceable
+and returns `ScriptIR` nodes with stable locations. A real Bash parser remains a
+future adapter option when nested syntax coverage justifies the dependency.
+
+Introduce a parser frontend interface and fixture matrix before committing to a
+specific parser implementation. Evaluate candidates against real shell-project
+fixtures:
+
+- current targeted line parser
+- `bashlex` or another Python-native Bash parser
+- `tree-sitter-bash`
+- any other parser that can produce stable locations and nested syntax
+
+The output contract is `ScriptIR`, not a third-party AST shape. The project
+should keep a replaceable parser boundary even if a real parser is adopted.
+
+### Phase 2: Structured Diagnostics
+
+Implemented for unsupported source failures. Raised errors carry diagnostic
+objects with stable code, severity, file, line, fragment, message, and hint.
 
 Introduce diagnostic types without changing behavior. Keep message strings as a
 compatibility layer. Update tests to assert codes for unsupported source forms.
 
-### Phase 2: IR Skeleton
+### Phase 3: IR Skeleton
+
+Implemented for the supported subset: raw commands, source sites, assignments,
+exact array assignments, `cd`, and `set`.
 
 Introduce `ScriptIR`, node classes, and source locations. Build IR for currently
 supported constructs only. Render behavior should remain unchanged.
 
-### Phase 3: Evaluator For Existing Behavior
+### Phase 4: Evaluator For Existing Behavior
+
+Implemented. Executable and context modes now consume source events produced by
+the evaluator. Existing regression tests remain green.
 
 Move current traversal behavior onto the evaluator. Existing regression tests
 must stay green. This phase proves the IR can replace traversal without adding
 new surface area.
 
-### Phase 4: Exact Arrays And Word Lists
+### Phase 5: Exact Arrays And Finite Loops
 
-Support exact arrays and word-list expansion:
+Implemented for the current exact subset. Direct exact indexed, computed
+indexed, and associative array source paths are supported:
+
+```bash
+deps=(./a.sh ./b.sh)
+source "${deps[1]}"
+
+i=1
+source "${deps[$i]}"
+
+declare -A by_env=([prod]=./prod.sh)
+source "${by_env[$ENV]}"
+```
+
+Exact finite loop source sites are also supported:
 
 ```bash
 deps=(./a.sh ./b.sh)
@@ -386,22 +536,75 @@ for dep in "${deps[@]}"; do
 done
 ```
 
-### Phase 5: Deterministic Globs And Finite Loops
+The supported `for` forms include `for ...; do ... done` and newline-`do`
+variants. Word lists may contain literal words, known scalar path variables,
+exact custom-IFS scalar word lists, exact `${array[@]}` expansion, safe
+`cat` / `find` / `printf` / `sort` / `head` / `grep -lF` or `grep -lE` /
+`realpath` / `dirname` / `basename` command-substitution word lists, or
+deterministic ordinary file globs. Array population supports exact append/index
+assignment, command-substitution array assignment, and `mapfile` / `readarray -t`
+from exact files. `extglob` semantics remain unsupported until modeled
+explicitly.
 
-Support finite loop unrolling over deterministic literal/glob word lists. Add
-explicit iteration limits and diagnostics.
+### Phase 6: Deterministic Globs
 
-### Phase 6: Provable Conditionals And Cases
+Implemented for ordinary and option-aware file globs in finite loop word lists,
+including `nullglob`, `dotglob`, `globstar`, `nocaseglob`, deterministic brace
+expansion, and practical `GLOBIGNORE` filtering. Direct source globs are
+supported only when the glob resolves to exactly one regular file. Multiple
+direct source matches reject because Bash would source the first match and pass
+the rest as positional arguments, which is not equivalent to sourcing every
+match.
 
-Support file tests and exact string comparisons. Context mode may gain
-conditional provenance; executable mode should remain strict.
+Remaining glob work:
 
-### Phase 7: Modeled Functions
+- explicit iteration limits
+- `extglob`
+- direct source positional arguments and glob multi-match argument semantics
+- full `GLOBIGNORE` edge semantics beyond practical path filtering
 
-Evaluate known local functions whose source-relevant behavior is fully modeled.
-Reject recursive or runtime-dynamic function dispatch unless bounded.
+### Phase 7: Branch-Aware Conditionals
 
-### Phase 8: Child-Shell Lowering
+Implemented for `if` / `elif` / `else` blocks with the current side-effect-free
+predicate subset. Executable mode preserves the original branch structure and
+replaces modeled source sites inside reachable branches. Source sites in
+statically unreachable branches are replaced with no-ops so executable output
+does not retain live unresolved source commands. Context mode annotates
+conditional and mutually exclusive provenance for readable source relationships.
+
+Branch state merges only when exact. Divergent branch cwd, variables, arrays, or
+shell options are allowed until a later source-relevant operation depends on
+that divergent state; then executable mode fails before output.
+
+### Phase 8: Case Statements
+
+Implemented for exact subjects and mutually exclusive source arms. The
+evaluator reuses the branch-state merge model from `if` blocks. Source sites in
+non-matching arms are replaced with no-ops in executable output.
+
+### Phase 9: Modeled Functions
+
+Implemented for the first bounded subset. Known local functions are evaluated
+when arguments are exact and the body contains modeled source-relevant
+constructs. Exact `return`, `shift`, dynamic dispatch, same-line
+post-definition calls, nested function-body control flow, source-equivalent
+branch-defined functions, and function-call status for chained source sites are
+modeled. Recursive calls, branch-dependent returns, non-equivalent branch
+definitions, and runtime-dynamic dispatch remain unsupported until bounded.
+
+### Phase 10: Bounded While/Until And Read Loops
+
+Implemented for exact source-aware loops. The evaluator models `while` /
+`until` loops when conditions resolve through the existing predicate evaluator
+and loop mutations are exact arithmetic commands or assignments. It also models
+`while read` file enumeration, including `IFS= read -r` paths with spaces,
+non-empty guards for files without a final newline, exact safe-producer
+pipelines, and safe process-substitution input. C-style `for ((...))` loops are
+modeled when init, condition, and update clauses are exact arithmetic.
+Loops have an explicit modeled iteration limit and fail closed when the
+condition, read redirection, loop control, or mutation cannot be proven exact.
+
+### Phase 11: Child-Shell Lowering
 
 If needed, add explicit child-shell rendering for executable mode. This should
 not be implemented by parent-shell inlining.
@@ -440,10 +643,6 @@ Representative fixtures should include:
 
 ## Open Questions
 
-- Should context mode include conditional dependency metadata in comments, such
-  as `# modashc: if [[ -f ./local.sh ]] source ./local.sh -> local.sh`?
-- Should executable mode ever lower unknown conditionals by preserving the
-  original branch and replacing only the source inside it?
 - What iteration limit should loop unrolling use by default?
 - Should a real Bash parser be adopted before Phase 3, or only after the IR
   interface is stable?

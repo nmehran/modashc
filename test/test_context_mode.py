@@ -108,6 +108,169 @@ class ContextModeTestCase(unittest.TestCase):
         self.assertIn('# modashc: source ./dep.sh -> dep.sh', content)
         self.assertIn('eval "source ./dep.sh"', content)
 
+    def test_context_output_resolves_exact_array_index_source(self):
+        with ScriptProject() as project:
+            project.write("deps/feature.sh", 'echo "feature body"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                deps=(./unused.sh ./deps/feature.sh)
+                source "${deps[1]}"
+                echo "main body"
+                """))
+
+            output = project.compile("main.sh")
+            content = output.read_text()
+
+        self.assertIn('echo "feature body"', content)
+        self.assertIn('# modashc: source "${deps[1]}" -> deps/feature.sh', content)
+        self.assertIn('source "${deps[1]}"', content)
+
+    def test_context_output_resolves_exact_for_loop_sources(self):
+        with ScriptProject() as project:
+            project.write("deps/a.sh", 'echo "loop a body"\n')
+            project.write("deps/b.sh", 'echo "loop b body"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in ./deps/a.sh ./deps/b.sh; do
+                  source "$dep"
+                done
+                echo "main body"
+                """))
+
+            output = project.compile("main.sh")
+            content = output.read_text()
+
+        self.assertIn('echo "loop a body"', content)
+        self.assertIn('echo "loop b body"', content)
+        self.assertIn('# modashc: source "$dep" -> deps/a.sh', content)
+        self.assertIn('# modashc: source "$dep" -> deps/b.sh', content)
+        self.assertIn('source "$dep"', content)
+        self.assertEqual(content.count('echo "loop a body"'), 1)
+
+    def test_context_output_resolves_scalar_word_list_loop_sources(self):
+        with ScriptProject() as project:
+            project.write("deps/a.sh", 'echo "scalar loop a body"\n')
+            project.write("deps/b.sh", 'echo "scalar loop b body"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                DEPS="./deps/a.sh ./deps/b.sh"
+                for dep in $DEPS; do
+                  source "$dep"
+                done
+                echo "main body"
+                """))
+
+            output = project.compile("main.sh")
+            content = output.read_text()
+
+        self.assertIn('echo "scalar loop a body"', content)
+        self.assertIn('echo "scalar loop b body"', content)
+        self.assertIn('# modashc: source "$dep" -> deps/a.sh', content)
+        self.assertIn('# modashc: source "$dep" -> deps/b.sh', content)
+
+    def test_context_output_resolves_glob_for_loop_sources(self):
+        with ScriptProject() as project:
+            project.write("plugins/b.sh", 'echo "glob b body"\n')
+            project.write("plugins/a.sh", 'echo "glob a body"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in ./plugins/*.sh; do
+                  source "$dep"
+                done
+                echo "main body"
+                """))
+
+            output = project.compile("main.sh")
+            content = output.read_text()
+
+        self.assertIn('echo "glob a body"', content)
+        self.assertIn('echo "glob b body"', content)
+        self.assertIn('# modashc: source "$dep" -> plugins/a.sh', content)
+        self.assertIn('# modashc: source "$dep" -> plugins/b.sh', content)
+        self.assertEqual(content.count('echo "glob a body"'), 1)
+
+    def test_context_output_preserves_unsupported_c_style_loop_without_failing(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "dep body"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for (( i=$(cat start.txt); i<2; i++ )); do
+                  source ./dep.sh
+                done
+                echo "main body"
+                """))
+
+            output = project.compile("main.sh")
+            content = output.read_text()
+
+        self.assertIn('echo "dep body"', content)
+        self.assertIn('# modashc: source ./dep.sh -> dep.sh (conditional)', content)
+        self.assertIn('for (( i=$(cat start.txt); i<2; i++ )); do', content)
+        self.assertIn('echo "main body"', content)
+
+    def test_context_output_preserves_unresolved_source_without_failing(self):
+        with ScriptProject() as project:
+            project.write("main.sh", 'source "$OPTIONAL_DEP"\necho "main body"\n')
+
+            output = project.compile("main.sh")
+            content = output.read_text()
+
+        self.assertIn('source "$OPTIONAL_DEP"', content)
+        self.assertIn('echo "main body"', content)
+
+    def test_context_output_does_not_leak_state_from_control_flow_sources(self):
+        with ScriptProject() as project:
+            project.write("optional.sh", 'NEXT=./next.sh\n')
+            project.write("next.sh", 'echo "next body"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                if [[ -n "$LOAD_OPTIONAL" ]]; then
+                  source ./optional.sh
+                fi
+                source "$NEXT"
+                echo "main body"
+                """))
+
+            output = project.compile("main.sh")
+            content = output.read_text()
+
+        self.assertIn('source "$NEXT"', content)
+        self.assertNotIn('echo "next body"', content)
+        self.assertIn('# modashc: source ./optional.sh -> optional.sh (conditional: [[ -n "$LOAD_OPTIONAL" ]])', content)
+        self.assertIn('echo "main body"', content)
+
+    def test_context_output_marks_mutually_exclusive_if_sources(self):
+        with ScriptProject() as project:
+            project.write("prod.sh", 'echo "prod body"\n')
+            project.write("dev.sh", 'echo "dev body"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                if [[ "$MODE" == prod ]]; then
+                  source ./prod.sh
+                else
+                  source ./dev.sh
+                fi
+                """))
+
+            output = project.compile("main.sh")
+            content = output.read_text()
+
+        self.assertIn('# modashc: source ./prod.sh -> prod.sh (mutually-exclusive: [[ "$MODE" == prod ]])', content)
+        self.assertIn('# modashc: source ./dev.sh -> dev.sh (mutually-exclusive: else)', content)
+
+    def test_context_output_marks_mutually_exclusive_case_sources(self):
+        with ScriptProject() as project:
+            project.write("prod.sh", 'echo "prod body"\n')
+            project.write("dev.sh", 'echo "dev body"\n')
+            project.write("default.sh", 'echo "default body"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                case "$ENV" in
+                  prod|stage) source ./prod.sh ;;
+                  dev) source ./dev.sh ;;
+                  *) source ./default.sh ;;
+                esac
+                """))
+
+            output = project.compile("main.sh")
+            content = output.read_text()
+
+        self.assertIn('# modashc: source ./prod.sh -> prod.sh (mutually-exclusive: case "$ENV" in prod|stage)', content)
+        self.assertIn('# modashc: source ./dev.sh -> dev.sh (mutually-exclusive: case "$ENV" in dev)', content)
+        self.assertIn('# modashc: source ./default.sh -> default.sh (mutually-exclusive: case "$ENV" in *)', content)
+
     def test_context_output_classifies_bash_c_source_as_child_shell(self):
         with ScriptProject() as project:
             project.write("dep.sh", 'echo "dep body"\n')
@@ -127,12 +290,33 @@ class ContextModeTestCase(unittest.TestCase):
                 helper() {
                   source ./dep.sh
                 }
+                helper
                 """))
 
             output = project.compile("main.sh")
             content = output.read_text()
 
         self.assertIn("  # modashc: source ./dep.sh -> dep.sh\n  source ./dep.sh", content)
+
+    def test_context_output_resolves_function_source_arguments(self):
+        with ScriptProject() as project:
+            project.write("a.sh", 'echo "function a body"\n')
+            project.write("b.sh", 'echo "function b body"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                load_dep() {
+                  source "$1"
+                }
+                load_dep ./a.sh
+                load_dep ./b.sh
+                """))
+
+            output = project.compile("main.sh")
+            content = output.read_text()
+
+        self.assertIn('echo "function a body"', content)
+        self.assertIn('echo "function b body"', content)
+        self.assertIn('# modashc: source "$1" -> a.sh', content)
+        self.assertIn('# modashc: source "$1" -> b.sh', content)
 
     def test_context_output_does_not_resolve_heredoc_source_text(self):
         with ScriptProject() as project:
