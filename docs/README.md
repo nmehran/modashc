@@ -8,6 +8,9 @@ keep only in code comments or tests.
 - [Dynamic Source Resolution](dynamic-source-resolution.md): Python-only
   resolution of common runtime-looking `source` idioms without executing shell
   code.
+- [Next-Generation Evaluator And IR Plan](evaluator-ir-plan.md): Deferred
+  architecture plan for loops, arrays, globs, conditionals, cases, and
+  function-aware source discovery.
 
 ## Planned Specs
 
@@ -18,8 +21,9 @@ keep only in code comments or tests.
 
 ## Deferred Specs
 
-These require a next-generation evaluator or IR and are intentionally outside
-the current resolver-driven compiler:
+These require the next-generation evaluator or IR and are intentionally outside
+the current resolver-driven compiler. The intended approach is captured in the
+[Next-Generation Evaluator And IR Plan](evaluator-ir-plan.md):
 
 - Loop-driven source discovery
 - Conditional and case-driven source discovery

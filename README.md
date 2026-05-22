@@ -124,8 +124,8 @@ Design notes live in [docs](docs/README.md).
 
 - Structured diagnostics instead of plain unsupported-source message strings.
 - Parser boundary documentation for the current line splitter and regex helpers.
-- Deferred next-generation evaluator/IR for loops, arrays, globs,
-  conditionals, case statements, and runtime dispatch.
+- Deferred [next-generation evaluator/IR](docs/evaluator-ir-plan.md) for loops,
+  arrays, globs, conditionals, case statements, and runtime dispatch.
 
 ## Installation
 
