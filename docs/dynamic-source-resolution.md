@@ -25,8 +25,11 @@ and safe `grep -q` file checks. Exact `case` blocks can lower source sites for
 known scalar subjects and modeled arm patterns, with non-matching arm sources
 neutralized in executable output. Bounded local function calls can lower sources
 when the function definition is known, arguments are exact, and source-relevant
-function body effects are modeled.
-Unsupported forms fail closed.
+function body effects are modeled. Runtime-dynamic source arguments such as
+`source "$@"` inside helper functions are planned support, not permanent
+unsupported behavior: exact call-site argument binding should handle the
+provable subset, and a user-supplied supplement file should handle values that
+cannot be inferred statically. Unsupported forms fail closed.
 
 ## Goal
 
@@ -63,6 +66,9 @@ setup shell helper.
   context, matching normal `source ./dep.sh`.
 - **Child-shell semantics**: The sourced file runs inside a child process, such
   as `bash -c "source ./dep.sh"`.
+- **Source supplement**: A user-authored data file that supplies exact values
+  for source-relevant variables, function arguments, or call signatures the
+  compiler cannot infer from static shell text alone.
 
 ## Resolver Contract
 
@@ -112,6 +118,9 @@ render `context-only` records, but the output must make that limitation clear.
 - Unsupported cases must fail before output is written.
 - Context mode may preserve unresolved source text for readability, but it must
   not claim a resolved dependency unless resolution is exact.
+- Supplement-provided values must be explicit and scoped. They may provide
+  source path values or function call signatures, but they must not execute
+  shell code or weaken the fail-closed rule.
 
 ## Resolver Priority
 
@@ -125,7 +134,9 @@ Resolvers should be tried from most explicit to most specialized:
 6. Direct one-match glob resolver
 7. Safe `eval source` resolver
 8. Safe `bash -c source` classifier
-9. Unsupported dynamic diagnostic
+9. Exact function-call argument binding
+10. Supplement-backed source resolution
+11. Unsupported dynamic diagnostic
 
 The resolver registry should make this ordering explicit in code and tests.
 
@@ -394,13 +405,101 @@ Recommended initial handling:
 Executable support, if added later, should render an equivalent child-shell
 boundary rather than inline the file into the parent shell.
 
+### Function Argument Source Sites
+
+Target forms:
+
+```bash
+source_safe() {
+  if ! source "$@"; then
+    return 1
+  fi
+}
+
+source_safe ./PKGBUILD
+source_safe "$MAKEPKG_LIBRARY/util/message.sh"
+```
+
+The desired final behavior is to support these helper patterns when call sites
+can be proven. `source "$@"`, `source "$1"`, and similar positional source
+expressions are not inherently unsafe; they are unsafe only when the compiler
+cannot determine the function call arguments.
+
+Accept initially when:
+
+- The function definition is known and source-relevant body effects are modeled.
+- Every reachable call site has an exact argument list.
+- Positional parameters map to exactly one source path, or to an explicitly
+  modeled multi-source call shape.
+- The resolved source paths pass the normal resolver contract.
+- Function return/status behavior remains exact enough for later source
+  resolution.
+
+Reject when:
+
+- A reachable call site uses unresolved `$@`, `$*`, branch-dependent variables,
+  dynamic dispatch, recursive calls, or incompatible call signatures.
+- Different reachable call sites imply non-equivalent source graphs that cannot
+  be represented safely.
+- The function can be called from outside the analyzed graph without a
+  supplement that declares the missing call signature.
+
+The first implementation should stay narrow: direct function calls with literal
+or already-resolved arguments, then tests against the makepkg `source_safe`
+pattern.
+
+### Source Supplements
+
+Some real projects intentionally defer source paths to runtime inputs. Those
+cases should be supported through a two-pass supplement workflow rather than by
+guessing.
+
+First pass:
+
+- The compiler fails closed with a structured diagnostic.
+- The diagnostic identifies each missing source-relevant value or call
+  signature.
+- The diagnostic suggests a supplement skeleton containing the required keys.
+- Context mode may still emit readable context output that preserves unresolved
+  source text and marks the unresolved site.
+
+Second pass:
+
+- The user provides a supplement file.
+- The compiler validates the supplement schema and all referenced paths.
+- Supplement values are merged into the resolver context as exact inputs.
+- Executable mode may proceed only if every formerly dynamic source site is now
+  exact.
+
+Supplement files should be declarative data, not shell. A future schema can
+evolve, but it should be able to express at least:
+
+```json
+{
+  "functions": {
+    "source_safe": [
+      {
+        "arguments": ["./PKGBUILD"]
+      }
+    ]
+  },
+  "variables": {
+    "BUILDFILE": "./PKGBUILD"
+  }
+}
+```
+
+Supplements are product inputs, not test hacks. Real-world corpus tests may pin
+supplements later, but only after the compiler validates them with the same
+rules used for normal user projects.
+
 ## Future Pattern Families
 
 These still need separate specs before implementation:
 
 - Broader glob semantics beyond ordinary deterministic file globs.
-- Direct source positional arguments, including direct source glob multi-match
-  argument semantics.
+- Direct source positional arguments beyond exact function-call binding,
+  including direct source glob multi-match argument semantics.
 - Conditional predicates outside the modeled side-effect-free subset.
 - Broader case pattern and fallthrough semantics.
 - Complex array/list-based source paths outside exact indexed, associative,
@@ -419,6 +518,8 @@ unsupported forms:
 - Glob-bearing conditional predicates such as `[ -f ./plugins/*.sh ]`.
 - Direct source positional arguments such as `source ./dep.sh arg1`.
 - Command predicates outside the safe `grep -q` file-check subset.
+- Runtime-dynamic helper sources such as `source "$@"` when exact call-site
+  binding is unavailable and no supplement has been provided.
 - Regex predicates requiring POSIX classes or unsupported Bash ERE behavior.
 - Nested modeled control flow inside branch bodies when the current line
   frontend cannot preserve exact nested locations.
@@ -494,7 +595,7 @@ with stable codes, source locations, rejected fragments, messages, and hints.
 
 Future resolver increments should stay small, tested, and fail-closed. Case,
 complex array, broader conditional, `extglob`, direct source positional and
-glob argument semantics, recursive functions, non-equivalent branch-defined
-functions, branch-dependent function returns, and runtime-dispatch support
-should not be added as one-off resolver patches; those belong in the
-evaluator/IR design.
+glob argument semantics, supplement-backed source resolution, recursive
+functions, non-equivalent branch-defined functions, branch-dependent function
+returns, and runtime-dispatch support should not be added as one-off resolver
+patches; those belong in the evaluator/IR design.

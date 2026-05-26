@@ -110,6 +110,25 @@ class CompileRegressionTestCase(unittest.TestCase):
 
                 project.assert_compiled_matches(self, "main.sh")
 
+    def test_parameter_default_source_library_uses_environment_value(self):
+        with ScriptProject() as project:
+            project.write("lib/a.sh", 'echo "a"\n')
+            project.write("lib/b.sh", 'echo "b"\n')
+            project.write("fallback/unused.sh", 'echo "unused"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                LIB=${LIB:-./fallback}
+                for dep in "$LIB"/*.sh; do
+                  source "$dep"
+                done
+                echo "main"
+                """))
+
+            project.assert_compiled_matches(
+                self,
+                "main.sh",
+                env={"LIB": str(project.path("lib"))},
+            )
+
     def test_exact_array_index_source_matches_bash(self):
         with ScriptProject() as project:
             project.write("deps/feature.sh", 'echo "feature"\n')
@@ -2084,6 +2103,46 @@ class CompileRegressionTestCase(unittest.TestCase):
                 self.assertIn(expected_fragment, cm.exception.diagnostic.fragment)
                 self.assertTrue(cm.exception.diagnostic.code.startswith("unsupported.source."))
                 self.assertEqual(output.read_text(), "existing output\n")
+
+    def test_source_free_shopt_if_is_explicit_executable_unsupported_contract(self):
+        with ScriptProject() as project:
+            project.write("main.sh", textwrap.dedent("""\
+                handle_cd() {
+                  :
+                }
+                if shopt -q cdable_vars; then
+                  complete -v -F handle_cd cd
+                else
+                  complete -F handle_cd cd
+                fi
+                """))
+            output = project.write("compiled.sh", "existing output\n")
+
+            with self.assertRaisesRegex(NotImplementedError, "shopt -q cdable_vars") as cm:
+                project.compile("main.sh", output=output, mode="executable")
+
+            self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.if-condition")
+            self.assertEqual(cm.exception.diagnostic.fragment, "if shopt -q cdable_vars; then")
+            self.assertEqual(cm.exception.diagnostic.location.line, 4)
+            self.assertEqual(output.read_text(), "existing output\n")
+
+    def test_negated_source_in_rendered_function_rejects_executable_output(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", textwrap.dedent("""\
+                source_safe() {
+                  if ! source "$@"; then
+                    return 1
+                  fi
+                }
+                """))
+            project.write("main.sh", "source ./dep.sh\n")
+            output = project.write("compiled.sh", "existing output\n")
+
+            with self.assertRaisesRegex(NotImplementedError, "if ! source") as cm:
+                project.compile("main.sh", output=output, mode="executable")
+
+            self.assertEqual(cm.exception.code, "unsupported.source.unresolved-output")
+            self.assertEqual(output.read_text(), "existing output\n")
 
     def test_runtime_dynamic_sources_raise_clear_diagnostic(self):
         cases = {

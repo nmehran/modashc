@@ -1119,9 +1119,11 @@ class SourceEvaluator:
             or has_unquoted_extglob(raw_word)
         ):
             try:
+                glob_word = resolve_variable_references(word, state.resolver_context())
+                glob_word = os.path.expandvars(glob_word)
                 return [
                     match.word
-                    for match in expand_glob_word(word, state.resolver_context(), node.text, raw_pattern=raw_word)
+                    for match in expand_glob_word(glob_word, state.resolver_context(), node.text, raw_pattern=raw_word)
                 ]
             except UnsupportedSourceError as exc:
                 raise self._unsupported_loop_words(node, str(exc)) from exc

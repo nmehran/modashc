@@ -147,6 +147,22 @@ def get_valid_path(command, base_dir=None):
     return ""
 
 
+def parameter_expansion_value(reference, context):
+    if not reference.startswith("${") or not reference.endswith("}"):
+        return None
+
+    body = reference[2:-1]
+    match = re.fullmatch(r'([a-zA-Z_]\w*)(:?)-(.+)', body)
+    if not match:
+        return None
+
+    name, colon, fallback = match.groups()
+    value = context['vars'].get(name, os.environ.get(name))
+    if value is None or (colon and value == ""):
+        return resolve_variable_references(fallback, context)
+    return value
+
+
 def resolve_variable_references(command, context):
     command_len = len(command)
 
@@ -165,9 +181,17 @@ def resolve_variable_references(command, context):
                 inner_definition = context['vars'].get(inner_name)
                 command = replace_substring(command, inner_reference, inner_definition, start, end)
 
+            parameter_value = parameter_expansion_value(outer_reference, context)
+            if parameter_value is not None:
+                command = replace_substring(command, outer_reference, parameter_value, start, end)
+                command_len = len(command)
+                search_start = start + len(parameter_value)
+                continue
+
             outer_name = VARIABLE_NAME_PATTERN.match(outer_reference).group(1)
             outer_definition = context['vars'].get(outer_name)
             command = replace_substring(command, outer_reference, outer_definition, start, end)
+            command_len = len(command)
 
             search_start = end
 

@@ -78,6 +78,8 @@ class SourceRegressionTestCase(unittest.TestCase):
         self.assertTrue(contains_source_command('builtin source ./dep.sh'))
         self.assertTrue(contains_source_command('FOO=bar source ./dep.sh'))
         self.assertTrue(contains_source_command('FOO=bar command source ./dep.sh'))
+        self.assertTrue(contains_source_command('! source ./dep.sh'))
+        self.assertTrue(contains_source_command('if ! source ./dep.sh'))
         self.assertTrue(contains_source_command('helper(){ source ./dep.sh'))
         self.assertTrue(contains_source_command('function helper { source ./dep.sh'))
         self.assertFalse(contains_source_command('command echo source ./dep.sh'))

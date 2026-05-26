@@ -423,7 +423,11 @@ def assert_no_unresolved_source_sites(content: str):
         if not stripped_line or stripped_line.startswith("#"):
             continue
         if line_contains_unresolved_source(line):
-            raise UnsupportedSourceError(f"unresolved source remained in executable output: {stripped_line}")
+            raise UnsupportedSourceError(
+                f"unresolved source remained in executable output: {stripped_line}",
+                code="unsupported.source.unresolved-output",
+                hint="Executable output cannot contain live source statements.",
+            )
 
         active_heredocs.extend(extract_heredoc_delimiters(line))
 

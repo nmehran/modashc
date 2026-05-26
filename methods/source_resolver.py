@@ -605,6 +605,8 @@ def source_command_index(command: str):
     command_start = 0
     while command_start < len(words) and ASSIGNMENT_WORD_PATTERN.match(words[command_start]):
         command_start += 1
+    while command_start < len(words) and words[command_start] == "!":
+        command_start += 1
 
     for index, word in enumerate(words):
         if word not in {'source', '.'}:
@@ -634,6 +636,8 @@ def source_command_index(command: str):
         if first_word in {'if', 'while', 'until', 'then', 'elif', 'else', 'do'}:
             branch_index = command_start + 1
             while branch_index < len(words) and ASSIGNMENT_WORD_PATTERN.match(words[branch_index]):
+                branch_index += 1
+            while branch_index < len(words) and words[branch_index] == "!":
                 branch_index += 1
             if index == branch_index:
                 return index
