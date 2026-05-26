@@ -1,4 +1,6 @@
+import json
 import re
+import subprocess
 import sys
 import textwrap
 import unittest
@@ -2143,6 +2145,241 @@ class CompileRegressionTestCase(unittest.TestCase):
 
             self.assertEqual(cm.exception.code, "unsupported.source.unresolved-output")
             self.assertEqual(output.read_text(), "existing output\n")
+
+    def test_exact_quoted_all_positionals_helper_source_matches_bash(self):
+        cases = ('"$@"', '"${@}"', '"$*"', '"${*}"')
+        for positional_expression in cases:
+            with self.subTest(positional_expression=positional_expression), ScriptProject() as project:
+                project.write("PKGBUILD", 'PKGNAME=demo\necho "pkgbuild:$PKGNAME"\n')
+                project.write("helpers.sh", textwrap.dedent(f"""\
+                    source_safe() {{
+                      if ! source {positional_expression}; then
+                        return 1
+                      fi
+                    }}
+
+                    source_safe ./PKGBUILD
+                    echo "helper:$PKGNAME"
+                    """))
+                project.write("main.sh", 'source ./helpers.sh\necho "main:$PKGNAME"\n')
+
+                project.assert_compiled_matches(self, "main.sh")
+
+    def test_source_supplement_variable_supports_makepkg_style_helper_source(self):
+        with ScriptProject() as project:
+            project.write("makepkg/util/message.sh", 'MESSAGE_LOADED=yes\necho "message loaded"\n')
+            project.write("helpers.sh", textwrap.dedent("""\
+                source_safe() {
+                  if ! source "$@"; then
+                    return 1
+                  fi
+                }
+
+                source_safe "$MAKEPKG_LIBRARY/util/message.sh"
+                echo "helper:$MESSAGE_LOADED"
+                """))
+            project.write("main.sh", 'source ./helpers.sh\necho "main:$MESSAGE_LOADED"\n')
+            supplement = project.write("source-supplement.json", json.dumps({
+                "version": 1,
+                "variables": {
+                    "MAKEPKG_LIBRARY": "./makepkg",
+                },
+            }))
+
+            expected = project.run("main.sh", env={"MAKEPKG_LIBRARY": str(project.path("makepkg"))})
+            actual = project.run(project.compile(
+                "main.sh",
+                mode="executable",
+                source_supplement=supplement,
+            ))
+
+            self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
+            self.assertEqual(actual.stdout, expected.stdout)
+
+    def test_script_assignment_overrides_source_supplement_variable(self):
+        with ScriptProject() as project:
+            project.write("from-script/util/message.sh", 'MESSAGE_LOADED=script\necho "script message"\n')
+            project.write("from-supplement/util/message.sh", 'MESSAGE_LOADED=supplement\necho "supplement message"\n')
+            project.write("helpers.sh", textwrap.dedent("""\
+                source_safe() {
+                  if ! source "$@"; then
+                    return 1
+                  fi
+                }
+
+                MAKEPKG_LIBRARY=./from-script
+                source_safe "$MAKEPKG_LIBRARY/util/message.sh"
+                echo "helper:$MESSAGE_LOADED"
+                """))
+            project.write("main.sh", 'source ./helpers.sh\necho "main:$MESSAGE_LOADED"\n')
+            supplement = project.write("source-supplement.json", json.dumps({
+                "version": 1,
+                "variables": {
+                    "MAKEPKG_LIBRARY": "./from-supplement",
+                },
+            }))
+
+            result = project.run(project.compile("main.sh", mode="executable", source_supplement=supplement))
+
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertIn("script message", result.stdout)
+            self.assertIn("helper:script", result.stdout)
+            self.assertIn("main:script", result.stdout)
+            self.assertNotIn("supplement message", result.stdout)
+
+    def test_source_supplement_function_signature_resolves_unresolved_helper_argument(self):
+        with ScriptProject() as project:
+            project.write("PKGBUILD", 'PKGNAME=supplemented\necho "$PKGNAME"\n')
+            project.write("helpers.sh", textwrap.dedent("""\
+                source_safe() {
+                  if ! source "$@"; then
+                    return 1
+                  fi
+                }
+
+                source_safe "$UNRESOLVED_BUILDFILE"
+                echo "helper:$PKGNAME"
+                """))
+            project.write("main.sh", 'source ./helpers.sh\necho "main:$PKGNAME"\n')
+            supplement = project.write("source-supplement.json", json.dumps({
+                "version": 1,
+                "functions": {
+                    "source_safe": [
+                        {
+                            "arguments": ["./PKGBUILD"],
+                        },
+                    ],
+                },
+            }))
+
+            result = project.run(project.compile("main.sh", mode="executable", source_supplement=supplement))
+
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertIn("supplemented", result.stdout)
+            self.assertIn("helper:supplemented", result.stdout)
+            self.assertIn("main:supplemented", result.stdout)
+
+    def test_missing_source_supplement_values_emit_skeleton(self):
+        with ScriptProject() as project:
+            project.write("helpers.sh", textwrap.dedent("""\
+                source_safe() {
+                  if ! source "$@"; then
+                    return 1
+                  fi
+                }
+
+                source_safe "$MAKEPKG_LIBRARY/util/message.sh"
+                """))
+            project.write("main.sh", 'source ./helpers.sh\n')
+            output = project.path("compiled.sh")
+
+            with self.assertRaisesRegex(NotImplementedError, "unsupported unresolved function argument") as cm:
+                project.compile("main.sh", output=output, mode="executable")
+
+            diagnostic = cm.exception.diagnostic
+            self.assertEqual(diagnostic.code, "unsupported.source.function-argument")
+            skeleton = diagnostic.details["supplement_skeleton"]
+            self.assertEqual(skeleton["version"], 1)
+            self.assertEqual(skeleton["variables"], {"MAKEPKG_LIBRARY": "<path>"})
+            self.assertEqual(
+                skeleton["functions"],
+                {"source_safe": [{"arguments": ["<source-path>"]}]},
+            )
+            self.assertFalse(output.exists())
+
+    def test_invalid_source_supplements_fail_before_output(self):
+        cases = {
+            "missing": None,
+            "invalid json": "{",
+            "wrong version": json.dumps({"version": 2}),
+            "unknown top-level key": json.dumps({"version": 1, "extra": {}}),
+            "bad variable name": json.dumps({"version": 1, "variables": {"1BAD": "./dep.sh"}}),
+            "non-string argument": json.dumps({
+                "version": 1,
+                "functions": {"source_safe": [{"arguments": [1]}]},
+            }),
+        }
+        for name, content in cases.items():
+            with self.subTest(name=name), ScriptProject() as project:
+                project.write("dep.sh", 'echo "dep"\n')
+                project.write("main.sh", 'source ./dep.sh\n')
+                supplement = project.path("source-supplement.json")
+                if content is not None:
+                    supplement.write_text(content)
+                output = project.path("compiled.sh")
+
+                with self.assertRaisesRegex(NotImplementedError, "source supplement") as cm:
+                    project.compile("main.sh", output=output, mode="executable", source_supplement=supplement)
+
+                self.assertEqual(cm.exception.code, "unsupported.source.supplement")
+                self.assertFalse(output.exists())
+
+    def test_positional_helper_source_safety_rejections(self):
+        cases = {
+            "zero args": 'source_safe\n',
+            "multi args": 'source_safe ./dep.sh ./other.sh\n',
+            "unquoted all args": 'source_safe() { source $@; }\nsource_safe ./dep.sh\n',
+        }
+        for name, call_or_content in cases.items():
+            with self.subTest(name=name), ScriptProject() as project:
+                project.write("dep.sh", 'echo "dep"\n')
+                project.write("other.sh", 'echo "other"\n')
+                if name == "unquoted all args":
+                    helpers = call_or_content
+                else:
+                    helpers = textwrap.dedent(f"""\
+                        source_safe() {{
+                          source "$@"
+                        }}
+                        {call_or_content}
+                        """)
+                project.write("helpers.sh", helpers)
+                project.write("main.sh", 'source ./helpers.sh\n')
+
+                with self.assertRaisesRegex(NotImplementedError, "positional source") as cm:
+                    project.compile("main.sh", mode="executable")
+
+                self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.function-positionals")
+
+    def test_arbitrary_source_if_condition_remains_unsupported(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                if ! source ./dep.sh; then
+                  echo "failed"
+                fi
+                """))
+            output = project.path("compiled.sh")
+
+            with self.assertRaisesRegex(NotImplementedError, "source if condition") as cm:
+                project.compile("main.sh", output=output, mode="executable")
+
+            self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.if-condition")
+            self.assertFalse(output.exists())
+
+    def test_cli_prints_source_supplement_skeleton(self):
+        with ScriptProject() as project:
+            project.write("main.sh", 'source "$MISSING_DEP"\n')
+            output = project.path("compiled.sh")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / "modashc.py"),
+                    str(project.path("main.sh")),
+                    str(output),
+                    "--mode",
+                    "executable",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("source supplement skeleton", result.stderr)
+            self.assertIn('"MISSING_DEP": "<path>"', result.stderr)
+            self.assertFalse(output.exists())
 
     def test_runtime_dynamic_sources_raise_clear_diagnostic(self):
         cases = {

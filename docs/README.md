@@ -11,6 +11,8 @@ keep only in code comments or tests.
 - [Dynamic Source Resolution](dynamic-source-resolution.md): Python-only
   resolution of common runtime-looking `source` idioms without executing shell
   code.
+- [Source Supplements And Exact Helper Sources](source-supplements.md):
+  JSON supplement workflow and exact helper patterns such as `source "$@"`.
 - [Next-Generation Evaluator And IR Plan](evaluator-ir-plan.md): Architecture
   notes and implementation history for the source-effect IR and evaluator.
 

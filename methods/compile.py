@@ -13,6 +13,7 @@ from methods.source_resolver import (
     extract_heredoc_delimiters,
     is_heredoc_end,
 )
+from methods.source_supplements import load_source_supplement
 from methods.sources import validate_path
 
 SET_SHEBANG = "#!/bin/bash"
@@ -607,7 +608,7 @@ def context_paths_from_source_events(entry_point: str, events):
     return ordered_paths
 
 
-def compile_sources(entry_point: str, output_file: str, mode: str = "context"):
+def compile_sources(entry_point: str, output_file: str, mode: str = "context", source_supplement=None):
     if mode not in {"context", "executable"}:
         raise ValueError(f"Unsupported compile mode: {mode}")
 
@@ -618,7 +619,8 @@ def compile_sources(entry_point: str, output_file: str, mode: str = "context"):
         raise OSError(f"Error: entry point must be a file - {entry_point}")
 
     entry_point = os.path.abspath(entry_point)
-    evaluation = SourceEvaluator(mode=mode).evaluate(entry_point)
+    supplement = load_source_supplement(source_supplement, os.path.dirname(entry_point))
+    evaluation = SourceEvaluator(mode=mode, source_supplement=supplement).evaluate(entry_point)
     context = context_from_source_events(evaluation.events, evaluation.disabled_sources, evaluation.line_replacements)
     if mode == "executable":
         output = render_executable_script(entry_point, context)

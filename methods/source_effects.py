@@ -40,6 +40,7 @@ class Diagnostic:
     fragment: str
     message: str
     hint: str | None = None
+    details: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

@@ -234,4 +234,6 @@ The remaining source-resolution surface is narrower than general Bash support:
   file tests.
 - `extglob` and full Bash edge semantics for `GLOBIGNORE`.
 - Broader `case` pattern and fallthrough semantics for source-bearing arms.
-- Recursive or runtime-dynamic source-bearing function dispatch.
+- Recursive or runtime-dynamic source-bearing function dispatch. Exact
+  makepkg-style helper calls using quoted `$@` / `$*` are covered by
+  [Source Supplements And Exact Helper Sources](source-supplements.md).

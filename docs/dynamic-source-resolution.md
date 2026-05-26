@@ -26,10 +26,11 @@ known scalar subjects and modeled arm patterns, with non-matching arm sources
 neutralized in executable output. Bounded local function calls can lower sources
 when the function definition is known, arguments are exact, and source-relevant
 function body effects are modeled. Runtime-dynamic source arguments such as
-`source "$@"` inside helper functions are planned support, not permanent
-unsupported behavior: exact call-site argument binding should handle the
-provable subset, and a user-supplied supplement file should handle values that
-cannot be inferred statically. Unsupported forms fail closed.
+`source "$@"` inside helper functions are supported for the exact call-site
+subset, and user-supplied source supplements handle values that cannot be
+inferred statically. Unsupported forms fail closed. The detailed supplement and
+helper-source contract lives in
+[Source Supplements And Exact Helper Sources](source-supplements.md).
 
 ## Goal
 
@@ -451,47 +452,10 @@ pattern.
 ### Source Supplements
 
 Some real projects intentionally defer source paths to runtime inputs. Those
-cases should be supported through a two-pass supplement workflow rather than by
-guessing.
-
-First pass:
-
-- The compiler fails closed with a structured diagnostic.
-- The diagnostic identifies each missing source-relevant value or call
-  signature.
-- The diagnostic suggests a supplement skeleton containing the required keys.
-- Context mode may still emit readable context output that preserves unresolved
-  source text and marks the unresolved site.
-
-Second pass:
-
-- The user provides a supplement file.
-- The compiler validates the supplement schema and all referenced paths.
-- Supplement values are merged into the resolver context as exact inputs.
-- Executable mode may proceed only if every formerly dynamic source site is now
-  exact.
-
-Supplement files should be declarative data, not shell. A future schema can
-evolve, but it should be able to express at least:
-
-```json
-{
-  "functions": {
-    "source_safe": [
-      {
-        "arguments": ["./PKGBUILD"]
-      }
-    ]
-  },
-  "variables": {
-    "BUILDFILE": "./PKGBUILD"
-  }
-}
-```
-
-Supplements are product inputs, not test hacks. Real-world corpus tests may pin
-supplements later, but only after the compiler validates them with the same
-rules used for normal user projects.
+cases are handled through the two-pass JSON supplement workflow documented in
+[Source Supplements And Exact Helper Sources](source-supplements.md): first
+fail closed with a structured diagnostic and supplement skeleton, then ingest
+and validate explicit user-provided values on the second pass.
 
 ## Future Pattern Families
 

@@ -34,6 +34,7 @@ from methods.source_effects import (
 )
 from methods.source_frontend import LineParserFrontend, ParserFrontend
 from methods.source_resolver import (
+    ResolvedSource,
     UnsupportedSourceError,
     contains_source_command,
     contains_nested_source_command,
@@ -45,8 +46,10 @@ from methods.source_resolver import (
     contains_unquoted_token,
     has_unquoted_glob,
     parse_shell_words_preserving_quotes,
+    source_command_index,
     strip_shell_word_quotes,
 )
+from methods.source_supplements import SourceSupplement, empty_source_supplement, supplement_skeleton
 from methods.sources import (
     SOURCE_RESOLVER,
     change_directory,
@@ -179,6 +182,7 @@ GREP_LITERAL_META_PATTERN = re.compile(r'[.\[\\*^$]')
 POSIX_CLASS_PATTERN = re.compile(r'\[\[:[a-zA-Z_]+:\]\]')
 PYTHON_ONLY_REGEX_PATTERN = re.compile(r'\(\?|\\[AbBdDsSwWZ]')
 LAZY_REGEX_QUANTIFIER_PATTERN = re.compile(r'(?:[*+?]|\{[0-9]+(?:,[0-9]*)?\})\?')
+QUOTED_ALL_POSITIONALS_SOURCE_EXPRESSIONS = frozenset({'"$@"', '"${@}"', '"$*"', '"${*}"'})
 
 
 @dataclass
@@ -202,6 +206,7 @@ class EvaluationState:
     ambiguous_shell_options: bool = False
     ambiguous_glob_options: bool = False
     function_call_stack: tuple[str, ...] = ()
+    positional_arguments: tuple[str, ...] = ()
     local_scopes: list[dict[str, tuple[bool, str | None, bool, str | None, bool]]] = field(default_factory=list)
     last_status: int | None = 0
     loop_depth: int = 0
@@ -255,6 +260,7 @@ class EvaluationState:
             ambiguous_shell_options=self.ambiguous_shell_options,
             ambiguous_glob_options=self.ambiguous_glob_options,
             function_call_stack=self.function_call_stack,
+            positional_arguments=self.positional_arguments,
             local_scopes=copy.deepcopy(self.local_scopes),
             last_status=self.last_status,
             loop_depth=self.loop_depth,
@@ -285,6 +291,7 @@ class EvaluationState:
         self.ambiguous_shell_options = other.ambiguous_shell_options
         self.ambiguous_glob_options = other.ambiguous_glob_options
         self.function_call_stack = other.function_call_stack
+        self.positional_arguments = other.positional_arguments
         self.local_scopes = copy.deepcopy(other.local_scopes)
         self.last_status = other.last_status
         self.loop_depth = other.loop_depth
@@ -320,19 +327,30 @@ class EvaluationOutcome:
 class SourceEvaluator:
     """Evaluate source effects for the supported IR subset without executing Bash."""
 
-    def __init__(self, frontend: ParserFrontend | None = None, mode: str = "executable"):
+    def __init__(
+        self,
+        frontend: ParserFrontend | None = None,
+        mode: str = "executable",
+        source_supplement: SourceSupplement | None = None,
+    ):
         self.frontend = frontend or LineParserFrontend()
         self.mode = mode
+        self.source_supplement = source_supplement or empty_source_supplement()
         self.events: list[SourceEvent] = []
         self.disabled_sources: list[DisabledSourceSite] = []
         self.line_replacements: list[LineReplacement] = []
 
     def evaluate(self, entrypoint: str | Path):
         entrypoint = Path(entrypoint).resolve()
+        initial_variables = {
+            **self.source_supplement.variables,
+            '0': str(entrypoint),
+            'BASH_SOURCE': str(entrypoint),
+        }
         state = EvaluationState(
             cwd=entrypoint.parent,
-            variables={'0': str(entrypoint), 'BASH_SOURCE': str(entrypoint)},
-            runtime_variables={'0': str(entrypoint), 'BASH_SOURCE': str(entrypoint)},
+            variables=copy.deepcopy(initial_variables),
+            runtime_variables=copy.deepcopy(initial_variables),
             bash_source_stack=(entrypoint,),
         )
         self.events = []
@@ -1622,7 +1640,7 @@ class SourceEvaluator:
                 statuses.append("else")
                 continue
             try:
-                statuses.append(self._evaluate_condition(branch.condition, state))
+                statuses.append(self._evaluate_condition(branch.condition, state, node, stack, branch.keyword))
             except UnsupportedSourceError as exc:
                 if self.mode == "context":
                     statuses.append("unknown")
@@ -2310,10 +2328,21 @@ class SourceEvaluator:
             return ("raw", node.text)
         return (type(node).__name__, node.text)
 
-    def _evaluate_condition(self, condition: str, state: EvaluationState):
+    def _evaluate_condition(
+        self,
+        condition: str,
+        state: EvaluationState,
+        node=None,
+        stack: tuple[Path, ...] | None = None,
+        branch_keyword: str | None = None,
+    ):
         condition = condition.strip()
         if not condition:
             raise UnsupportedSourceError(f"unsupported empty if condition: {condition}")
+        if node is not None and stack is not None:
+            source_status = self._evaluate_source_condition(condition, node, state, stack, branch_keyword)
+            if source_status is not None:
+                return source_status
         if '$(' in condition or '`' in condition:
             raise UnsupportedSourceError(f"unsupported dynamic if condition: {condition}")
 
@@ -2328,6 +2357,38 @@ class SourceEvaluator:
         if not words:
             raise UnsupportedSourceError(f"unsupported empty if condition: {condition}")
         return self._evaluate_condition_tokens(words, state, condition)
+
+    def _evaluate_source_condition(
+        self,
+        condition: str,
+        node,
+        state: EvaluationState,
+        stack: tuple[Path, ...],
+        branch_keyword: str | None,
+    ):
+        match = re.fullmatch(r'(!\s*)?((?:source)|\.)\s+(.+)', condition.strip(), re.S)
+        if not match:
+            return None
+
+        negated, command_name, source_expression = match.groups()
+        source_expression = source_expression.strip()
+        if not source_expression:
+            raise UnsupportedSourceError(f"unsupported empty source condition: {condition}")
+        if branch_keyword != "if" or not self._is_quoted_all_positionals_source_expression(source_expression):
+            raise UnsupportedSourceError(f"unsupported source if condition: {condition}")
+
+        column_offset = source_command_index(node.text)
+        column = node.location.column if column_offset < 0 else node.location.column + column_offset
+        source_node = SourceSite(
+            location=SourceLocation(node.location.path, node.location.line, column),
+            text=f"{command_name} {source_expression}",
+            command_name=command_name,
+            source_expression=source_expression,
+            separator="",
+            is_control_flow=False,
+        )
+        self._apply_source_site(source_node, state, stack)
+        return "false" if negated else "true"
 
     def _evaluate_condition_tokens(self, words: list[str], state: EvaluationState, condition: str):
         result, index = self._parse_condition_or(words, 0, state, condition)
@@ -2759,33 +2820,42 @@ class SourceEvaluator:
         try:
             self._ensure_source_state_can_resolve(node, node.source_expression, state)
             resolved_expression = self._expand_array_indexes(node.source_expression, node, state)
+            positional_source = self._resolve_positional_source_expression(
+                resolved_expression,
+                node,
+                state,
+            )
         except UnsupportedSourceError:
             if self.mode == "context":
                 return
             raise
 
         source_site = f"{node.command_name} {node.source_expression.strip()}"
-        try:
-            resolved_source = SOURCE_RESOLVER.resolve_source_expression(
-                resolved_expression,
-                source_site,
-                state.resolver_context(),
-            )
-        except UnsupportedSourceError as exc:
-            if self.mode == "context":
-                return
-            raise with_source_diagnostic(
-                exc,
-                str(node.location.path),
-                node.location.line - 1,
-                node.text,
-                node.text,
-                "unsupported.source.resolution",
-            ) from exc
+        if positional_source is not None:
+            resolved_source = positional_source
+        else:
+            try:
+                resolved_source = SOURCE_RESOLVER.resolve_source_expression(
+                    resolved_expression,
+                    source_site,
+                    state.resolver_context(),
+                )
+            except UnsupportedSourceError as exc:
+                if self.mode == "context":
+                    return
+                raise with_source_diagnostic(
+                    exc,
+                    str(node.location.path),
+                    node.location.line - 1,
+                    node.text,
+                    node.text,
+                    "unsupported.source.resolution",
+                ) from exc
 
         if not resolved_source:
             if self.mode == "context":
                 return
+            variable_names = self._unresolved_word_variables([node.source_expression], state)
             raise unsupported_source_error(
                 str(node.location.path),
                 node.location.line - 1,
@@ -2794,6 +2864,7 @@ class SourceEvaluator:
                 "unsupported.source.unresolved",
                 "unsupported unresolved source",
                 "Use a statically resolvable source path for IR evaluation.",
+                details={"supplement_skeleton": supplement_skeleton(variable_names=variable_names)},
             )
 
         source_path = Path(resolved_source.path)
@@ -2844,6 +2915,95 @@ class SourceEvaluator:
             source_value,
         )
         state.last_status = 0
+
+    def _resolve_positional_source_expression(
+        self,
+        source_expression: str,
+        node: SourceSite,
+        state: EvaluationState,
+    ):
+        expression = source_expression.strip()
+        if not self._is_quoted_all_positionals_source_expression(expression):
+            if re.search(r'(?<!\\)\$(?:\{?[@*]\}?)', expression):
+                raise self._unsupported_positional_source(
+                    node,
+                    state,
+                    "unsupported positional source expression",
+                    "Only quoted $@/$* helper source expressions with one exact argument are supported.",
+                )
+            return None
+
+        if not state.function_call_stack:
+            raise self._unsupported_positional_source(
+                node,
+                state,
+                "unsupported top-level positional source expression",
+                "Quoted $@/$* source expressions are supported only inside modeled local helper calls.",
+            )
+
+        arguments = state.positional_arguments
+        if len(arguments) != 1:
+            raise self._unsupported_positional_source(
+                node,
+                state,
+                f"unsupported positional source argument count: {len(arguments)}",
+                "Quoted $@/$* helper sources must bind to exactly one source path argument.",
+            )
+
+        source_site = f"{node.command_name} {node.source_expression.strip()}"
+        quoted_argument = self._shell_quote(arguments[0])
+        try:
+            resolved_source = SOURCE_RESOLVER.resolve_source_expression(
+                quoted_argument,
+                source_site,
+                state.resolver_context(),
+            )
+        except UnsupportedSourceError as exc:
+            raise with_source_diagnostic(
+                exc,
+                str(node.location.path),
+                node.location.line - 1,
+                node.text,
+                node.text,
+                "unsupported.source.function-positionals",
+            ) from exc
+
+        if not resolved_source:
+            raise self._unsupported_positional_source(
+                node,
+                state,
+                "unsupported unresolved positional source argument",
+                "The helper source argument must resolve to an existing source file.",
+            )
+
+        return ResolvedSource(
+            path=resolved_source.path,
+            source_expression=node.source_expression.strip(),
+            source_site=source_site,
+            execution_model=resolved_source.execution_model,
+            confidence=resolved_source.confidence,
+            replacement_kind=resolved_source.replacement_kind,
+            source_value=arguments[0],
+            source_column=resolved_source.source_column,
+        )
+
+    @staticmethod
+    def _is_quoted_all_positionals_source_expression(source_expression: str):
+        return source_expression.strip() in QUOTED_ALL_POSITIONALS_SOURCE_EXPRESSIONS
+
+    @staticmethod
+    def _unsupported_positional_source(node: SourceSite, state: EvaluationState, message: str, hint: str):
+        function_name = state.function_call_stack[-1] if state.function_call_stack else None
+        return unsupported_source_error(
+            str(node.location.path),
+            node.location.line - 1,
+            node.text,
+            node.text,
+            "unsupported.source.function-positionals",
+            message,
+            hint,
+            details={"supplement_skeleton": supplement_skeleton(function_name=function_name)},
+        )
 
     @staticmethod
     def _source_site_has_unknown_status_guard(node: SourceSite, state: EvaluationState):
@@ -2992,7 +3152,7 @@ class SourceEvaluator:
             )
 
         variants = state.function_variants.get(function_name, (function_def,))
-        arguments = self._resolve_function_arguments(words[index + 1:], node, state)
+        arguments = self._resolve_function_arguments(function_name, words[index + 1:], node, state)
         prefix_words = words[:index]
         if len(variants) == 1:
             self._apply_function_call_variant(
@@ -3037,9 +3197,11 @@ class SourceEvaluator:
     ):
         prefix_scope = {}
         self._apply_function_assignment_prefixes(prefix_words, prefix_scope, call_node, state)
+        previous_positional_arguments = state.positional_arguments
         previous_positionals = self._push_function_positionals(arguments, state)
         previous_call_stack = state.function_call_stack
         state.function_call_stack = (*state.function_call_stack, function_name)
+        state.positional_arguments = arguments
         state.local_scopes.append({})
         return_status = None
         try:
@@ -3051,6 +3213,7 @@ class SourceEvaluator:
             local_scope = state.local_scopes.pop()
             self._restore_local_scope(local_scope, state)
             self._restore_function_positionals(previous_positionals, len(arguments), state)
+            state.positional_arguments = previous_positional_arguments
             self._restore_local_scope(prefix_scope, state)
             state.function_call_stack = previous_call_stack
         if return_status is not None:
@@ -3114,20 +3277,71 @@ class SourceEvaluator:
             state.runtime_variables[name] = resolved
             state.ambiguous_variables.discard(name)
 
-    @staticmethod
-    def _resolve_function_arguments(words: list[str], node: RawCommand, state: EvaluationState):
+    def _resolve_function_arguments(self, function_name: str, words: list[str], node: RawCommand, state: EvaluationState):
         arguments = []
-        for word in words:
-            arguments.append(SourceEvaluator._resolve_function_exact_word(
-                word,
-                node,
-                state,
+        try:
+            for word in words:
+                arguments.append(SourceEvaluator._resolve_function_exact_word(
+                    word,
+                    node,
+                    state,
+                    "unsupported.source.function-argument",
+                    "unsupported dynamic function argument",
+                    "unsupported unresolved function argument",
+                    "Function arguments must be exact for source-aware function evaluation.",
+                ))
+            return tuple(arguments)
+        except UnsupportedSourceError as exc:
+            supplemented = self._supplemented_function_arguments(function_name, len(words), node)
+            if supplemented is not None:
+                return supplemented
+            variable_names = self._unresolved_word_variables(words, state)
+            raise unsupported_source_error(
+                str(node.location.path),
+                node.location.line - 1,
+                node.text,
+                node.text,
                 "unsupported.source.function-argument",
-                "unsupported dynamic function argument",
-                "unsupported unresolved function argument",
-                "Function arguments must be exact for source-aware function evaluation.",
-            ))
-        return tuple(arguments)
+                str(exc),
+                "Provide exact function arguments or a source supplement for the missing source values.",
+                details={
+                    "supplement_skeleton": supplement_skeleton(
+                        variable_names=variable_names,
+                        function_name=function_name,
+                    ),
+                },
+            ) from exc
+
+    def _supplemented_function_arguments(self, function_name: str, word_count: int, node: RawCommand):
+        signatures = tuple(
+            signature
+            for signature in self.source_supplement.function_signatures(function_name)
+            if len(signature) == word_count
+        )
+        if not signatures:
+            return None
+        if len(signatures) == 1:
+            return signatures[0]
+        raise unsupported_source_error(
+            str(node.location.path),
+            node.location.line - 1,
+            node.text,
+            node.text,
+            "unsupported.source.function-argument",
+            f"ambiguous source supplement signatures for function {function_name}",
+            "Provide exactly one supplement signature for unresolved helper call arguments.",
+            details={"supplement_skeleton": supplement_skeleton(function_name=function_name)},
+        )
+
+    @staticmethod
+    def _unresolved_word_variables(words: list[str], state: EvaluationState):
+        names = set()
+        for word in words:
+            for match in SCALAR_REFERENCE_PATTERN.finditer(word):
+                name = match.group(1) or match.group(2)
+                if name not in state.runtime_variables:
+                    names.add(name)
+        return names
 
     @staticmethod
     def _resolve_function_exact_word(word: str, node: RawCommand, state: EvaluationState, code: str,

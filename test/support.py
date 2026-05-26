@@ -50,7 +50,7 @@ class ScriptProject:
             text=True,
         )
 
-    def compile(self, entry, output="compiled.sh", cwd=None, env=None, mode="context"):
+    def compile(self, entry, output="compiled.sh", cwd=None, env=None, mode="context", source_supplement=None):
         output_path = self.path(output)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -69,7 +69,8 @@ class ScriptProject:
                 os.environ.update({str(key): str(value) for key, value in env.items()})
             if compile_cwd is not None:
                 os.chdir(compile_cwd)
-            compile_sources(entry_arg, str(output_path), mode=mode)
+            supplement_arg = self._optional_project_path(source_supplement)
+            compile_sources(entry_arg, str(output_path), mode=mode, source_supplement=supplement_arg)
         finally:
             os.environ.clear()
             os.environ.update(original_env)
@@ -77,21 +78,22 @@ class ScriptProject:
 
         return output_path
 
-    def run_compiled(self, entry, cwd=None, env=None, mode="executable"):
-        output_path = self.compile(entry, env=env, mode=mode)
+    def run_compiled(self, entry, cwd=None, env=None, mode="executable", source_supplement=None):
+        output_path = self.compile(entry, env=env, mode=mode, source_supplement=source_supplement)
         return self.run(output_path, cwd=cwd, env=env)
 
-    def sources(self, entry, mode="executable"):
+    def sources(self, entry, mode="executable", source_supplement=None):
         original_cwd = os.getcwd()
         try:
-            discovered, _ = get_sources(str(self.path(entry)), mode=mode)
+            supplement_arg = self._optional_project_path(source_supplement)
+            discovered, _ = get_sources(str(self.path(entry)), mode=mode, source_supplement=supplement_arg)
         finally:
             os.chdir(original_cwd)
         return [Path(path) for path in discovered]
 
-    def assert_compiled_matches(self, testcase, entry, cwd=None, env=None, mode="executable"):
+    def assert_compiled_matches(self, testcase, entry, cwd=None, env=None, mode="executable", source_supplement=None):
         expected = self.run(entry, cwd=cwd, env=env)
-        actual = self.run_compiled(entry, cwd=cwd, env=env, mode=mode)
+        actual = self.run_compiled(entry, cwd=cwd, env=env, mode=mode, source_supplement=source_supplement)
 
         testcase.assertEqual(actual.returncode, expected.returncode, actual.stdout)
         testcase.assertEqual(actual.stdout, expected.stdout)
@@ -110,6 +112,12 @@ class ScriptProject:
             return path.relative_to(self.root).as_posix()
         except ValueError:
             return path.as_posix()
+
+    def _optional_project_path(self, path):
+        if path is None:
+            return None
+        candidate = Path(path)
+        return str(candidate if candidate.is_absolute() else self.path(path))
 
     @staticmethod
     def _merged_env(env):

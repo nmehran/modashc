@@ -16,7 +16,7 @@ def command_column(line: str, fragment: str):
 
 
 def source_diagnostic(script_path: str, line_number: int, line: str, fragment: str, code: str,
-                      message: str, hint: str | None = None):
+                      message: str, hint: str | None = None, details: dict | None = None):
     return Diagnostic(
         code=code,
         severity=DiagnosticSeverity.ERROR,
@@ -24,12 +24,13 @@ def source_diagnostic(script_path: str, line_number: int, line: str, fragment: s
         fragment=fragment.strip(),
         message=message,
         hint=hint,
+        details=details or {},
     )
 
 
 def unsupported_source_error(script_path: str, line_number: int, line: str, fragment: str, code: str,
-                             message: str, hint: str | None = None):
-    diagnostic = source_diagnostic(script_path, line_number, line, fragment, code, message, hint)
+                             message: str, hint: str | None = None, details: dict | None = None):
+    diagnostic = source_diagnostic(script_path, line_number, line, fragment, code, message, hint, details)
     return UnsupportedSourceError(f"{message}: {diagnostic.fragment}", diagnostic=diagnostic)
 
 
@@ -46,5 +47,6 @@ def with_source_diagnostic(error: UnsupportedSourceError, script_path: str, line
         error.code or fallback_code,
         str(error),
         error.hint,
+        error.details,
     )
     return error.with_diagnostic(diagnostic)

@@ -270,19 +270,21 @@ def resolve_path(source_path: str, context: dict):
 SOURCE_RESOLVER = SourceResolver(resolve_path, resolve_variable_references, get_commands)
 
 
-def get_sources(entrypoint, mode="executable"):
+def get_sources(entrypoint, mode="executable", source_supplement=None):
     from methods.compile import context_from_source_events, context_paths_from_source_events
     from methods.source_evaluator import SourceEvaluator
+    from methods.source_supplements import load_source_supplement
 
     if not validate_path(entrypoint):
         raise FileNotFoundError(f"Error: File does not exist - {entrypoint}")
 
     entrypoint = os.path.abspath(entrypoint)
-    evaluation = SourceEvaluator(mode=mode).evaluate(entrypoint)
+    supplement = load_source_supplement(source_supplement, os.path.dirname(entrypoint))
+    evaluation = SourceEvaluator(mode=mode, source_supplement=supplement).evaluate(entrypoint)
     sources = context_paths_from_source_events(entrypoint, evaluation.events)
     context = context_from_source_events(evaluation.events, evaluation.disabled_sources)
     context.update({
-        'vars': {'0': entrypoint},
+        'vars': {**supplement.variables, '0': entrypoint},
         'current_directory': os.path.dirname(entrypoint),
     })
     return sources, context

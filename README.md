@@ -59,7 +59,7 @@ practical remaining source-resolution gaps, see
 ## Usage
 
 ```sh
-python modashc.py <entrypoint> <output> [--mode context|executable]
+python modashc.py <entrypoint> <output> [--mode context|executable] [--source-supplement FILE]
 ```
 
 Arguments:
@@ -68,6 +68,8 @@ Arguments:
 - `<output>`: the file to write.
 - `--mode`: `context` by default, or `executable` for runtime parity over the
   supported subset.
+- `--source-supplement`: optional JSON file with exact source-relevant values
+  for runtime-dynamic source sites.
 
 Examples:
 

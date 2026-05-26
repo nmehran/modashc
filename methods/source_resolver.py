@@ -21,13 +21,14 @@ COMMAND_LEVEL_SOURCE_PATTERNS = (
 
 class UnsupportedSourceError(NotImplementedError):
     def __init__(self, message: str | None = None, *, diagnostic=None, code: str | None = None,
-                 hint: str | None = None):
+                 hint: str | None = None, details: dict | None = None):
         if diagnostic is not None and message is None:
             message = f"{diagnostic.message}: {diagnostic.fragment}"
         super().__init__(message or "unsupported source")
         self.diagnostic = diagnostic
         self.code = diagnostic.code if diagnostic is not None else code
         self.hint = diagnostic.hint if diagnostic is not None else hint
+        self.details = diagnostic.details if diagnostic is not None else (details or {})
 
     def with_diagnostic(self, diagnostic):
         if self.diagnostic is not None:
