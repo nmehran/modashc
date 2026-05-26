@@ -483,7 +483,7 @@ unsupported forms:
 - Direct source positional arguments such as `source ./dep.sh arg1`.
 - Command predicates outside the safe `grep -q` file-check subset.
 - Runtime-dynamic helper sources such as `source "$@"` when exact call-site
-  binding is unavailable and no supplement has been provided.
+  binding is unavailable and no retained-helper supplement has been provided.
 - Regex predicates requiring POSIX classes or unsupported Bash ERE behavior.
 - Nested modeled control flow inside branch bodies when the current line
   frontend cannot preserve exact nested locations.
@@ -550,6 +550,8 @@ scope:
   `shift`, exact dynamic dispatch, same-line post-definition calls, and nested
   modeled control flow. It also supports source-equivalent branch-defined
   functions and exact function-call status for chained source sites.
+- Supplement-backed retained helper dispatch is implemented for modeled
+  positional source helpers with finite one-path argument vectors.
 - Executable mode fails before output when unsupported source forms would leave
   live runtime `source` commands.
 
@@ -559,7 +561,8 @@ with stable codes, source locations, rejected fragments, messages, and hints.
 
 Future resolver increments should stay small, tested, and fail-closed. Case,
 complex array, broader conditional, `extglob`, direct source positional and
-glob argument semantics, supplement-backed source resolution, recursive
-functions, non-equivalent branch-defined functions, branch-dependent function
-returns, and runtime-dispatch support should not be added as one-off resolver
-patches; those belong in the evaluator/IR design.
+glob argument semantics, Bash-equivalent top-level source `return` lowering,
+broader supplement-backed source resolution, recursive functions,
+non-equivalent branch-defined functions, branch-dependent function returns, and
+runtime-dispatch support should not be added as one-off resolver patches; those
+belong in the evaluator/IR design.

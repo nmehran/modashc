@@ -169,6 +169,42 @@ def render_source_dispatch(source_expression: str, source_declarations, render_s
     return '\n'.join(output)
 
 
+def render_retained_source_dispatch(source_declarations, render_source, indent: str):
+    output = ["{"]
+    seen_arguments = set()
+    branch_keyword = "if"
+
+    for source_declaration in source_declarations:
+        argument = source_declaration.source_value or source_declaration.path
+        if argument in seen_arguments:
+            continue
+        seen_arguments.add(argument)
+
+        rendered_source = indent_block(render_source(source_declaration.path), f"{indent}      ")
+        if not rendered_source:
+            rendered_source = f"{indent}      :"
+        quoted_argument = shell_quote(argument)
+        output.extend([
+            (
+                f"{indent}  {branch_keyword} [[ $# -eq 1 && "
+                f"( ${{1-}} == {quoted_argument} || "
+                f"$(realpath -- \"${{1-}}\" 2>/dev/null) == {quoted_argument} ) ]]; then"
+            ),
+            f"{indent}    {{",
+            rendered_source,
+            f"{indent}    }}",
+        ])
+        branch_keyword = "elif"
+
+    output.extend([
+        f"{indent}  else",
+        f"{indent}    false",
+        f"{indent}  fi",
+        f"{indent}}}",
+    ])
+    return '\n'.join(output)
+
+
 def find_unquoted_substring(text: str, needle: str, start: int = 0):
     in_single_quote = False
     in_double_quote = False
@@ -258,6 +294,13 @@ def group_source_declarations_by_column(source_declarations):
 
 
 def render_source_site_replacement(separator: str, declarations, render_source, indent: str):
+    retained_declarations = [
+        declaration for declaration in declarations
+        if declaration.replacement_kind == "retained-source"
+    ]
+    if retained_declarations:
+        return f"{separator}{render_retained_source_dispatch(retained_declarations, render_source, indent)}"
+
     declaration = declarations[0]
     if declaration.replacement_kind == "noop-source":
         return f"{separator}:"
@@ -490,7 +533,7 @@ def render_executable_script(entry_point: str, context: dict):
                 line = replace_command_source_sites(line, command_sources, render_file)
                 source_site_declarations = [
                     source_declaration for source_declaration in source_declarations
-                    if source_declaration.replacement_kind in {"source", "noop-source"}
+                    if source_declaration.replacement_kind in {"source", "noop-source", "retained-source"}
                 ]
                 if source_site_declarations:
                     line = replace_source_site_declarations(

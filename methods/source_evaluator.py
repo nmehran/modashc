@@ -183,6 +183,10 @@ POSIX_CLASS_PATTERN = re.compile(r'\[\[:[a-zA-Z_]+:\]\]')
 PYTHON_ONLY_REGEX_PATTERN = re.compile(r'\(\?|\\[AbBdDsSwWZ]')
 LAZY_REGEX_QUANTIFIER_PATTERN = re.compile(r'(?:[*+?]|\{[0-9]+(?:,[0-9]*)?\})\?')
 QUOTED_ALL_POSITIONALS_SOURCE_EXPRESSIONS = frozenset({'"$@"', '"${@}"', '"$*"', '"${*}"'})
+RETAINED_HELPER_POSITIONAL_SOURCE_EXPRESSIONS = QUOTED_ALL_POSITIONALS_SOURCE_EXPRESSIONS | frozenset({
+    '"$1"',
+    '"${1}"',
+})
 
 
 @dataclass
@@ -324,6 +328,18 @@ class EvaluationOutcome:
     return_signal: FunctionReturnSignal | None = None
 
 
+@dataclass(frozen=True)
+class RetainedHelperSourceSite:
+    function_name: str
+    function_def: FunctionDef
+    definition_state: EvaluationState
+    stack: tuple[Path, ...]
+    location: SourceLocation
+    source_expression: str
+    source_site: str
+    fragment: str
+
+
 class SourceEvaluator:
     """Evaluate source effects for the supported IR subset without executing Bash."""
 
@@ -339,6 +355,8 @@ class SourceEvaluator:
         self.events: list[SourceEvent] = []
         self.disabled_sources: list[DisabledSourceSite] = []
         self.line_replacements: list[LineReplacement] = []
+        self.retained_helper_source_sites: list[RetainedHelperSourceSite] = []
+        self._retained_helper_stack: list[str] = []
 
     def evaluate(self, entrypoint: str | Path):
         entrypoint = Path(entrypoint).resolve()
@@ -356,7 +374,10 @@ class SourceEvaluator:
         self.events = []
         self.disabled_sources = []
         self.line_replacements = []
+        self.retained_helper_source_sites = []
+        self._retained_helper_stack = []
         self._evaluate_file(entrypoint, state, ())
+        self._ensure_retained_helpers_resolved()
         return EvaluationResult(
             events=self._with_occurrence_models(self.events),
             disabled_sources=tuple(self.disabled_sources),
@@ -406,7 +427,7 @@ class SourceEvaluator:
                 elif isinstance(node, SetCommand):
                     self._apply_set(node, state)
                 elif isinstance(node, FunctionDef):
-                    self._apply_function_def(node, state)
+                    self._apply_function_def(node, state, stack)
                 elif isinstance(node, ForLoop):
                     self._apply_for_loop(node, state, stack)
                 elif isinstance(node, CStyleForLoop):
@@ -696,12 +717,232 @@ class SourceEvaluator:
             "Array assignments must resolve to exact finite values.",
         )
 
-    @staticmethod
-    def _apply_function_def(node: FunctionDef, state: EvaluationState):
+    def _apply_function_def(self, node: FunctionDef, state: EvaluationState, stack: tuple[Path, ...]):
         state.functions[node.name] = node
         state.function_variants.pop(node.name, None)
         state.ambiguous_functions.discard(node.name)
         state.last_status = 0
+        if self.mode != "executable":
+            return
+
+        retained_sites = self._retained_helper_source_sites(node, state, stack)
+        if not retained_sites:
+            return
+        self.retained_helper_source_sites.extend(retained_sites)
+
+    def _apply_retained_helper_signatures(
+        self,
+        function_def: FunctionDef,
+        signatures: tuple[tuple[str, ...], ...],
+        state: EvaluationState,
+        stack: tuple[Path, ...],
+    ):
+        for signature in signatures:
+            if len(signature) != 1:
+                raise self._unsupported_retained_helper(
+                    function_def.name,
+                    function_def.location,
+                    function_def.text,
+                    f"unsupported retained source helper argument count: {len(signature)}",
+                    "Retained helper supplements must provide exactly one source path argument per V1 signature.",
+                )
+
+        call_node = RawCommand(
+            function_def.location,
+            f"{function_def.name} <source-supplement>",
+        )
+        for signature in dict.fromkeys(signatures):
+            retained_state = state.child_shell_copy()
+            self._retained_helper_stack.append(function_def.name)
+            try:
+                return_status = self._apply_function_call_variant(
+                    function_def,
+                    function_def.name,
+                    signature,
+                    [],
+                    call_node,
+                    retained_state,
+                    stack,
+                )
+                if return_status is not None:
+                    raise self._unsupported_retained_helper(
+                        function_def.name,
+                        function_def.location,
+                        function_def.text,
+                        "unsupported retained source helper return behavior",
+                        "Retained helper dispatch cannot yet lower sourced files whose top-level return affects source status.",
+                    )
+            except UnsupportedSourceError as exc:
+                raise with_source_diagnostic(
+                    exc,
+                    str(function_def.location.path),
+                    function_def.location.line - 1,
+                    function_def.text,
+                    function_def.text,
+                    "unsupported.source.retained-helper",
+                ) from exc
+            finally:
+                self._retained_helper_stack.pop()
+
+    def _retained_helper_source_sites(self, function_def: FunctionDef, state: EvaluationState,
+                                      stack: tuple[Path, ...] = ()):
+        site_specs = []
+
+        def collect(nodes):
+            for node in nodes:
+                if isinstance(node, SourceSite):
+                    source_expression = node.source_expression.strip()
+                    if self._is_retained_helper_positional_source_expression(source_expression):
+                        site_specs.append((
+                            node.location,
+                            source_expression,
+                            f"{node.command_name} {source_expression}".strip(),
+                            node.text,
+                        ))
+                    continue
+
+                if isinstance(node, IfBlock):
+                    for branch in node.branches:
+                        site_spec = self._retained_helper_source_condition_site(node, branch)
+                        if site_spec is not None:
+                            site_specs.append(site_spec)
+                        collect(branch.body)
+                    continue
+
+                if isinstance(node, FunctionDef):
+                    continue
+                if isinstance(node, ForLoop):
+                    collect(node.body)
+                elif isinstance(node, CStyleForLoop):
+                    collect(node.body)
+                elif isinstance(node, WhileLoop):
+                    collect(node.body)
+                elif isinstance(node, CaseBlock):
+                    for arm in node.arms:
+                        collect(arm.body)
+
+        collect(function_def.body)
+        if not site_specs:
+            return []
+
+        definition_state = state.child_shell_copy()
+        return [
+            RetainedHelperSourceSite(
+                function_name=function_def.name,
+                function_def=function_def,
+                definition_state=definition_state,
+                stack=stack,
+                location=location,
+                source_expression=source_expression,
+                source_site=source_site,
+                fragment=fragment,
+            )
+            for location, source_expression, source_site, fragment in site_specs
+        ]
+
+    def _retained_helper_source_condition_site(
+        self,
+        node: IfBlock,
+        branch,
+    ):
+        if branch.keyword != "if" or branch.condition is None:
+            return None
+
+        match = re.fullmatch(r'(!\s*)?((?:source)|\.)\s+(.+)', branch.condition.strip(), re.S)
+        if not match:
+            return None
+
+        _, command_name, source_expression = match.groups()
+        source_expression = source_expression.strip()
+        if not self._is_retained_helper_positional_source_expression(source_expression):
+            return None
+
+        column_offset = source_command_index(node.text)
+        column = node.location.column if column_offset < 0 else node.location.column + column_offset
+        location = SourceLocation(node.location.path, node.location.line, column)
+        return (
+            location,
+            source_expression,
+            f"{command_name} {source_expression}".strip(),
+            node.text,
+        )
+
+    def _ensure_retained_helpers_resolved(self):
+        if self.mode != "executable" or not self.retained_helper_source_sites:
+            return
+
+        processed_functions = set()
+        resolved_sites = self._retained_resolved_site_keys()
+        index = 0
+        while index < len(self.retained_helper_source_sites):
+            site = self.retained_helper_source_sites[index]
+            if self._retained_site_key(site) in resolved_sites:
+                index += 1
+                continue
+
+            signatures = self.source_supplement.function_signatures(site.function_name)
+            function_key = (
+                site.function_def.location.path.resolve(),
+                site.function_def.location.line,
+                site.function_name,
+            )
+            if signatures and function_key not in processed_functions:
+                self._apply_retained_helper_signatures(
+                    site.function_def,
+                    signatures,
+                    site.definition_state,
+                    site.stack,
+                )
+                processed_functions.add(function_key)
+                resolved_sites = self._retained_resolved_site_keys()
+                continue
+
+            raise self._unsupported_retained_helper(
+                site.function_name,
+                site.location,
+                site.fragment,
+                f"unsupported retained source helper: {site.function_name}",
+                "Provide a source supplement with finite allowed helper arguments.",
+            )
+
+    def _retained_resolved_site_keys(self):
+        return {
+            (
+                event.location.path.resolve(),
+                event.location.line,
+                event.location.column,
+                event.source_site,
+            )
+            for event in self.events
+        }
+
+    @staticmethod
+    def _retained_site_key(site: RetainedHelperSourceSite):
+        return (
+            site.location.path.resolve(),
+            site.location.line,
+            site.location.column,
+            site.source_site,
+        )
+
+    @staticmethod
+    def _unsupported_retained_helper(
+        function_name: str,
+        location: SourceLocation,
+        fragment: str,
+        message: str,
+        hint: str,
+    ):
+        return unsupported_source_error(
+            str(location.path),
+            location.line - 1,
+            fragment,
+            fragment,
+            "unsupported.source.retained-helper",
+            message,
+            hint,
+            details={"supplement_skeleton": supplement_skeleton(function_name=function_name)},
+        )
 
     @staticmethod
     def _apply_cd(node: CdCommand, state: EvaluationState):
@@ -2898,6 +3139,7 @@ class SourceEvaluator:
 
         source_path = Path(resolved_source.path)
         source_value = resolved_source.source_value or self._source_runtime_value(resolved_expression, state)
+        replacement_kind = self._source_site_replacement_kind(node)
         if self._source_site_has_unknown_status_guard(node, state):
             base_state = state.child_shell_copy()
             branch_state = state.conditional_copy()
@@ -2907,7 +3149,7 @@ class SourceEvaluator:
                 node.source_expression,
                 source_site,
                 ExecutionModel.PARENT_SOURCE,
-                "source",
+                replacement_kind,
                 state,
                 occurrence_model=OccurrenceModel.CONDITIONAL,
                 source_value=source_value,
@@ -2924,7 +3166,7 @@ class SourceEvaluator:
                 node.source_expression,
                 source_site,
                 ExecutionModel.PARENT_SOURCE,
-                "source",
+                replacement_kind,
                 state,
                 occurrence_model=OccurrenceModel.CONDITIONAL,
                 source_value=source_value,
@@ -2940,7 +3182,7 @@ class SourceEvaluator:
             state,
             stack,
             ExecutionModel.PARENT_SOURCE,
-            "source",
+            replacement_kind,
             source_value,
         )
         state.last_status = 0
@@ -3019,6 +3261,18 @@ class SourceEvaluator:
     @staticmethod
     def _is_quoted_all_positionals_source_expression(source_expression: str):
         return source_expression.strip() in QUOTED_ALL_POSITIONALS_SOURCE_EXPRESSIONS
+
+    @staticmethod
+    def _is_retained_helper_positional_source_expression(source_expression: str):
+        return source_expression.strip() in RETAINED_HELPER_POSITIONAL_SOURCE_EXPRESSIONS
+
+    def _source_site_replacement_kind(self, node: SourceSite):
+        if (
+            self._retained_helper_stack
+            and self._is_retained_helper_positional_source_expression(node.source_expression)
+        ):
+            return "retained-source"
+        return "source"
 
     @staticmethod
     def _unsupported_positional_source(node: SourceSite, state: EvaluationState, message: str, hint: str):
@@ -3282,6 +3536,7 @@ class SourceEvaluator:
             state.function_call_stack = previous_call_stack
         if return_status is not None:
             state.last_status = return_status
+        return return_status
 
     def _resolve_function_name(self, word: str, node: RawCommand, state: EvaluationState):
         if "$" not in word:

@@ -123,6 +123,10 @@ Supplements are declarative exact data:
 Function entries define finite allowed source-path argument vectors for named
 source helpers. They do not make arbitrary dynamic dispatch safe.
 
+Retained source helpers that remain callable in generated executable output use
+same-scope dispatch lowering for the supported V1 subset. That contract is
+specified in [Retained Helper Dispatch](retained-helper-dispatch.md).
+
 ## Two-Pass Workflow
 
 First pass:

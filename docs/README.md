@@ -13,6 +13,9 @@ keep only in code comments or tests.
   code.
 - [Source Supplements And Exact Helper Sources](source-supplements.md):
   JSON supplement workflow and exact helper patterns such as `source "$@"`.
+- [Retained Helper Dispatch](retained-helper-dispatch.md):
+  supplement-backed source helper definitions that remain callable in merged
+  executable output.
 - [Next-Generation Evaluator And IR Plan](evaluator-ir-plan.md): Architecture
   notes and implementation history for the source-effect IR and evaluator.
 

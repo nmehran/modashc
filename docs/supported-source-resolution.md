@@ -237,3 +237,7 @@ The remaining source-resolution surface is narrower than general Bash support:
 - Recursive or runtime-dynamic source-bearing function dispatch. Exact
   makepkg-style helper calls using quoted `$@` / `$*` are covered by
   [Source Supplements And Exact Helper Sources](source-supplements.md).
+  Retained helper definitions that remain callable after merging are covered in
+  [Retained Helper Dispatch](retained-helper-dispatch.md).
+- Bash-equivalent lowering for top-level `return` in inlined sourced files.
+  Retained helper dispatch rejects this case before output today.

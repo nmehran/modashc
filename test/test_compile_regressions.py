@@ -1,5 +1,6 @@
 import json
 import re
+import shlex
 import subprocess
 import sys
 import textwrap
@@ -2128,7 +2129,7 @@ class CompileRegressionTestCase(unittest.TestCase):
             self.assertEqual(cm.exception.diagnostic.location.line, 4)
             self.assertEqual(output.read_text(), "existing output\n")
 
-    def test_negated_source_in_rendered_function_rejects_executable_output(self):
+    def test_negated_source_in_rendered_function_reports_retained_helper(self):
         with ScriptProject() as project:
             project.write("dep.sh", textwrap.dedent("""\
                 source_safe() {
@@ -2143,7 +2144,7 @@ class CompileRegressionTestCase(unittest.TestCase):
             with self.assertRaisesRegex(NotImplementedError, "if ! source") as cm:
                 project.compile("main.sh", output=output, mode="executable")
 
-            self.assertEqual(cm.exception.code, "unsupported.source.unresolved-output")
+            self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.retained-helper")
             self.assertEqual(output.read_text(), "existing output\n")
 
     def test_exact_quoted_all_positionals_helper_source_matches_bash(self):
@@ -2297,6 +2298,207 @@ class CompileRegressionTestCase(unittest.TestCase):
             self.assertIn("supplemented", result.stdout)
             self.assertIn("helper:supplemented", result.stdout)
             self.assertIn("main:supplemented", result.stdout)
+
+    def test_retained_source_helper_dispatch_uses_supplement_allowlist(self):
+        with ScriptProject() as project:
+            one = project.write("one.sh", 'VALUE=one\necho "loaded:$VALUE"\n')
+            two = project.write("two.sh", 'VALUE=two\necho "loaded:$VALUE"\n')
+            missing = project.path("missing.sh")
+            project.write("helpers.sh", textwrap.dedent("""\
+                source_safe() {
+                  if ! source "$@"; then
+                    echo "failed:$1"
+                    return 7
+                  fi
+                }
+                """))
+            supplement = project.write("source-supplement.json", json.dumps({
+                "version": 1,
+                "functions": {
+                    "source_safe": [
+                        {"arguments": [str(one)]},
+                        {"arguments": [str(two)]},
+                    ],
+                },
+            }))
+
+            compiled = project.compile("helpers.sh", mode="executable", source_supplement=supplement)
+            content = compiled.read_text()
+            self.assertNotIn('source "$@"', content)
+            self.assertNotRegex(content, r'(?m)^\s*(?:source|\.)\s+')
+
+            driver = textwrap.dedent(f"""\
+                source {shlex.quote(str(compiled))}
+                source_safe {shlex.quote(str(one))}
+                echo "after-one:$VALUE:$?"
+                source_safe {shlex.quote(str(two))}
+                echo "after-two:$VALUE:$?"
+                source_safe {shlex.quote(str(missing))}
+                echo "after-missing:$?"
+                """)
+            result = subprocess.run(
+                ["bash", "-c", driver],
+                cwd=project.root,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertIn("loaded:one", result.stdout)
+            self.assertIn("after-one:one:0", result.stdout)
+            self.assertIn("loaded:two", result.stdout)
+            self.assertIn("after-two:two:0", result.stdout)
+            self.assertIn(f"failed:{missing}", result.stdout)
+            self.assertIn("after-missing:7", result.stdout)
+            self.assertNotIn("modashc:", result.stdout)
+
+    def test_retained_source_helper_dispatch_matches_relative_runtime_argument(self):
+        with ScriptProject() as project:
+            project.write("PKGBUILD", 'PKGNAME=relative\necho "pkg:$PKGNAME"\n')
+            project.write("helpers.sh", textwrap.dedent("""\
+                source_safe() {
+                  if ! source "$@"; then
+                    echo "failed:$1"
+                    return 1
+                  fi
+                }
+                """))
+            supplement = project.write("source-supplement.json", json.dumps({
+                "version": 1,
+                "functions": {
+                    "source_safe": [
+                        {"arguments": ["./PKGBUILD"]},
+                    ],
+                },
+            }))
+
+            compiled = project.compile("helpers.sh", mode="executable", source_supplement=supplement)
+            driver = textwrap.dedent(f"""\
+                source {shlex.quote(str(compiled))}
+                source_safe ./PKGBUILD
+                echo "after:$PKGNAME:$?"
+                """)
+            result = subprocess.run(
+                ["bash", "-c", driver],
+                cwd=project.root,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertIn("pkg:relative", result.stdout)
+            self.assertIn("after:relative:0", result.stdout)
+
+    def test_retained_source_helper_dispatch_supports_quoted_first_positional(self):
+        with ScriptProject() as project:
+            dep = project.write("dep.sh", 'VALUE=first-positional\necho "$VALUE"\n')
+            project.write("helpers.sh", textwrap.dedent("""\
+                source_safe() {
+                  source "$1"
+                }
+                """))
+            supplement = project.write("source-supplement.json", json.dumps({
+                "version": 1,
+                "functions": {
+                    "source_safe": [
+                        {"arguments": [str(dep)]},
+                    ],
+                },
+            }))
+
+            compiled = project.compile("helpers.sh", mode="executable", source_supplement=supplement)
+            driver = textwrap.dedent(f"""\
+                source {shlex.quote(str(compiled))}
+                source_safe {shlex.quote(str(dep))}
+                echo "after:$VALUE:$?"
+                """)
+            result = subprocess.run(
+                ["bash", "-c", driver],
+                cwd=project.root,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertIn("first-positional", result.stdout)
+            self.assertIn("after:first-positional:0", result.stdout)
+
+    def test_missing_retained_source_helper_supplement_fails_before_output(self):
+        with ScriptProject() as project:
+            project.write("helpers.sh", textwrap.dedent("""\
+                source_safe() {
+                  if ! source "$@"; then
+                    return 1
+                  fi
+                }
+                """))
+            output = project.write("compiled.sh", "existing output\n")
+
+            with self.assertRaisesRegex(NotImplementedError, "retained source helper") as cm:
+                project.compile("helpers.sh", output=output, mode="executable")
+
+            self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.retained-helper")
+            self.assertEqual(
+                cm.exception.diagnostic.details["supplement_skeleton"]["functions"],
+                {"source_safe": [{"arguments": ["<source-path>"]}]},
+            )
+            self.assertEqual(output.read_text(), "existing output\n")
+
+    def test_retained_source_helper_rejects_invalid_supplement_vectors(self):
+        cases = {
+            "zero args": [],
+            "multi args": ["./one.sh", "./two.sh"],
+        }
+        for name, arguments in cases.items():
+            with self.subTest(name=name), ScriptProject() as project:
+                project.write("one.sh", 'echo one\n')
+                project.write("two.sh", 'echo two\n')
+                project.write("helpers.sh", textwrap.dedent("""\
+                    source_safe() {
+                      source "$@"
+                    }
+                    """))
+                supplement = project.write("source-supplement.json", json.dumps({
+                    "version": 1,
+                    "functions": {
+                        "source_safe": [{"arguments": arguments}],
+                    },
+                }))
+                output = project.path("compiled.sh")
+
+                with self.assertRaisesRegex(NotImplementedError, "retained source helper") as cm:
+                    project.compile("helpers.sh", output=output, mode="executable", source_supplement=supplement)
+
+                self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.retained-helper")
+                self.assertFalse(output.exists())
+
+    def test_retained_source_helper_rejects_top_level_return_in_supplemented_source(self):
+        with ScriptProject() as project:
+            project.write("guarded.sh", '[[ -n "$GUARDED_SH" ]] && return\nGUARDED_SH=1\n')
+            project.write("helpers.sh", textwrap.dedent("""\
+                source_safe() {
+                  source "$@"
+                }
+                GUARDED_SH=1
+                """))
+            supplement = project.write("source-supplement.json", json.dumps({
+                "version": 1,
+                "functions": {
+                    "source_safe": [
+                        {"arguments": ["./guarded.sh"]},
+                    ],
+                },
+            }))
+            output = project.path("compiled.sh")
+
+            with self.assertRaisesRegex(NotImplementedError, "return behavior") as cm:
+                project.compile("helpers.sh", output=output, mode="executable", source_supplement=supplement)
+
+            self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.retained-helper")
+            self.assertFalse(output.exists())
 
     def test_missing_source_supplement_values_emit_skeleton(self):
         with ScriptProject() as project:
