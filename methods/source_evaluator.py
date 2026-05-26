@@ -429,6 +429,14 @@ class SourceEvaluator:
         if node.prefix == "local" and state.local_scopes:
             SourceEvaluator._capture_local_variable(node.name, state)
 
+        shopt_snapshot = self._assignment_shopt_snapshot_value(node, state)
+        if shopt_snapshot is not None:
+            state.variables[node.name] = shopt_snapshot
+            state.runtime_variables[node.name] = shopt_snapshot
+            state.ambiguous_variables.discard(node.name)
+            state.last_status = 0
+            return
+
         arithmetic_value = self._assignment_arithmetic_value(node, state)
         if arithmetic_value is not None:
             state.variables[node.name] = arithmetic_value
@@ -460,6 +468,20 @@ class SourceEvaluator:
             except UnicodeDecodeError as exc:
                 raise UnsupportedSourceError(f"unsupported ANSI-C quoted value: {value}") from exc
         return value
+
+    @staticmethod
+    def _assignment_shopt_snapshot_value(node: Assignment, state: EvaluationState):
+        match = re.fullmatch(r'\$\(shopt\s+-p\s+([a-zA-Z_]\w*)\)', node.value.strip())
+        if not match:
+            return None
+
+        option = match.group(1)
+        if option not in GLOB_SHOPT_OPTIONS | SHOPT_SHELL_OPTIONS:
+            return None
+
+        enabled = option in state.glob_options or option in state.shell_options
+        action = "-s" if enabled else "-u"
+        return f"shopt {action} {option}"
 
     def _assignment_arithmetic_value(self, node: Assignment, state: EvaluationState):
         value = node.value.strip()
@@ -1705,8 +1727,15 @@ class SourceEvaluator:
             else OccurrenceModel.CONDITIONAL
         )
 
-        for branch in node.branches:
-            branch_state = state.child_shell_copy()
+        base_state = state.child_shell_copy()
+        branch_reachability = self._if_branch_reachability(statuses)
+        for index, branch in enumerate(node.branches):
+            is_reachable = branch_reachability[index]
+            if not is_reachable:
+                branch_outcomes.append(EvaluationOutcome(base_state.child_shell_copy()))
+                continue
+
+            branch_state = base_state.child_shell_copy()
             branch_state.occurrence_context = occurrence_model
             branch_state.condition_context = branch.condition or "else"
             return_signal = None
@@ -1716,7 +1745,7 @@ class SourceEvaluator:
                 return_signal = signal
             branch_outcomes.append(EvaluationOutcome(branch_state, return_signal))
 
-        possible_outcomes = self._possible_if_outcomes(statuses, state.child_shell_copy(), branch_outcomes)
+        possible_outcomes = self._possible_if_outcomes(statuses, base_state, branch_outcomes)
         continuing_outcomes = [outcome for outcome in possible_outcomes if outcome.return_signal is None]
         returning_outcomes = [outcome for outcome in possible_outcomes if outcome.return_signal is not None]
         self._merge_possible_states(
@@ -3038,6 +3067,9 @@ class SourceEvaluator:
         if self._apply_arithmetic_command(node, state):
             return
 
+        if self._apply_exact_non_source_eval(node, state):
+            return
+
         exact_status = self._raw_exact_status_command(node)
         if exact_status is not None:
             state.last_status = exact_status
@@ -3097,6 +3129,38 @@ class SourceEvaluator:
             else:
                 self._evaluate_file(source_path, state, stack)
         state.last_status = 0 if resolved_sources else None
+
+    def _apply_exact_non_source_eval(self, node: RawCommand, state: EvaluationState):
+        try:
+            words = parse_shell_words_preserving_quotes(node.text.strip())
+        except UnsupportedSourceError:
+            return False
+        if not words:
+            return False
+
+        index = 0
+        while index < len(words) and ASSIGNMENT_WORD_PATTERN.match(words[index]):
+            index += 1
+        if index >= len(words) or strip_shell_word_quotes(words[index]) != "eval":
+            return False
+
+        payload = " ".join(words[index + 1:])
+        payload = resolve_variable_references(payload, state.runtime_context())
+        payload = os.path.expandvars(strip_matching_quotes(payload))
+        if "$" in payload or "`" in payload:
+            return False
+        if contains_source_command(payload) or contains_nested_source_command(payload):
+            return False
+
+        payload_node = RawCommand(node.location, payload)
+        shopt_status = self._apply_shopt(payload_node, state)
+        if shopt_status is not None:
+            state.last_status = shopt_status
+        else:
+            state.last_status = self._raw_exact_status_command(payload_node)
+            if not payload.strip():
+                state.last_status = 0
+        return True
 
     def _apply_function_call(self, node: RawCommand, state: EvaluationState, stack: tuple[Path, ...]):
         try:

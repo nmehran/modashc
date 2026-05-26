@@ -92,6 +92,21 @@ Arbitrary source-bearing conditions, such as `if source ./dep.sh; then`, remain
 unsupported until source-condition status semantics are modeled directly.
 Executable output must still contain no live unresolved source command.
 
+The V1 helper subset also models the common makepkg `source_safe` shopt restore
+shape:
+
+```bash
+local shellopts=$(shopt -p extglob)
+shopt -u extglob
+if ! source "$@"; then
+  ...
+fi
+eval "$shellopts"
+```
+
+The saved `shopt -p` payload must be exact and must not contain a source
+command. Hidden or unresolved source-bearing `eval` payloads remain fail-closed.
+
 ## Supplement Validation
 
 Supplements are declarative exact data:

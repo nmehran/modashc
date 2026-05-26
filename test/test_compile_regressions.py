@@ -2165,6 +2165,45 @@ class CompileRegressionTestCase(unittest.TestCase):
 
                 project.assert_compiled_matches(self, "main.sh")
 
+    def test_pacman_style_source_safe_with_shopt_restore_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("PKGBUILD", 'PKGNAME=demo\necho "pkgbuild:$PKGNAME"\n')
+            project.write("helpers.sh", textwrap.dedent("""\
+                source_safe() {
+                  local shellopts=$(shopt -p extglob)
+                  shopt -u extglob
+
+                  if ! source "$@"; then
+                    return 1
+                  fi
+
+                  eval "$shellopts"
+                }
+
+                shopt -s extglob
+                source_safe ./PKGBUILD
+                shopt -q extglob; echo "extglob:$?"
+                echo "helper:$PKGNAME"
+                """))
+            project.write("main.sh", 'source ./helpers.sh\necho "main:$PKGNAME"\n')
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_context_exact_false_if_skips_unreachable_function_call(self):
+        with ScriptProject() as project:
+            project.write("main.sh", textwrap.dedent("""\
+                error() {
+                  :
+                }
+
+                if false; then
+                  error "$(gettext "unused")" "$1"
+                fi
+                echo done
+                """))
+
+            project.compile("main.sh", mode="context")
+
     def test_source_supplement_variable_supports_makepkg_style_helper_source(self):
         with ScriptProject() as project:
             project.write("makepkg/util/message.sh", 'MESSAGE_LOADED=yes\necho "message loaded"\n')
