@@ -10,6 +10,7 @@ from dataclasses import dataclass, field, replace
 from fnmatch import fnmatch, fnmatchcase
 from pathlib import Path
 
+from methods.shell_line import get_commands
 from methods.source_diagnostics import unsupported_source_error, with_source_diagnostic
 from methods.source_effects import (
     ArrayAssignment,
@@ -382,6 +383,16 @@ class RetainedHelperSourceSite:
 class SourceInvocation:
     source: ResolvedSource | None
     source_arguments: tuple[str, ...] | None = None
+
+
+@dataclass(frozen=True)
+class ChildShellSourceCommand:
+    context_id: tuple[str, int]
+    command_name: str
+    source_expression: str
+    source_site: str
+    column: int
+    replacement_kind: str = "source"
 
 
 @dataclass(frozen=True)
@@ -4475,6 +4486,9 @@ class SourceEvaluator:
         if self._apply_exact_non_source_eval(node, state):
             return
 
+        if self._apply_child_shell_sources(node, state, stack):
+            return
+
         exact_status = self._raw_exact_status_command(node, state)
         if exact_status is not None:
             state.last_status = exact_status
@@ -4536,6 +4550,257 @@ class SourceEvaluator:
             else:
                 source_status = self._evaluate_sourced_file(source_path, state, stack)
         state.last_status = source_status
+
+    def _apply_child_shell_sources(self, node: RawCommand, state: EvaluationState, stack: tuple[Path, ...]):
+        source_commands = self._child_shell_source_commands(node.text)
+        if not source_commands:
+            return False
+
+        context_states: dict[tuple[str, int], EvaluationState] = {}
+        for source_command in source_commands:
+            context_state = context_states.setdefault(source_command.context_id, state.child_shell_copy())
+            source_node = SourceSite(
+                location=SourceLocation(node.location.path, node.location.line, source_command.column),
+                text=source_command.source_site,
+                command_name=source_command.command_name,
+                source_expression=source_command.source_expression,
+            )
+            source_path, source_value, source_arguments = self._resolve_child_shell_source(
+                source_node,
+                context_state,
+            )
+            event_index = len(self.events)
+            self._record_event(
+                source_path,
+                source_node,
+                source_command.source_expression,
+                source_command.source_site,
+                ExecutionModel.CHILD_SHELL,
+                source_command.replacement_kind,
+                context_state,
+                source_value=source_value,
+                source_arguments=source_arguments,
+            )
+            context_state.last_status, sync_positionals = self._evaluate_sourced_file(
+                source_path,
+                context_state,
+                stack,
+                source_arguments=source_arguments,
+            )
+            self.events[event_index] = replace(
+                self.events[event_index],
+                sync_positionals=sync_positionals,
+            )
+
+        state.last_status = None
+        return True
+
+    def _resolve_child_shell_source(self, node: SourceSite, state: EvaluationState):
+        try:
+            self._ensure_source_state_can_resolve(node, node.source_expression, state)
+            resolved_expression = self._expand_array_indexes(node.source_expression, node, state)
+            invocation = self._resolve_source_invocation(resolved_expression, node, state)
+        except UnsupportedSourceError as exc:
+            raise with_source_diagnostic(
+                exc,
+                str(node.location.path),
+                node.location.line - 1,
+                node.text,
+                node.text,
+                "unsupported.source.child-shell",
+            ) from exc
+
+        if not invocation.source:
+            raise unsupported_source_error(
+                str(node.location.path),
+                node.location.line - 1,
+                node.text,
+                node.text,
+                "unsupported.source.child-shell",
+                "unsupported unresolved child-shell source",
+                "Child-shell source sites must resolve to exact source paths.",
+            )
+
+        source_path = Path(invocation.source.path)
+        source_value = invocation.source.source_value or self._source_runtime_value(
+            invocation.source.source_expression,
+            state,
+        )
+        return source_path, source_value, invocation.source_arguments
+
+    @classmethod
+    def _child_shell_source_commands(cls, command: str):
+        return tuple(cls._subshell_source_commands(command))
+
+    @classmethod
+    def _subshell_source_commands(cls, command: str):
+        commands = []
+        for body, body_start, context_index in cls._subshell_bodies(command):
+            commands.extend(cls._direct_source_commands_in_body(
+                body,
+                body_start,
+                ("subshell", context_index),
+            ))
+        return tuple(commands)
+
+    @classmethod
+    def _subshell_bodies(cls, command: str):
+        in_single_quote = False
+        in_double_quote = False
+        escaped = False
+        index = 0
+        context_index = 0
+
+        while index < len(command):
+            char = command[index]
+            if escaped:
+                escaped = False
+                index += 1
+                continue
+
+            if char == "\\" and not in_single_quote:
+                escaped = True
+                index += 1
+                continue
+
+            if char == "'" and not in_double_quote:
+                in_single_quote = not in_single_quote
+                index += 1
+                continue
+
+            if char == '"' and not in_single_quote:
+                in_double_quote = not in_double_quote
+                index += 1
+                continue
+
+            if in_single_quote or in_double_quote:
+                index += 1
+                continue
+
+            if (
+                char == "("
+                and not command.startswith("((", index)
+                and not cls._is_array_assignment_paren(command, index)
+                and (index == 0 or command[index - 1] not in "$<>")
+            ):
+                body, end_index = cls._read_balanced_body(command, index + 1)
+                if end_index is None:
+                    index += 1
+                    continue
+                context_index += 1
+                yield body, index + 1, context_index
+                index = end_index + 1
+                continue
+
+            index += 1
+
+    @classmethod
+    def _direct_source_commands_in_body(cls, body: str, body_start: int, context_id: tuple[str, int]):
+        source_commands = []
+        search_start = 0
+        for command in get_commands(body):
+            command_start = body.find(command, search_start)
+            if command_start < 0:
+                command_start = search_start
+            search_start = command_start + len(command)
+            source_command = cls._direct_source_command(command, body_start + command_start, context_id)
+            if source_command is not None:
+                source_commands.append(source_command)
+        return tuple(source_commands)
+
+    @staticmethod
+    def _direct_source_command(command: str, command_start: int, context_id: tuple[str, int]):
+        try:
+            words = parse_shell_words_preserving_quotes(command)
+        except UnsupportedSourceError:
+            return None
+        if not words:
+            return None
+
+        source_index = source_command_index(command)
+        if source_index is None:
+            return None
+        if source_index != 0:
+            return None
+
+        command_name = strip_shell_word_quotes(words[source_index])
+        if command_name not in {"source", "."}:
+            return None
+
+        token_start = command.find(words[source_index])
+        if token_start < 0:
+            return None
+        source_expression = command[token_start + len(words[source_index]):].strip()
+        if not source_expression:
+            return None
+        source_site = f"{command_name} {source_expression}".strip()
+        return ChildShellSourceCommand(
+            context_id=context_id,
+            command_name=command_name,
+            source_expression=source_expression,
+            source_site=source_site,
+            column=command_start + token_start + 1,
+        )
+
+    @staticmethod
+    def _read_balanced_body(text: str, start_index: int):
+        body = []
+        in_single_quote = False
+        in_double_quote = False
+        escaped = False
+        depth = 1
+        index = start_index
+
+        while index < len(text):
+            char = text[index]
+            if escaped:
+                body.append(char)
+                escaped = False
+                index += 1
+                continue
+
+            if char == "\\" and not in_single_quote:
+                body.append(char)
+                escaped = True
+                index += 1
+                continue
+
+            if char == "'" and not in_double_quote:
+                in_single_quote = not in_single_quote
+                body.append(char)
+                index += 1
+                continue
+
+            if char == '"' and not in_single_quote:
+                in_double_quote = not in_double_quote
+                body.append(char)
+                index += 1
+                continue
+
+            if not in_single_quote and not in_double_quote:
+                if char == "(":
+                    depth += 1
+                elif char == ")":
+                    depth -= 1
+                    if depth == 0:
+                        return "".join(body), index
+
+            body.append(char)
+            index += 1
+
+        return None, None
+
+    @staticmethod
+    def _is_array_assignment_paren(text: str, paren_index: int):
+        if paren_index == 0 or text[paren_index - 1] != "=":
+            return False
+
+        word_start = paren_index - 2
+        while word_start >= 0 and not text[word_start].isspace() and text[word_start] not in ";&|":
+            word_start -= 1
+
+        assignment_name = text[word_start + 1:paren_index - 1]
+        return bool(re.fullmatch(r"[a-zA-Z_]\w*(?:\[[^\]]+\])?\+?", assignment_name))
 
     def _apply_exact_non_source_eval(self, node: RawCommand, state: EvaluationState):
         try:

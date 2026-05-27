@@ -59,6 +59,27 @@ class CompileRegressionTestCase(unittest.TestCase):
 
                 project.assert_compiled_matches(self, entry_path, cwd=cwd)
 
+    def test_subshell_source_lowering_matches_bash(self):
+        cases = {
+            "source": '( source ./dep.sh; printf "child:%s\\n" "$VALUE" )\nprintf "parent:%s\\n" "${VALUE-unset}"\n',
+            "dot source": '(. ./dep.sh && printf "child:%s\\n" "$VALUE")\nprintf "parent:%s\\n" "${VALUE-unset}"\n',
+            "source arguments": '( source ./dep.sh alpha "beta gamma"; printf "child:%s\\n" "$VALUE" )\n',
+            "nested source": '( source ./outer.sh; printf "child:%s\\n" "$VALUE" )\nprintf "parent:%s\\n" "${VALUE-unset}"\n',
+        }
+
+        for name, main_content in cases.items():
+            with self.subTest(name=name), ScriptProject() as project:
+                project.write("dep.sh", 'VALUE="${1-default}:${2-none}"\nprintf "dep:%s\\n" "$VALUE"\n')
+                project.write("outer.sh", 'source ./dep.sh nested\nVALUE="outer:$VALUE"\n')
+                project.write("main.sh", main_content)
+
+                project.assert_compiled_matches(self, "main.sh")
+                compiled = project.path("compiled.sh").read_text()
+                self.assertNotIn("source ./dep.sh", compiled)
+                self.assertNotIn(". ./dep.sh", compiled)
+                if "parent:" in main_content:
+                    self.assertIn("${VALUE-unset}", compiled)
+
     def test_absolute_dependency_forms_match_bash(self):
         with ScriptProject() as project:
             absolute_dep = project.write("dep.sh", 'echo "absolute"\n')
@@ -2620,18 +2641,6 @@ class CompileRegressionTestCase(unittest.TestCase):
             "case variable extglob pattern": (
                 'shopt -s extglob\nENV=prod\nPATTERN="@(prod|stage)"\ncase "$ENV" in\n  $PATTERN) source ./prod.sh ;;\nesac\n',
                 'case "$ENV" in',
-            ),
-            "subshell source": (
-                '(source ./dep.sh)\n',
-                '(source ./dep.sh)',
-            ),
-            "subshell dot source": (
-                '(. ./dep.sh)\n',
-                '(. ./dep.sh)',
-            ),
-            "separated subshell source": (
-                'echo before; ( source ./dep.sh ); echo after\n',
-                '( source ./dep.sh )',
             ),
             "command substitution source": (
                 'echo "$(source ./dep.sh)"\n',

@@ -787,6 +787,22 @@ def find_unquoted_source_site_span(line: str, source_site: str, occupied_spans):
     return None
 
 
+def find_source_declaration_span(line: str, source_declaration, occupied_spans):
+    source_site = source_declaration.source_site.strip()
+    source_column = source_declaration.source_column
+    if source_column is not None:
+        source_index = source_column - 1
+        span = (source_index, source_index + len(source_site))
+        if (
+            source_index >= 0
+            and line.startswith(source_site, source_index)
+            and not any(spans_overlap(span, occupied_span) for occupied_span in occupied_spans)
+        ):
+            return span
+
+    return find_unquoted_source_site_span(line, source_site, occupied_spans)
+
+
 def apply_line_replacements(line: str, replacements):
     output = []
     last_end = 0
@@ -829,7 +845,10 @@ def replace_source_site_declarations(
     if not source_declarations:
         return line
 
-    matches = list(SOURCE_PATTERN.finditer(line))
+    matches = [
+        match for match in SOURCE_PATTERN.finditer(line)
+        if not match.group(0).lstrip().startswith('$(')
+    ]
     if not matches:
         return replace_source_site_substrings(
             line,
@@ -867,9 +886,9 @@ def replace_source_site_declarations(
         occupied_spans.append(span)
 
     for grouped_declarations in remaining_source_declaration_groups(declarations_by_column, fallback_declarations):
-        source_site = grouped_declarations[0].source_site.strip()
-        span = find_unquoted_source_site_span(line, source_site, occupied_spans)
+        span = find_source_declaration_span(line, grouped_declarations[0], occupied_spans)
         if span is None:
+            source_site = grouped_declarations[0].source_site.strip()
             raise ValueError(f"Could not replace resolved source declaration: {source_site}")
 
         indent = re.match(r'\s*', line[:span[0]]).group(0)
@@ -1007,7 +1026,7 @@ def render_executable_script(entry_point: str, context: dict):
                 source_declarations = source_context.get(num, [])
                 unsupported_sources = [
                     source_declaration for source_declaration in source_declarations
-                    if source_declaration.execution_model != "parent-source"
+                    if source_declaration.execution_model not in {"parent-source", "child-shell"}
                 ]
                 if unsupported_sources:
                     source_site = unsupported_sources[0].source_site
