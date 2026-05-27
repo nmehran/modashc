@@ -43,8 +43,9 @@ The intended approach is captured in the
 - Remaining loop forms outside exact `for`, bounded C-style `for ((...))`,
   bounded `while` / `until`, and modeled `while read` file enumeration from
   exact files and safe producers
-- Remaining glob/source-argument semantics: `extglob`, direct source
-  positional and glob arguments, and full `GLOBIGNORE` edge behavior
+- Remaining glob/source-argument semantics: `extglob`, direct source glob
+  arguments, source arguments requiring word splitting, and full `GLOBIGNORE`
+  edge behavior
 - Broader case pattern and fallthrough semantics for source-bearing arms
 - Runtime-dynamic source dispatch, recursive source-bearing functions,
   non-equivalent branch-defined functions, and branch-dependent function returns

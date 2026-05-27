@@ -61,6 +61,10 @@ def indent_block(content: str, prefix: str):
     return '\n'.join(f"{prefix}{line}" if line else line for line in lines)
 
 
+def shell_quote_words(words):
+    return " ".join(shell_quote(word) for word in words)
+
+
 def construct_file_separator(filepath, entry_point, delimiter="-", length=120):
     # Get the basename of the file for the header
     filename = os.path.relpath(filepath, start=os.path.dirname(entry_point))
@@ -125,8 +129,8 @@ def write_output(filename, content):
         file.write(content)
 
 
-def render_source_block(filepath: str, render_source, indent: str):
-    rendered_source = indent_block(render_source(filepath), indent)
+def render_source_block(filepath: str, render_source, indent: str, source_arguments=None):
+    rendered_source = indent_block(render_source(filepath, source_arguments=source_arguments), indent)
     return f"{{\n{rendered_source}\n{indent}}}"
 
 
@@ -164,19 +168,25 @@ def file_has_top_level_return(filepath: str, content: str):
     return nodes_have_top_level_return(ir.nodes)
 
 
-def render_source_return_wrapper(filepath: str, content: str):
+def render_source_call_wrapper(filepath: str, content: str, source_arguments=None):
     body_function = generated_source_function_name(filepath)
     wrapper_function = f"{body_function}_run"
     status_variable = f"{body_function}_status"
+    if source_arguments is None:
+        call_arguments = ' "$@"'
+    elif source_arguments:
+        call_arguments = " " + shell_quote_words(source_arguments)
+    else:
+        call_arguments = ""
     return (
         f"{body_function}() {{\n{content}\n}}\n"
         f"{wrapper_function}() {{\n"
-        f"{body_function}\n"
+        f"{body_function} \"$@\"\n"
         f"local {status_variable}=$?\n"
         f"unset -f {wrapper_function} {body_function}\n"
         f"return ${status_variable}\n"
         f"}}\n"
-        f"{wrapper_function}"
+        f"{wrapper_function}{call_arguments}"
     )
 
 
@@ -207,11 +217,16 @@ def render_source_dispatch(source_expression: str, source_declarations, render_s
         if pattern in seen_patterns:
             continue
         seen_patterns.add(pattern)
-        rendered_source = (
-            f"{indent}    :"
-            if source_declaration.replacement_kind == "noop-source"
-            else indent_block(render_source(source_declaration.path), f"{indent}    ")
-        )
+        if source_declaration.replacement_kind == "noop-source":
+            rendered_source = f"{indent}    :"
+        else:
+            rendered_source = indent_block(
+                render_source(
+                    source_declaration.path,
+                    source_arguments=source_declaration.source_arguments,
+                ),
+                f"{indent}    ",
+            )
         output.extend([
             f"{indent}  {shell_quote(pattern)})",
             f"{indent}    {{",
@@ -236,21 +251,36 @@ def render_retained_source_dispatch(source_declarations, render_source, indent: 
     branch_keyword = "if"
 
     for source_declaration in source_declarations:
-        argument = source_declaration.source_value or source_declaration.path
-        if argument in seen_arguments:
+        source_path_argument = source_declaration.source_value or source_declaration.path
+        source_arguments = source_declaration.source_arguments or ()
+        arguments = (source_path_argument, *source_arguments)
+        if arguments in seen_arguments:
             continue
-        seen_arguments.add(argument)
+        seen_arguments.add(arguments)
 
-        rendered_source = indent_block(render_source(source_declaration.path), f"{indent}      ")
+        rendered_source = indent_block(
+            render_source(
+                source_declaration.path,
+                source_arguments=source_declaration.source_arguments,
+            ),
+            f"{indent}      ",
+        )
         if not rendered_source:
             rendered_source = f"{indent}      :"
-        quoted_argument = shell_quote(argument)
-        output.extend([
+        quoted_path_argument = shell_quote(source_path_argument)
+        conditions = [
+            f"$# -eq {len(arguments)}",
             (
-                f"{indent}  {branch_keyword} [[ $# -eq 1 && "
-                f"( ${{1-}} == {quoted_argument} || "
-                f"$(realpath -- \"${{1-}}\" 2>/dev/null) == {quoted_argument} ) ]]; then"
+                f"( ${{1-}} == {quoted_path_argument} || "
+                f"$(realpath -- \"${{1-}}\" 2>/dev/null) == {quoted_path_argument} )"
             ),
+        ]
+        conditions.extend(
+            f"${{{index}-}} == {shell_quote(argument)}"
+            for index, argument in enumerate(source_arguments, start=2)
+        )
+        output.extend([
+            f"{indent}  {branch_keyword} [[ {' && '.join(conditions)} ]]; then",
             f"{indent}    {{",
             rendered_source,
             f"{indent}    }}",
@@ -370,7 +400,13 @@ def render_source_site_replacement(separator: str, declarations, render_source, 
     if len(declarations) > 1 and len(unique_paths) > 1:
         return f"{separator}{render_source_dispatch(declaration.source_expression, declarations, render_source, indent)}"
 
-    rendered_source = indent_block(render_source(declaration.path), indent)
+    rendered_source = indent_block(
+        render_source(
+            declaration.path,
+            source_arguments=declaration.source_arguments,
+        ),
+        indent,
+    )
     return f"{separator}{{\n{rendered_source}\n{indent}}}"
 
 
@@ -563,7 +599,7 @@ def render_executable_script(entry_point: str, context: dict):
             top_level_return_cache[filepath] = file_has_top_level_return(filepath, content)
         return top_level_return_cache[filepath]
 
-    def render_file(filepath, *, as_source=False):
+    def render_file(filepath, *, as_source=False, source_arguments=None):
         filepath = os.path.abspath(filepath)
         if filepath in render_stack:
             chain = " -> ".join([*render_stack, filepath])
@@ -574,8 +610,12 @@ def render_executable_script(entry_point: str, context: dict):
             source_context = context.get('source_declarations', {}).get(filepath, {})
             output = []
 
-            def render_source_file(source_filepath):
-                return render_file(source_filepath, as_source=True)
+            def render_source_file(source_filepath, source_arguments=None):
+                return render_file(
+                    source_filepath,
+                    as_source=True,
+                    source_arguments=source_arguments,
+                )
 
             content = get_content(filepath)
             for num, line in enumerate(content.splitlines()):
@@ -615,8 +655,11 @@ def render_executable_script(entry_point: str, context: dict):
                 output.append(line)
 
             rendered = '\n'.join(output)
-            if as_source and has_top_level_return(filepath, content):
-                return render_source_return_wrapper(filepath, rendered)
+            if as_source and (
+                source_arguments is not None
+                or has_top_level_return(filepath, content)
+            ):
+                return render_source_call_wrapper(filepath, rendered, source_arguments)
             return rendered
         finally:
             render_stack.pop()
@@ -669,6 +712,7 @@ def context_from_source_events(events, disabled_sources=(), line_replacements=()
             execution_model=event.execution_model.value,
             replacement_kind=event.replacement_kind,
             source_value=event.source_value,
+            source_arguments=event.source_arguments,
             source_column=event.location.column,
             occurrence_model=event.occurrence_model.value,
             condition=event.condition,

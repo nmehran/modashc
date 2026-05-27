@@ -352,6 +352,12 @@ class RetainedHelperSourceSite:
     fragment: str
 
 
+@dataclass(frozen=True)
+class SourceInvocation:
+    source: ResolvedSource | None
+    source_arguments: tuple[str, ...] | None = None
+
+
 class SourceEvaluator:
     """Evaluate source effects for the supported IR subset without executing Bash."""
 
@@ -763,14 +769,23 @@ class SourceEvaluator:
         state: EvaluationState,
         stack: tuple[Path, ...],
     ):
+        uses_first_positional_source = self._retained_helper_uses_first_positional_source(function_def)
         for signature in signatures:
-            if len(signature) != 1:
+            if not signature:
                 raise self._unsupported_retained_helper(
                     function_def.name,
                     function_def.location,
                     function_def.text,
                     f"unsupported retained source helper argument count: {len(signature)}",
-                    "Retained helper supplements must provide exactly one source path argument per V1 signature.",
+                    "Retained helper supplements must provide at least one source path argument.",
+                )
+            if uses_first_positional_source and len(signature) != 1:
+                raise self._unsupported_retained_helper(
+                    function_def.name,
+                    function_def.location,
+                    function_def.text,
+                    f"unsupported retained source helper argument count: {len(signature)}",
+                    'Retained helpers using source "$1" must provide exactly one source path argument.',
                 )
 
         call_node = RawCommand(
@@ -801,6 +816,42 @@ class SourceEvaluator:
                 ) from exc
             finally:
                 self._retained_helper_stack.pop()
+
+    def _retained_helper_uses_first_positional_source(self, function_def: FunctionDef):
+        first_positional_expressions = {'"$1"', '"${1}"'}
+
+        def collect(nodes):
+            for node in nodes:
+                if isinstance(node, SourceSite):
+                    if node.source_expression.strip() in first_positional_expressions:
+                        return True
+                    continue
+                if isinstance(node, IfBlock):
+                    for branch in node.branches:
+                        site_spec = self._retained_helper_source_condition_site(node, branch)
+                        if site_spec and site_spec[1] in first_positional_expressions:
+                            return True
+                        if collect(branch.body):
+                            return True
+                    continue
+                if isinstance(node, FunctionDef):
+                    continue
+                if isinstance(node, ForLoop):
+                    if collect(node.body):
+                        return True
+                elif isinstance(node, CStyleForLoop):
+                    if collect(node.body):
+                        return True
+                elif isinstance(node, WhileLoop):
+                    if collect(node.body):
+                        return True
+                elif isinstance(node, CaseBlock):
+                    for arm in node.arms:
+                        if collect(arm.body):
+                            return True
+            return False
+
+        return collect(function_def.body)
 
     def _retained_helper_source_sites(self, function_def: FunctionDef, state: EvaluationState,
                                       stack: tuple[Path, ...] = ()):
@@ -3116,7 +3167,7 @@ class SourceEvaluator:
         try:
             self._ensure_source_state_can_resolve(node, node.source_expression, state)
             resolved_expression = self._expand_array_indexes(node.source_expression, node, state)
-            positional_source = self._resolve_positional_source_expression(
+            invocation = self._resolve_source_invocation(
                 resolved_expression,
                 node,
                 state,
@@ -3127,26 +3178,8 @@ class SourceEvaluator:
             raise
 
         source_site = f"{node.command_name} {node.source_expression.strip()}"
-        if positional_source is not None:
-            resolved_source = positional_source
-        else:
-            try:
-                resolved_source = SOURCE_RESOLVER.resolve_source_expression(
-                    resolved_expression,
-                    source_site,
-                    state.resolver_context(),
-                )
-            except UnsupportedSourceError as exc:
-                if self.mode == "context":
-                    return
-                raise with_source_diagnostic(
-                    exc,
-                    str(node.location.path),
-                    node.location.line - 1,
-                    node.text,
-                    node.text,
-                    "unsupported.source.resolution",
-                ) from exc
+        resolved_source = invocation.source
+        source_arguments = invocation.source_arguments
 
         if not resolved_source:
             if self.mode == "context":
@@ -3164,7 +3197,10 @@ class SourceEvaluator:
             )
 
         source_path = Path(resolved_source.path)
-        source_value = resolved_source.source_value or self._source_runtime_value(resolved_expression, state)
+        source_value = resolved_source.source_value or self._source_runtime_value(
+            resolved_source.source_expression,
+            state,
+        )
         replacement_kind = self._source_site_replacement_kind(node)
         if self._source_site_has_unknown_status_guard(node, state):
             base_state = state.child_shell_copy()
@@ -3179,8 +3215,14 @@ class SourceEvaluator:
                 state,
                 occurrence_model=OccurrenceModel.CONDITIONAL,
                 source_value=source_value,
+                source_arguments=source_arguments,
             )
-            branch_state.last_status = self._evaluate_sourced_file(source_path, branch_state, stack)
+            branch_state.last_status = self._evaluate_sourced_file(
+                source_path,
+                branch_state,
+                stack,
+                source_arguments=source_arguments,
+            )
             self._merge_possible_states(state, [base_state, branch_state])
             return
 
@@ -3196,8 +3238,14 @@ class SourceEvaluator:
                 state,
                 occurrence_model=OccurrenceModel.CONDITIONAL,
                 source_value=source_value,
+                source_arguments=source_arguments,
             )
-            branch_state.last_status = self._evaluate_sourced_file(source_path, branch_state, stack)
+            branch_state.last_status = self._evaluate_sourced_file(
+                source_path,
+                branch_state,
+                stack,
+                source_arguments=source_arguments,
+            )
             return
 
         self._record_and_descend(
@@ -3210,6 +3258,138 @@ class SourceEvaluator:
             ExecutionModel.PARENT_SOURCE,
             replacement_kind,
             source_value,
+            source_arguments,
+        )
+
+    def _resolve_source_invocation(
+        self,
+        resolved_expression: str,
+        node: SourceSite,
+        state: EvaluationState,
+    ):
+        positional_source = self._resolve_positional_source_expression(
+            resolved_expression,
+            node,
+            state,
+        )
+        if positional_source is not None:
+            return SourceInvocation(
+                positional_source,
+                source_arguments=positional_source.source_arguments,
+            )
+
+        source_site = f"{node.command_name} {node.source_expression.strip()}"
+        path_expression, source_arguments = self._split_source_expression_arguments(
+            resolved_expression,
+            node,
+            state,
+        )
+        try:
+            resolved_source = SOURCE_RESOLVER.resolve_source_expression(
+                path_expression,
+                source_site,
+                state.resolver_context(),
+            )
+        except UnsupportedSourceError as exc:
+            raise with_source_diagnostic(
+                exc,
+                str(node.location.path),
+                node.location.line - 1,
+                node.text,
+                node.text,
+                "unsupported.source.resolution",
+            ) from exc
+
+        return SourceInvocation(resolved_source, source_arguments=source_arguments)
+
+    def _split_source_expression_arguments(
+        self,
+        source_expression: str,
+        node: SourceSite,
+        state: EvaluationState,
+    ):
+        try:
+            words = parse_shell_words_preserving_quotes(source_expression)
+        except UnsupportedSourceError as exc:
+            raise with_source_diagnostic(
+                exc,
+                str(node.location.path),
+                node.location.line - 1,
+                node.text,
+                node.text,
+                "unsupported.source.argument",
+            ) from exc
+
+        if len(words) <= 1:
+            return source_expression, None
+
+        return words[0], self._resolve_source_argument_words(words[1:], node, state)
+
+    def _resolve_source_argument_words(self, words: list[str], node: SourceSite, state: EvaluationState):
+        arguments = []
+        for word in words:
+            stripped = word.strip()
+            if stripped in {'"$@"', '"${@}"'}:
+                arguments.extend(state.positional_arguments)
+                continue
+            if stripped in {'"$*"', '"${*}"'}:
+                arguments.append(self._joined_positionals(state))
+                continue
+            if re.search(r'(?<!\\)\$(?:\{?[@*]\}?)', stripped):
+                raise self._unsupported_source_argument(
+                    node,
+                    "unsupported positional source argument expansion",
+                    "Only quoted standalone $@/$* source arguments are supported.",
+                )
+            arguments.append(self._resolve_source_argument_word(word, node, state))
+        return tuple(arguments)
+
+    def _resolve_source_argument_word(self, word: str, node: SourceSite, state: EvaluationState):
+        if '$(' in word or '`' in word:
+            raise self._unsupported_source_argument(
+                node,
+                "unsupported dynamic source argument",
+                "Source arguments must resolve to exact strings without command substitution.",
+            )
+
+        resolved = resolve_variable_references(word, state.runtime_context())
+        resolved = os.path.expandvars(resolved)
+        if "$" in resolved:
+            raise self._unsupported_source_argument(
+                node,
+                "unsupported unresolved source argument",
+                "Source arguments must resolve to exact strings.",
+            )
+
+        value = strip_shell_word_quotes(resolved)
+        if "$" in word and not self._word_has_quotes(word) and re.search(r'\s', value):
+            raise self._unsupported_source_argument(
+                node,
+                "unsupported word-splitting source argument",
+                "Quote source arguments whose resolved value contains whitespace.",
+            )
+        return value
+
+    @staticmethod
+    def _joined_positionals(state: EvaluationState):
+        ifs = state.runtime_variables.get("IFS", DEFAULT_IFS)
+        separator = ifs[0] if ifs else ""
+        return separator.join(state.positional_arguments)
+
+    @staticmethod
+    def _word_has_quotes(word: str):
+        return "'" in word or '"' in word
+
+    @staticmethod
+    def _unsupported_source_argument(node: SourceSite, message: str, hint: str):
+        return unsupported_source_error(
+            str(node.location.path),
+            node.location.line - 1,
+            node.text,
+            node.text,
+            "unsupported.source.argument",
+            message,
+            hint,
         )
 
     def _resolve_positional_source_expression(
@@ -3221,12 +3401,17 @@ class SourceEvaluator:
         expression = source_expression.strip()
         if not self._is_quoted_all_positionals_source_expression(expression):
             if re.search(r'(?<!\\)\$(?:\{?[@*]\}?)', expression):
-                raise self._unsupported_positional_source(
-                    node,
-                    state,
-                    "unsupported positional source expression",
-                    "Only quoted $@/$* helper source expressions with one exact argument are supported.",
-                )
+                try:
+                    words = parse_shell_words_preserving_quotes(expression)
+                except UnsupportedSourceError:
+                    words = []
+                if len(words) <= 1:
+                    raise self._unsupported_positional_source(
+                        node,
+                        state,
+                        "unsupported positional source expression",
+                        "Only quoted standalone $@/$* source expressions are supported.",
+                    )
             return None
 
         if not state.function_call_stack:
@@ -3238,12 +3423,19 @@ class SourceEvaluator:
             )
 
         arguments = state.positional_arguments
-        if len(arguments) != 1:
+        if not arguments:
+            raise self._unsupported_positional_source(
+                node,
+                state,
+                "unsupported positional source argument count: 0",
+                "Quoted $@/$* helper sources must bind to at least one source path argument.",
+            )
+        if expression in {'"$*"', '"${*}"'} and len(arguments) != 1:
             raise self._unsupported_positional_source(
                 node,
                 state,
                 f"unsupported positional source argument count: {len(arguments)}",
-                "Quoted $@/$* helper sources must bind to exactly one source path argument.",
+                "Quoted $* helper sources must bind to exactly one source path argument.",
             )
 
         source_site = f"{node.command_name} {node.source_expression.strip()}"
@@ -3280,6 +3472,7 @@ class SourceEvaluator:
             confidence=resolved_source.confidence,
             replacement_kind=resolved_source.replacement_kind,
             source_value=arguments[0],
+            source_arguments=arguments[1:] or None,
             source_column=resolved_source.source_column,
         )
 
@@ -3924,6 +4117,11 @@ class SourceEvaluator:
                 state.variables.pop(target, None)
                 state.runtime_variables.pop(target, None)
             state.ambiguous_variables.discard(target)
+        state.positional_arguments = tuple(
+            state.runtime_variables[str(index)]
+            for index in range(1, argument_count - count + 1)
+            if str(index) in state.runtime_variables
+        )
         state.last_status = 0
 
     def _resolve_function_control_word(self, word: str, node: RawCommand, state: EvaluationState, command: str):
@@ -4165,23 +4363,48 @@ class SourceEvaluator:
 
     def _record_and_descend(self, source_path: Path, node: SourceSite, source_expression: str, source_site: str,
                             state: EvaluationState, stack: tuple[Path, ...], execution_model: ExecutionModel,
-                            replacement_kind: str, source_value: str | None = None):
+                            replacement_kind: str, source_value: str | None = None,
+                            source_arguments: tuple[str, ...] | None = None):
         self._record_event(
             source_path, node, source_expression, source_site, execution_model, replacement_kind, state,
             source_value=source_value,
+            source_arguments=source_arguments,
         )
-        state.last_status = self._evaluate_sourced_file(source_path, state, stack)
+        state.last_status = self._evaluate_sourced_file(
+            source_path,
+            state,
+            stack,
+            source_arguments=source_arguments,
+        )
 
-    def _evaluate_sourced_file(self, source_path: Path, state: EvaluationState, stack: tuple[Path, ...]):
+    def _evaluate_sourced_file(
+        self,
+        source_path: Path,
+        state: EvaluationState,
+        stack: tuple[Path, ...],
+        source_arguments: tuple[str, ...] | None = None,
+    ):
+        previous_positional_arguments = None
+        previous_positionals = None
+        if source_arguments is not None:
+            previous_positional_arguments = state.positional_arguments
+            previous_positionals = self._push_function_positionals(source_arguments, state)
+            state.positional_arguments = source_arguments
         try:
-            self._evaluate_file(source_path, state, stack, as_source=True)
-        except SourceReturnSignal as signal:
-            return signal.status
-        return 0
+            try:
+                self._evaluate_file(source_path, state, stack, as_source=True)
+            except SourceReturnSignal as signal:
+                return signal.status
+            return 0
+        finally:
+            if source_arguments is not None:
+                self._restore_function_positionals(previous_positionals, len(source_arguments), state)
+                state.positional_arguments = previous_positional_arguments
 
     def _record_event(self, source_path: Path, node, source_expression: str, source_site: str,
                       execution_model: ExecutionModel, replacement_kind: str, state: EvaluationState,
-                      occurrence_model: OccurrenceModel | None = None, source_value: str | None = None):
+                      occurrence_model: OccurrenceModel | None = None, source_value: str | None = None,
+                      source_arguments: tuple[str, ...] | None = None):
         self.events.append(SourceEvent(
             path=source_path.resolve(),
             location=node.location,
@@ -4191,6 +4414,7 @@ class SourceEvaluator:
             occurrence_model=occurrence_model or state.occurrence_context,
             replacement_kind=replacement_kind,
             source_value=source_value,
+            source_arguments=source_arguments,
             state_before=state.snapshot(),
             condition=state.condition_context,
         ))
@@ -4534,6 +4758,7 @@ class SourceEvaluator:
                 ),
                 replacement_kind=event.replacement_kind,
                 source_value=event.source_value,
+                source_arguments=event.source_arguments,
                 state_before=event.state_before,
                 condition=event.condition,
             )

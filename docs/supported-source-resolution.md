@@ -146,6 +146,25 @@ Direct source globs with multiple matches remain unsupported because Bash treats
 the first match as the source file and passes the remaining matches as
 positional arguments to that sourced file.
 
+## Direct Source Arguments
+
+Supported direct source sites may pass exact positional arguments to the
+sourced file:
+
+```bash
+source ./library.sh alpha "beta gamma"
+```
+
+The sourced file sees those arguments as its temporary `$1`, `$2`, and `$@`
+state. The caller's positional parameters are restored after the source site
+returns, while normal sourced-file effects such as variables, functions, cwd,
+and return status remain parent-visible. Nested source sites inherit the current
+sourced-file positional state unless they pass their own exact arguments.
+
+Source arguments must resolve to exact strings. Unresolved variables, command
+substitution, unquoted `$@` / `$*`, and unquoted variable expansions that would
+require word-splitting support remain fail-closed.
+
 ## Sourced-File Return
 
 Supported sourced files may contain top-level `return` statements. Executable
@@ -226,15 +245,16 @@ Unsupported or ambiguous source forms fail closed before output is written.
 Common examples:
 
 ```bash
-source "$DEP"                       # DEP unknown
-source ./dep.sh arg1                # direct source positional args
-source ./plugins/*.sh               # direct glob with multiple matches
-source "$(cat one two)"             # ambiguous path output
-source "$(find . -name '*.sh')"     # ambiguous when multiple files match
-source "$(cat dep-path.txt | sort)" # unapproved source-site pipeline
-source `cat dep-path.txt`           # backticks
-eval "source ./dep.sh; echo extra"  # unsafe eval payload
-bash -c "source ./dep.sh"           # child-shell semantics
+source "$DEP"                        # DEP unknown
+source ./dep.sh "$UNKNOWN_ARG"       # source argument unknown
+source ./dep.sh $ARG_WITH_SPACES     # would require word splitting
+source ./plugins/*.sh                # direct glob with multiple matches
+source "$(cat one two)"              # ambiguous path output
+source "$(find . -name '*.sh')"      # ambiguous when multiple files match
+source "$(cat dep-path.txt | sort)"  # unapproved source-site pipeline
+source `cat dep-path.txt`            # backticks
+eval "source ./dep.sh; echo extra"   # unsafe eval payload
+bash -c "source ./dep.sh"            # child-shell semantics
 ```
 
 Other fail-closed families include unmatched or quoted globs, `extglob`
@@ -250,8 +270,7 @@ multi-result command-substitution output where a single source path is required.
 
 The remaining source-resolution surface is narrower than general Bash support:
 
-- Direct `source` positional arguments and direct source glob multi-match
-  argument semantics.
+- Direct source glob multi-match argument semantics.
 - Broader source guards, including more command predicates and glob-bearing
   file tests.
 - `extglob` and full Bash edge semantics for `GLOBIGNORE`.

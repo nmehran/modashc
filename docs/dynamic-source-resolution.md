@@ -108,9 +108,9 @@ render `context-only` records, but the output must make that limitation clear.
   path-list discovery, such as safe `cat`, `sort`, `head`, and `grep -lF` /
   `grep -lE`.
 - Directory walks are allowed only for safe `find` subsets.
-- Multiple candidate paths and direct source positional arguments are
-  unsupported in executable mode unless the source form has deterministic
-  multi-source or argument semantics.
+- Multiple candidate paths are unsupported in executable mode unless the source
+  form has deterministic multi-source semantics. Direct source positional
+  arguments are supported when each argument resolves to an exact string.
 - Ambiguous current-directory state is unsupported.
 - Any command separator, redirection, pipe, process substitution, background
   operator, or unapproved command substitution in a dynamic source expression is
@@ -430,8 +430,8 @@ Accept initially when:
 
 - The function definition is known and source-relevant body effects are modeled.
 - Every reachable call site has an exact argument list.
-- Positional parameters map to exactly one source path, or to an explicitly
-  modeled multi-source call shape.
+- Positional parameters map to an exact source path plus any exact source
+  arguments, or to an explicitly modeled multi-source call shape.
 - The resolved source paths pass the normal resolver contract.
 - Function return/status behavior remains exact enough for later source
   resolution.
@@ -462,8 +462,7 @@ and validate explicit user-provided values on the second pass.
 These still need separate specs before implementation:
 
 - Broader glob semantics beyond ordinary deterministic file globs.
-- Direct source positional arguments beyond exact function-call binding,
-  including direct source glob multi-match argument semantics.
+- Direct source glob multi-match argument semantics.
 - Conditional predicates outside the modeled side-effect-free subset.
 - Broader case pattern and fallthrough semantics.
 - Complex array/list-based source paths outside exact indexed, associative,
@@ -480,7 +479,8 @@ These are intentionally tracked as practical future work, not permanently
 unsupported forms:
 
 - Glob-bearing conditional predicates such as `[ -f ./plugins/*.sh ]`.
-- Direct source positional arguments such as `source ./dep.sh arg1`.
+- Source arguments that require word splitting, command substitution, or
+  unresolved runtime values.
 - Command predicates outside the safe `grep -q` file-check subset.
 - Runtime-dynamic helper sources such as `source "$@"` when exact call-site
   binding is unavailable and no retained-helper supplement has been provided.
@@ -551,7 +551,9 @@ scope:
   modeled control flow. It also supports source-equivalent branch-defined
   functions and exact function-call status for chained source sites.
 - Supplement-backed retained helper dispatch is implemented for modeled
-  positional source helpers with finite one-path argument vectors.
+  positional source helpers with finite argument vectors. The first argument is
+  the source path; extra exact arguments are passed through for `source "$@"`
+  helpers.
 - Top-level `return` in supported sourced files is lowered with a generated
   same-shell wrapper so include guards and source status are preserved.
 - Executable mode fails before output when unsupported source forms would leave
@@ -562,9 +564,8 @@ Current diagnostics are raised as explicit `UnsupportedSourceError` instances
 with stable codes, source locations, rejected fragments, messages, and hints.
 
 Future resolver increments should stay small, tested, and fail-closed. Case,
-complex array, broader conditional, `extglob`, direct source positional and
-glob argument semantics, broader supplement-backed source resolution,
-recursive functions,
+complex array, broader conditional, `extglob`, direct source glob argument
+semantics, broader supplement-backed source resolution, recursive functions,
 non-equivalent branch-defined functions, branch-dependent function returns, and
 runtime-dispatch support should not be added as one-off resolver patches; those
 belong in the evaluator/IR design.

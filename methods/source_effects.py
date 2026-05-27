@@ -64,6 +64,7 @@ class SourceEvent:
     occurrence_model: OccurrenceModel
     replacement_kind: str = "source"
     source_value: str | None = None
+    source_arguments: tuple[str, ...] | None = None
     state_before: StateSnapshot | None = None
     condition: str | None = None
 

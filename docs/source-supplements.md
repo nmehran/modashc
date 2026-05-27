@@ -63,7 +63,9 @@ process environment for source resolution.
 ## Exact Helper Sources
 
 Quoted all-positionals source expressions are supported inside modeled local
-function calls when they bind to exactly one source path argument:
+function calls when the first argument is an exact source path. Additional
+arguments are passed to the sourced file through the direct source-argument
+model:
 
 - `source "$@"`
 - `source "${@}"`
@@ -78,8 +80,8 @@ effects. The source path then passes through the normal resolver contract.
 V1 intentionally rejects:
 
 - zero-argument `source "$@"`
-- multi-argument `source "$@"`, because direct `source file arg...` semantics
-  are not modeled yet
+- multi-argument `source "$*"` because quoted `$*` is one joined word, not a
+  source path plus argument vector
 - unquoted `$@` / `$*`
 - dynamic function dispatch
 - recursive source-bearing helpers
@@ -121,7 +123,9 @@ Supplements are declarative exact data:
   entrypoint directory
 
 Function entries define finite allowed source-path argument vectors for named
-source helpers. They do not make arbitrary dynamic dispatch safe.
+source helpers. The first argument is treated as the source path; subsequent
+arguments are exact strings passed to the sourced file. They do not make
+arbitrary dynamic dispatch safe.
 
 Retained source helpers that remain callable in generated executable output use
 same-scope dispatch lowering for the supported V1 subset. That contract is

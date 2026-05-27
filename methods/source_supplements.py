@@ -118,11 +118,23 @@ def _load_functions(raw_functions, entrypoint_directory: Path):
             if not isinstance(arguments, list):
                 raise _supplement_error(f"invalid source supplement function entry for {name}: arguments must be a list")
             signatures.append(tuple(
-                _normalize_path_value(argument, entrypoint_directory, f"function {name} argument")
-                for argument in arguments
+                _normalize_path_value(argument, entrypoint_directory, f"function {name} source argument")
+                if index == 0
+                else _normalize_exact_value(argument, f"function {name} argument")
+                for index, argument in enumerate(arguments)
             ))
         functions[name] = tuple(signatures)
     return functions
+
+
+def _normalize_exact_value(value, label: str):
+    if not isinstance(value, str):
+        raise _supplement_error(f"invalid source supplement {label}: value must be a string")
+    if "$(" in value or "`" in value or "$" in value:
+        raise _supplement_error(f"invalid source supplement {label}: shell expansion is not allowed")
+    if "\n" in value or "\r" in value:
+        raise _supplement_error(f"invalid source supplement {label}: multiline values are not allowed")
+    return value
 
 
 def _normalize_path_value(value, entrypoint_directory: Path, label: str):

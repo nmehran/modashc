@@ -1902,6 +1902,112 @@ class CompileRegressionTestCase(unittest.TestCase):
 
             project.assert_compiled_matches(self, "main.sh")
 
+    def test_direct_source_positional_arguments_match_bash(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", textwrap.dedent("""\
+                printf 'dep:%s:%s:%s\\n' "$1" "$2" "$#"
+                VALUE="$1:$2"
+                """))
+            project.write("main.sh", textwrap.dedent("""\
+                set -- outer-one outer-two
+                source ./dep.sh alpha beta
+                printf 'after:%s:%s:%s:%s\\n' "$1" "$2" "$VALUE" "$?"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            compiled = project.path("compiled.sh").read_text()
+            self.assertNotIn("source ./dep.sh alpha beta", compiled)
+
+    def test_direct_source_quoted_positional_arguments_match_bash(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", textwrap.dedent("""\
+                printf 'dep:%s|%s|%s\\n' "$1" "$2" "$#"
+                """))
+            project.write("main.sh", textwrap.dedent("""\
+                source ./dep.sh "alpha beta" 'gamma delta'
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_nested_source_inherits_source_positionals_with_quoted_at(self):
+        with ScriptProject() as project:
+            project.write("nested.sh", textwrap.dedent("""\
+                printf 'nested:%s:%s:%s\\n' "$1" "$2" "$#"
+                """))
+            project.write("lib.sh", textwrap.dedent("""\
+                printf 'lib-before:%s:%s:%s\\n' "$1" "$2" "$#"
+                source ./nested.sh "$@"
+                printf 'lib-after:%s:%s:%s\\n' "$1" "$2" "$#"
+                """))
+            project.write("main.sh", textwrap.dedent("""\
+                set -- outer
+                source ./lib.sh one two
+                printf 'after:%s:%s\\n' "$1" "$#"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_nested_source_overrides_source_positionals(self):
+        with ScriptProject() as project:
+            project.write("nested.sh", textwrap.dedent("""\
+                printf 'nested:%s:%s:%s\\n' "$1" "$2" "$#"
+                """))
+            project.write("lib.sh", textwrap.dedent("""\
+                source ./nested.sh nested "$2"
+                printf 'lib:%s:%s:%s\\n' "$1" "$2" "$#"
+                """))
+            project.write("main.sh", textwrap.dedent("""\
+                set -- outer
+                source ./lib.sh one two
+                printf 'after:%s:%s\\n' "$1" "$#"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_sourced_file_return_with_positional_arguments_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", textwrap.dedent("""\
+                VALUE="$1"
+                printf 'dep:%s:%s\\n' "$1" "$#"
+                return 6
+                VALUE=unreachable
+                """))
+            project.write("main.sh", textwrap.dedent("""\
+                set -- outer
+                source ./dep.sh arg
+                status=$?
+                printf 'after:%s:%s:%s\\n' "$1" "$VALUE" "$status"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_sourced_file_return_without_arguments_preserves_caller_positionals(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", textwrap.dedent("""\
+                printf 'dep:%s:%s\\n' "$1" "$#"
+                return 3
+                """))
+            project.write("main.sh", textwrap.dedent("""\
+                set -- outer
+                source ./dep.sh
+                status=$?
+                printf 'after:%s:%s\\n' "$1" "$status"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_source_arguments_must_resolve_to_exact_values(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "dep:$1"\n')
+            project.write("main.sh", 'source ./dep.sh "$UNKNOWN"\n')
+            output = project.path("compiled.sh")
+
+            with self.assertRaisesRegex(NotImplementedError, "source argument") as cm:
+                project.compile("main.sh", output=output, mode="executable")
+
+            self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.argument")
+            self.assertFalse(output.exists())
+
     def test_circular_sources_raise_clear_error(self):
         with ScriptProject() as project:
             project.write("a.sh", "source ./b.sh\n")
@@ -1913,7 +2019,6 @@ class CompileRegressionTestCase(unittest.TestCase):
     def test_unsupported_source_families_fail_without_writing_output(self):
         cases = {
             "unknown scalar": ('source "$DEP"\n', 'source "$DEP"'),
-            "source positional arguments": ('source ./dep.sh arg1\n', 'source ./dep.sh arg1'),
             "unsupported command substitution loop pipeline": (
                 'for file in $(cat deps.txt | sort); do source "$file"; done\n',
                 'for file in $(cat deps.txt | sort); do source "$file"; done',
@@ -2460,7 +2565,6 @@ class CompileRegressionTestCase(unittest.TestCase):
     def test_retained_source_helper_rejects_invalid_supplement_vectors(self):
         cases = {
             "zero args": [],
-            "multi args": ["./one.sh", "./two.sh"],
         }
         for name, arguments in cases.items():
             with self.subTest(name=name), ScriptProject() as project:
@@ -2484,6 +2588,64 @@ class CompileRegressionTestCase(unittest.TestCase):
 
                 self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.retained-helper")
                 self.assertFalse(output.exists())
+
+    def test_retained_first_positional_helper_rejects_multi_argument_supplement(self):
+        with ScriptProject() as project:
+            project.write("one.sh", 'echo one\n')
+            project.write("helpers.sh", textwrap.dedent("""\
+                source_safe() {
+                  source "$1"
+                }
+                """))
+            supplement = project.write("source-supplement.json", json.dumps({
+                "version": 1,
+                "functions": {
+                    "source_safe": [{"arguments": ["./one.sh", "arg"]}],
+                },
+            }))
+            output = project.path("compiled.sh")
+
+            with self.assertRaisesRegex(NotImplementedError, "retained source helper") as cm:
+                project.compile("helpers.sh", output=output, mode="executable", source_supplement=supplement)
+
+            self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.retained-helper")
+            self.assertFalse(output.exists())
+
+    def test_retained_source_helper_dispatch_supports_source_arguments(self):
+        with ScriptProject() as project:
+            dep = project.write("dep.sh", textwrap.dedent("""\
+                printf 'dep:%s:%s:%s\\n' "$1" "$2" "$#"
+                """))
+            project.write("helpers.sh", textwrap.dedent("""\
+                source_safe() {
+                  if ! source "$@"; then
+                    echo "failed:$?"
+                    return 7
+                  fi
+                }
+                """))
+            supplement = project.write("source-supplement.json", json.dumps({
+                "version": 1,
+                "functions": {
+                    "source_safe": [{"arguments": [str(dep), "alpha beta", "gamma"]}],
+                },
+            }))
+
+            compiled = project.compile("helpers.sh", mode="executable", source_supplement=supplement)
+            driver = textwrap.dedent(f"""\
+                source {shlex.quote(str(compiled))}
+                source_safe {shlex.quote(str(dep))} "alpha beta" gamma
+                """)
+            result = subprocess.run(
+                ["bash", "-c", driver],
+                cwd=project.root,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertEqual(result.stdout, "dep:alpha beta:gamma:2\n")
 
     def test_retained_source_helper_lowers_top_level_return_in_supplemented_source(self):
         with ScriptProject() as project:
@@ -2669,7 +2831,6 @@ class CompileRegressionTestCase(unittest.TestCase):
     def test_positional_helper_source_safety_rejections(self):
         cases = {
             "zero args": 'source_safe\n',
-            "multi args": 'source_safe ./dep.sh ./other.sh\n',
             "unquoted all args": 'source_safe() { source $@; }\nsource_safe ./dep.sh\n',
         }
         for name, call_or_content in cases.items():
@@ -2692,6 +2853,37 @@ class CompileRegressionTestCase(unittest.TestCase):
                     project.compile("main.sh", mode="executable")
 
                 self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.function-positionals")
+
+    def test_positional_helper_source_with_arguments_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", textwrap.dedent("""\
+                printf 'dep:%s:%s:%s\\n' "$1" "$2" "$#"
+                """))
+            project.write("helpers.sh", textwrap.dedent("""\
+                source_safe() {
+                  source "$@"
+                }
+                source_safe ./dep.sh alpha beta
+                """))
+            project.write("main.sh", "source ./helpers.sh\n")
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_shifted_helper_source_with_arguments_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", textwrap.dedent("""\
+                printf 'dep:%s:%s:%s\\n' "$1" "$2" "$#"
+                """))
+            project.write("main.sh", textwrap.dedent("""\
+                load_source() {
+                  local source_file=$1
+                  shift
+                  source "$source_file" "$@"
+                }
+                load_source ./dep.sh "alpha beta" gamma
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
 
     def test_arbitrary_source_if_condition_remains_unsupported(self):
         with ScriptProject() as project:

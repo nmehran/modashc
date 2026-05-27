@@ -45,7 +45,6 @@ accepted helper argument vectors through the existing supplement file.
 - Do not make ordinary compilation environment-dependent.
 - Do not support arbitrary dynamic function dispatch.
 - Do not model recursive source-bearing helpers.
-- Do not add direct `source file arg...` semantics.
 - Do not preserve live unresolved `source` commands in executable output.
 - Do not use supplement entries as shell code, glob patterns, or expressions.
 
@@ -74,9 +73,11 @@ argument vectors the merged output will support.
 }
 ```
 
-Each `arguments` vector is declarative exact data. V1 accepts only one source
-path argument per vector. Relative path values still resolve from the
-entrypoint directory, matching the source supplement contract.
+Each `arguments` vector is declarative exact data. The first value is the
+source path and relative path values still resolve from the entrypoint
+directory, matching the source supplement contract. Additional values are exact
+strings passed to the sourced file for retained helpers that use
+`source "$@"`.
 
 Function supplement entries do not make arbitrary runtime calls safe. They only
 authorize dispatch for the named local helper definition when the helper body is
@@ -99,7 +100,12 @@ A retained helper can be lowered when all of these are true:
   makepkg-style `if ! source "$@"; then ...; fi` guard shape.
 - A supplement provides at least one allowed argument vector for the retained
   helper.
-- Each allowed vector has exactly one source path argument.
+- Each allowed vector has at least one source path argument.
+- Extra arguments are accepted for `source "$@"` / `source "${@}"` retained
+  helpers and are passed to the sourced file. `source "$1"` / `source "${1}"`
+  retained helpers still require exactly one argument because Bash preserves
+  the helper's current positional state rather than treating later helper
+  arguments as direct source arguments.
 - Each source path and its transitive source graph pass the normal resolver
   contract.
 - The renderer can preserve source status, local scope, cwd, shell option, and
@@ -195,24 +201,28 @@ Diagnostics should identify:
 Useful stable diagnostic families:
 
 - missing retained helper supplement entry
-- retained helper supplement vector has zero or multiple source path arguments
+- retained helper supplement vector has zero source path arguments
+- retained `source "$1"` / `source "${1}"` helper receives a multi-argument
+  supplement vector
 - retained helper source site is outside the accepted positional subset
 - retained helper body has unsupported source-relevant behavior
-- retained helper dispatch would require unsupported direct source arguments
+- retained helper dispatch would require unsupported source argument expansion
 
 ## Tests
 
 Synthetic tests should land before real-world promotion:
 
 - `source_safe` retained with one supplemented path compiles in executable mode.
+- `source_safe` retained with one supplemented path plus exact source arguments
+  compiles in executable mode and passes those arguments to the lowered source.
 - Generated executable output contains no live `source` or `.` command for the
   retained source site.
 - Allowed runtime arguments execute the lowered source content.
 - Unknown runtime arguments take the original failure branch and return
   non-zero.
 - Missing supplement fails before output and emits a valid skeleton.
-- Zero-argument, multi-argument, unquoted `$@` / `$*`, recursive helper, and
-  dynamic dispatch cases fail with explicit diagnostics.
+- Zero-argument, invalid `source "$1"` multi-argument, unquoted `$@` / `$*`,
+  recursive helper, and dynamic dispatch cases fail with explicit diagnostics.
 - Source files containing top-level `return` are rendered with Bash-equivalent
   source status for supported direct and retained helper source sites.
 - Context mode remains readable and does not overstate exactness.
