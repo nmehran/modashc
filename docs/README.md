@@ -22,6 +22,9 @@ keep only in code comments or tests.
 - [Source-Relevant Control Flow Boundaries](source-control-flow-boundaries.md):
   source-free control-flow pass-through, exact source
   conditions, and practical source guard predicates.
+- [Runtime-Guarded Static Source Lowering](runtime-guarded-source-lowering.md):
+  planned static lowering for exact source sites guarded by runtime `if` and
+  `case` control flow.
 - [Real-World Internal Test Suite](real-world-test-suite.md):
   opt-in corpus, supplement fixture, artifact, and runtime parity probes
   workflow.
@@ -43,8 +46,8 @@ user-facing support matrix and practical remaining work.
 The intended approach is captured in the
 [Next-Generation Evaluator And IR Plan](evaluator-ir-plan.md):
 
-- Broader conditional predicate support beyond exact file/glob, `shopt -q`, and
-  safe `grep -q` source guards
+- Runtime-guarded static source lowering for exact source sites inside unknown
+  `if` predicates and runtime `case` subjects
 - Remaining array/list iteration outside exact indexed, associative,
   command-substitution, and file-populated arrays
 - Remaining loop forms outside exact `for`, bounded C-style `for ((...))`,

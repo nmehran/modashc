@@ -461,6 +461,9 @@ and validate explicit user-provided values on the second pass.
 These still need separate specs before implementation:
 
 - Broader glob semantics beyond ordinary deterministic file globs.
+- Runtime-guarded static lowering for exact source sites inside unknown `if`
+  predicates and runtime `case` subjects. The planned iteration is tracked in
+  [Runtime-Guarded Static Source Lowering](runtime-guarded-source-lowering.md).
 - Conditional predicates outside the modeled side-effect-free subset.
 - Broader case pattern and fallthrough semantics.
 - Complex array/list-based source paths outside exact indexed, associative,
@@ -479,6 +482,8 @@ unsupported forms:
 - Compound, multi-source, or pipeline conditional source predicates.
 - Source-free control flow whose body effects exceed the current conservative
   state merge.
+- Runtime-guarded source-bearing `if` / `case` bodies whose source sites are
+  exact but whose guard cannot yet be preserved and lowered.
 - Guard predicates outside exact file/glob tests, exact `shopt -q`, and the
   current safe `grep -q` subset.
 - Source arguments that require word splitting, command substitution, or
@@ -570,9 +575,10 @@ Current diagnostics are raised as explicit `UnsupportedSourceError` instances
 with stable codes, source locations, rejected fragments, messages, and hints.
 
 Future resolver increments should stay small, tested, and fail-closed. The
-current control-flow boundary work is tracked in
-[Source-Relevant Control Flow Boundaries](source-control-flow-boundaries.md).
-Case, complex array, `extglob`, broader supplement-backed source resolution,
-recursive functions, non-equivalent branch-defined functions, branch-dependent
-function returns, and runtime-dispatch support should not be added as one-off
-resolver patches; those belong in the evaluator/IR design.
+next runtime-guarded static lowering work is tracked in
+[Runtime-Guarded Static Source Lowering](runtime-guarded-source-lowering.md).
+Case pattern broadening, complex array support, `extglob`, broader
+supplement-backed source resolution, recursive functions, non-equivalent
+branch-defined functions, branch-dependent function returns, and
+runtime-dispatch support should not be added as one-off resolver patches; those
+belong in the evaluator/IR design.

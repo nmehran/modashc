@@ -442,6 +442,7 @@ Items 1 through 6 are implemented for the initial local smoke,
 enforcement, retained artifacts for successful pinned runs, supplement-backed
 pacman success expectations, direct glob source-argument fixtures,
 wrapped-source positional mutation fixtures, multiple safe runtime parity
-probes, and opt-in human-readable reports are also implemented. Source-relevant
-control-flow boundary work is planned next; broader runtime discovery and
+probes, opt-in human-readable reports, and source-relevant control-flow
+boundary promotion are also implemented. Runtime-guarded static source
+fixtures are the next planned corpus increment; broader runtime discovery and
 dynamic tracing remain deferred.

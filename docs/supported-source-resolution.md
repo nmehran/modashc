@@ -294,9 +294,11 @@ The remaining source-resolution surface is narrower than general Bash support:
 - Explicit source-argument frames that combine top-level `set --` with later
   nested source calls remain fail-closed; see
   [Source Argument Semantics Completion](source-argument-semantics.md).
+- Runtime-guarded static lowering for exact source sites inside unknown `if`
+  predicates and runtime `case` subjects is tracked in
+  [Runtime-Guarded Static Source Lowering](runtime-guarded-source-lowering.md).
 - Broader source guards beyond exact file/glob predicates, exact `shopt -q`,
-  and safe `grep -q`. The current control-flow boundary work is tracked in
-  [Source-Relevant Control Flow Boundaries](source-control-flow-boundaries.md).
+  and safe `grep -q`.
 - `extglob` and full Bash edge semantics for `GLOBIGNORE`.
 - Broader `case` pattern and fallthrough semantics for source-bearing arms.
 - Recursive or runtime-dynamic source-bearing function dispatch. Exact
