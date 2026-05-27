@@ -184,7 +184,9 @@ wrapper is needed.
 One Bash edge remains fail-closed: a sourced file entered with explicit source
 arguments that runs top-level `set --` before a later nested `source` command.
 Bash restores that explicit source-argument frame differently after the nested
-source returns, so executable mode rejects the shape rather than guessing.
+source returns, so executable mode rejects the shape rather than guessing. This
+is planned in
+[Explicit Source Argument Frame Restoration](source-argument-frame-restoration.md).
 
 ## Sourced-File Return
 
@@ -320,7 +322,7 @@ The remaining source-resolution surface is narrower than general Bash support:
 
 - Explicit source-argument frames that combine top-level `set --` with later
   nested source calls remain fail-closed; see
-  [Source Argument Semantics Completion](source-argument-semantics.md).
+  [Explicit Source Argument Frame Restoration](source-argument-frame-restoration.md).
 - `extglob` and full Bash edge semantics for `GLOBIGNORE`.
 - Remaining case edge semantics such as `extglob` patterns, collating symbols,
   equivalence classes, and broader locale-dependent pattern behavior.

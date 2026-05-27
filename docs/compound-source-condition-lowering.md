@@ -146,7 +146,9 @@ Pipelines, subshells, command substitutions, process substitutions, and broad
 Bash condition grammar remain separate iterations.
 
 The explicit source-argument frame edge where a sourced file runs top-level
-`set --` before a later nested source remains separate source-argument work.
+`set --` before a later nested source remains separate source-argument work;
+see
+[Explicit Source Argument Frame Restoration](source-argument-frame-restoration.md).
 
 Case pattern/fallthrough semantics are covered by
 [Case Source Semantics Expansion](case-source-semantics.md). `extglob`, full

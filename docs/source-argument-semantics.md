@@ -9,8 +9,8 @@ artifact inspection are complete.
 ## Summary
 
 The compiler supports exact direct source arguments and makepkg-style helper
-source arguments. This iteration finishes the remaining Bash source-argument
-semantics that are reachable without runtime tracing:
+source arguments. This iteration finished the main Bash source-argument
+semantics reachable without runtime tracing:
 
 - direct source globs that expand to more than one file
 - wrapped sourced files that mutate caller positional parameters with top-level
@@ -44,7 +44,9 @@ Known remaining source-argument edge:
 - A sourced file entered with explicit source arguments that runs top-level
   `set --` before a later nested `source` remains fail-closed. Bash restores the
   explicit source-argument frame differently after the nested source returns,
-  so the compiler rejects that shape until a narrower model is justified.
+  so the compiler rejects that shape until the narrower model in
+  [Explicit Source Argument Frame Restoration](source-argument-frame-restoration.md)
+  is implemented.
 
 ## Non-Goals
 
@@ -119,7 +121,9 @@ Implementation notes:
 - If status preservation or source-site scope cannot be proven, keep the
   current fail-closed diagnostic.
 - For explicit source-argument frames, reject top-level `set --` before a later
-  nested source command.
+  nested source command until
+  [Explicit Source Argument Frame Restoration](source-argument-frame-restoration.md)
+  is implemented.
 
 ## Tranche 3: Real-World And Runtime Promotion
 
