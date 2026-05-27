@@ -20,7 +20,7 @@ keep only in code comments or tests.
   static iteration for direct multi-match source globs, wrapped positional
   mutation lowering, and real-world/runtime promotion.
 - [Source-Relevant Control Flow Boundaries](source-control-flow-boundaries.md):
-  planned iteration for source-free control-flow pass-through, exact source
+  source-free control-flow pass-through, exact source
   conditions, and practical source guard predicates.
 - [Real-World Internal Test Suite](real-world-test-suite.md):
   opt-in corpus, supplement fixture, artifact, and runtime parity probes
@@ -43,7 +43,8 @@ user-facing support matrix and practical remaining work.
 The intended approach is captured in the
 [Next-Generation Evaluator And IR Plan](evaluator-ir-plan.md):
 
-- Broader conditional predicate support for source guards
+- Broader conditional predicate support beyond exact file/glob, `shopt -q`, and
+  safe `grep -q` source guards
 - Remaining array/list iteration outside exact indexed, associative,
   command-substitution, and file-populated arrays
 - Remaining loop forms outside exact `for`, bounded C-style `for ((...))`,
@@ -53,7 +54,7 @@ The intended approach is captured in the
   requiring word splitting, full `GLOBIGNORE` edge behavior, and explicit
   source-argument frames that combine top-level `set --` with later nested
   source calls
-- Source-relevant control-flow boundaries, exact source conditions, broader
-  source guard predicates, and case pattern/fallthrough semantics
+- Compound source conditions, broader source guard predicates, and case
+  pattern/fallthrough semantics
 - Runtime-dynamic source dispatch, recursive source-bearing functions,
   non-equivalent branch-defined functions, and branch-dependent function returns

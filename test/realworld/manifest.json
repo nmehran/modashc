@@ -40,11 +40,7 @@
               "expected": "success"
             },
             "executable": {
-              "expected": "unsupported",
-              "diagnostic": {
-                "code": "unsupported.source.if-condition",
-                "fragment": "if shopt -q cdable_vars; then"
-              }
+              "expected": "success"
             }
           }
         }

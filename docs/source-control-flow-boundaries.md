@@ -2,9 +2,9 @@
 
 ## Status
 
-Planned next product iteration on the `iteration/source-control-flow-boundaries`
-development branch. It builds on the completed source-argument semantics work
-and stays static: no xtrace, runtime source discovery, or shell execution during
+Implemented on the `iteration/source-control-flow-boundaries` development
+branch. It builds on the completed source-argument semantics work and stays
+static: no xtrace, runtime source discovery, or shell execution during
 compilation.
 
 ## Summary
@@ -13,21 +13,20 @@ The compiler now handles the main static source-argument and wrapped-source
 positionals cases. The next practical gap is control flow that is either not
 source-relevant or source-bearing in a narrow, lowerable way.
 
-This iteration should make executable mode less eager to reject ordinary Bash
-logic while still failing closed when dependency resolution or generated output
-would become unsafe.
+Executable mode is now less eager to reject ordinary Bash logic while still
+failing closed when dependency resolution or generated output would become
+unsafe.
 
 ## What Remains
 
-Current high-value remaining gaps:
+Current high-value remaining gaps after this iteration:
 
-- Source-free unsupported control flow can still block executable output even
-  when no source command depends on that branch. The pinned bash-completion
-  `completions/cd` case is the visible real-world example.
-- Arbitrary source-bearing conditions such as `if source ./dep.sh; then` and
-  `if ! source ./dep.sh; then` remain unsupported outside modeled helper paths.
-- Broader source guards, especially glob-bearing file tests and shell-option
-  predicates, remain narrow.
+- Compound source-bearing conditions, pipelines, command substitutions, and
+  source conditions outside the initial `if` branch remain unsupported.
+- Source-free unsupported loops are passed through with conservative state
+  merging, but broad loop/runtime semantics remain intentionally narrow.
+- Broader source guards beyond exact file/glob tests and exact shell-option
+  predicates remain narrow.
 - `extglob`, full `GLOBIGNORE` edge behavior, broader case pattern semantics,
   recursive/runtime-dynamic function dispatch, branch-dependent returns, and
   runtime source discovery remain later work.
@@ -42,7 +41,7 @@ Current high-value remaining gaps:
 
 ## Tranche 1: Source-Free Control Flow Pass-Through
 
-Executable mode should not fail just because an unsupported `if`, `case`, or
+Executable mode does not fail just because an unsupported `if`, `case`, or
 loop predicate exists. It should fail only when unsupported control flow affects
 source resolution or source-relevant lowering.
 
@@ -67,7 +66,7 @@ Implementation notes:
 
 ## Tranche 2: Exact Source Conditions
 
-Support simple source commands used directly as `if` conditions:
+Simple source commands used directly as `if` conditions are supported:
 
 ```bash
 if source ./dep.sh; then
@@ -101,7 +100,7 @@ Implementation notes:
 
 ## Tranche 3: Practical Guard Predicate Expansion
 
-Add a small predicate subset that directly gates source sites and is common in
+This iteration adds a small predicate subset that directly gates source sites and is common in
 shell-heavy projects.
 
 Candidate predicates:
@@ -134,10 +133,11 @@ Required checks:
 
 Expected real-world movement:
 
-- Promote bash-completion `completions/cd` executable from unsupported to
-  success if Tranche 1 proves it is source-free from modashc's dependency
-  perspective.
-- Add one controlled fixture for direct `if ! source ./dep.sh; then`.
+- bash-completion `completions/cd` executable is promoted from unsupported to
+  success because the previously blocking `shopt -q cdable_vars` condition is
+  source-free from modashc's dependency perspective.
+- Add one controlled fixture for direct `if ! source ./dep.sh; then` before
+  distilling this branch.
 - Keep top-level `bash_completion` timeouts as performance triage unless a
   small profiling pass identifies an obvious non-invasive fix.
 

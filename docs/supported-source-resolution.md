@@ -280,8 +280,8 @@ bash -c "source ./dep.sh"            # child-shell semantics
 
 Other fail-closed families include unmatched or quoted globs, `extglob`
 patterns, `set -f` / `noglob`, `failglob` unmatched globs, `GLOBIGNORE`
-patterns that remove every source match, unsupported command or glob-bearing
-file/bracket conditional predicates, unsupported case subjects or arm patterns,
+patterns that remove every source match, unsupported command predicates,
+multi-match glob file predicates, unsupported case subjects or arm patterns,
 unsupported process substitution outside modeled read-loop input, unknown
 runtime-dynamic or recursive function dispatch, non-equivalent branch-defined
 functions, branch-dependent function returns, nested dynamic substitutions, and
@@ -294,8 +294,8 @@ The remaining source-resolution surface is narrower than general Bash support:
 - Explicit source-argument frames that combine top-level `set --` with later
   nested source calls remain fail-closed; see
   [Source Argument Semantics Completion](source-argument-semantics.md).
-- Broader source guards, including more command predicates and glob-bearing
-  file tests. The next planned iteration is
+- Broader source guards beyond exact file/glob predicates, exact `shopt -q`,
+  and safe `grep -q`. The current control-flow boundary work is tracked in
   [Source-Relevant Control Flow Boundaries](source-control-flow-boundaries.md).
 - `extglob` and full Bash edge semantics for `GLOBIGNORE`.
 - Broader `case` pattern and fallthrough semantics for source-bearing arms.

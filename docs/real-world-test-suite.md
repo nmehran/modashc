@@ -210,10 +210,10 @@ generation:
 
 Promoted findings so far:
 
-- `completions/cd` executable mode currently reports
-  `if shopt -q cdable_vars; then` as an explicit unsupported contract. The next
-  planned control-flow iteration should promote this to success if the condition
-  is source-free from modashc's dependency perspective.
+- `completions/cd` executable mode now succeeds. Its
+  `if shopt -q cdable_vars; then` predicate is source-free from modashc's
+  dependency perspective, so it is preserved as ordinary runtime Bash instead
+  of blocking dependency merging.
 - pacman/makepkg artifacts exposed that `if ! source "$@"; then` must be
   handled through exact helper argument binding and retained helper dispatch.
   The fixture-backed `source_safe` wrapper succeeds, and supplement-backed raw

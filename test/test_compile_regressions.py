@@ -2275,7 +2275,7 @@ class CompileRegressionTestCase(unittest.TestCase):
                 "if awk 'BEGIN { exit 0 }'; then\n  source ./dep.sh\nfi\n",
                 "awk 'BEGIN { exit 0 }'",
             ),
-            "unsupported if glob predicate": (
+            "unsupported multi-match if glob predicate": (
                 'if [ -f ./plugins/*.sh ]; then\n  source ./dep.sh\nfi\n',
                 '[ -f ./plugins/*.sh ]',
             ),
@@ -2434,7 +2434,7 @@ class CompileRegressionTestCase(unittest.TestCase):
                 self.assertTrue(cm.exception.diagnostic.code.startswith("unsupported.source."))
                 self.assertEqual(output.read_text(), "existing output\n")
 
-    def test_source_free_shopt_if_is_explicit_executable_unsupported_contract(self):
+    def test_source_free_shopt_if_compiles_in_executable_mode(self):
         with ScriptProject() as project:
             project.write("main.sh", textwrap.dedent("""\
                 handle_cd() {
@@ -2448,13 +2448,90 @@ class CompileRegressionTestCase(unittest.TestCase):
                 """))
             output = project.write("compiled.sh", "existing output\n")
 
-            with self.assertRaisesRegex(NotImplementedError, "shopt -q cdable_vars") as cm:
+            project.compile("main.sh", output=output, mode="executable")
+
+            compiled = output.read_text()
+            self.assertIn("if shopt -q cdable_vars; then", compiled)
+            self.assertIn("complete -v -F handle_cd cd", compiled)
+
+    def test_source_free_unknown_if_mutation_keeps_later_source_fail_closed(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                if awk 'BEGIN { exit 0 }'; then
+                  DEP=./dep.sh
+                fi
+                source "$DEP"
+                """))
+            output = project.write("compiled.sh", "existing output\n")
+
+            with self.assertRaisesRegex(NotImplementedError, "branch-dependent variable") as cm:
                 project.compile("main.sh", output=output, mode="executable")
 
-            self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.if-condition")
-            self.assertEqual(cm.exception.diagnostic.fragment, "if shopt -q cdable_vars; then")
-            self.assertEqual(cm.exception.diagnostic.location.line, 4)
+            self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.branch-state")
             self.assertEqual(output.read_text(), "existing output\n")
+
+    def test_shopt_query_source_guard_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("enabled.sh", 'echo "enabled"\n')
+            project.write("disabled.sh", 'echo "disabled"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                shopt -s dotglob
+                if shopt -q dotglob; then
+                  source ./enabled.sh
+                else
+                  source ./disabled.sh
+                fi
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("enabled.sh", 'echo "enabled"\n')
+            project.write("disabled.sh", 'echo "disabled"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                shopt -s cdable_vars
+                if shopt -q cdable_vars; then
+                  source ./enabled.sh
+                else
+                  source ./disabled.sh
+                fi
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_exact_glob_file_source_guard_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("plugins/only.sh", 'echo "plugin marker"\n')
+            project.write("dep.sh", 'echo "dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                if [ -f ./plugins/*.sh ]; then
+                  source ./dep.sh
+                fi
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("plugins/only.sh", 'echo "plugin marker"\n')
+            project.write("dep.sh", 'echo "dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                if test -f ./plugins/*.sh; then
+                  source ./dep.sh
+                fi
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                if [ -r ./dep.sh ]; then
+                  source ./dep.sh
+                fi
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
 
     def test_negated_source_in_rendered_function_reports_retained_helper(self):
         with ScriptProject() as project:
@@ -3110,20 +3187,53 @@ class CompileRegressionTestCase(unittest.TestCase):
 
             project.assert_compiled_matches(self, "main.sh")
 
-    def test_arbitrary_source_if_condition_remains_unsupported(self):
+    def test_direct_source_if_condition_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", textwrap.dedent("""\
+                echo "dep:$1"
+                return 0
+                """))
+            project.write("then.sh", 'echo "then:$1"\n')
+            project.write("else.sh", 'echo "else"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                if source ./dep.sh alpha; then
+                  source ./then.sh beta
+                else
+                  source ./else.sh
+                fi
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_negated_direct_source_if_condition_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", textwrap.dedent("""\
+                echo "dep"
+                return 3
+                """))
+            project.write("fallback.sh", 'echo "fallback"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                if ! source ./dep.sh; then
+                  source ./fallback.sh
+                fi
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_compound_source_if_condition_remains_unsupported(self):
         with ScriptProject() as project:
             project.write("dep.sh", 'echo "dep"\n')
             project.write("main.sh", textwrap.dedent("""\
-                if ! source ./dep.sh; then
-                  echo "failed"
+                if source ./dep.sh && true; then
+                  echo "loaded"
                 fi
                 """))
             output = project.path("compiled.sh")
 
-            with self.assertRaisesRegex(NotImplementedError, "source if condition") as cm:
+            with self.assertRaisesRegex(NotImplementedError, "source") as cm:
                 project.compile("main.sh", output=output, mode="executable")
 
-            self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.if-condition")
+            self.assertTrue(cm.exception.diagnostic.code.startswith("unsupported.source."))
             self.assertFalse(output.exists())
 
     def test_cli_prints_source_supplement_skeleton(self):

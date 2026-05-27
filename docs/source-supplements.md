@@ -89,9 +89,9 @@ V1 intentionally rejects:
 - helper calls whose unresolved arguments are not supplied by a supplement
 
 Source commands in helper guards such as `if ! source "$@"; then` are lowered at
-the condition source site for the quoted all-positionals helper subset only.
-Arbitrary source-bearing conditions, such as `if source ./dep.sh; then`, remain
-unsupported until source-condition status semantics are modeled directly; see
+the condition source site for the quoted all-positionals helper subset. Direct
+exact source-bearing conditions such as `if source ./dep.sh; then` are handled
+by the source-condition subset described in
 [Source-Relevant Control Flow Boundaries](source-control-flow-boundaries.md).
 Executable output must still contain no live unresolved source command.
 

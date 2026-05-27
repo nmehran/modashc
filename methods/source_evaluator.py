@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import copy
+import glob
 import os
 import re
 from collections import Counter
@@ -169,7 +170,7 @@ KNOWN_SHOPT_OPTIONS = frozenset({
     'varredir_close',
     'xpg_echo',
 }) | SHOPT_SHELL_OPTIONS | GLOB_SHOPT_OPTIONS
-CONDITION_UNARY_FILE_OPERATORS = frozenset({'-e', '-f', '-d'})
+CONDITION_UNARY_FILE_OPERATORS = frozenset({'-e', '-f', '-d', '-r'})
 CONDITION_UNARY_STRING_OPERATORS = frozenset({'-n', '-z'})
 CONDITION_STRING_OPERATORS = frozenset({'=', '==', '!='})
 CONDITION_INTEGER_OPERATORS = frozenset({'-eq', '-ne', '-gt', '-ge', '-lt', '-le'})
@@ -933,8 +934,7 @@ class SourceEvaluator:
         if not self._is_retained_helper_positional_source_expression(source_expression):
             return None
 
-        column_offset = source_command_index(node.text)
-        column = node.location.column if column_offset < 0 else node.location.column + column_offset
+        column = self._source_condition_column(node, command_name)
         location = SourceLocation(node.location.path, node.location.line, column)
         return (
             location,
@@ -1203,6 +1203,9 @@ class SourceEvaluator:
         except UnsupportedSourceError:
             if self.mode == "context":
                 return
+            if not self._node_list_may_source(node.body):
+                self._apply_source_free_unknown_loop_body(node.body, state, stack)
+                return
             raise
 
         if self.mode == "executable" and words and self._loop_words_need_exact_replacement(node):
@@ -1268,6 +1271,7 @@ class SourceEvaluator:
 
             if condition_status == "unknown":
                 if not self._node_list_may_source(node.body):
+                    self._apply_source_free_unknown_loop_body(node.body, state, stack)
                     return
                 raise unsupported_source_error(
                     str(node.location.path),
@@ -1361,6 +1365,18 @@ class SourceEvaluator:
             loop_state = state.conditional_copy()
             self._evaluate_nodes(body, loop_state, stack)
 
+    def _apply_source_free_unknown_loop_body(self, body, state: EvaluationState, stack: tuple[Path, ...]):
+        base_state = state.child_shell_copy()
+        loop_state = state.child_shell_copy()
+        loop_state.loop_depth += 1
+        try:
+            self._evaluate_nodes(body, loop_state, stack)
+        except (LoopBreakSignal, LoopContinueSignal):
+            pass
+        finally:
+            loop_state.loop_depth -= 1
+        self._merge_possible_states(state, [base_state, loop_state])
+
     def _apply_while_loop(self, node: WhileLoop, state: EvaluationState, stack: tuple[Path, ...]):
         read_words = self._read_loop_words(node, state)
         if read_words is not None:
@@ -1394,6 +1410,9 @@ class SourceEvaluator:
                         loop_state = state.conditional_copy()
                         self._evaluate_nodes(node.body, loop_state, stack)
                     return
+                if not self._node_list_may_source(node.body):
+                    self._apply_source_free_unknown_loop_body(node.body, state, stack)
+                    return
                 raise with_source_diagnostic(
                     exc,
                     str(node.location.path),
@@ -1406,6 +1425,7 @@ class SourceEvaluator:
             should_run = condition_status == "true" if node.keyword == "while" else condition_status == "false"
             if condition_status == "unknown":
                 if not self._node_list_may_source(node.body):
+                    self._apply_source_free_unknown_loop_body(node.body, state, stack)
                     return
                 raise unsupported_source_error(
                     str(node.location.path),
@@ -2109,7 +2129,7 @@ class SourceEvaluator:
             try:
                 statuses.append(self._evaluate_condition(branch.condition, state, node, stack, branch.keyword))
             except UnsupportedSourceError as exc:
-                if self.mode == "context":
+                if self.mode == "context" or not self._if_block_may_source(node):
                     statuses.append("unknown")
                     continue
                 raise with_source_diagnostic(
@@ -2867,11 +2887,12 @@ class SourceEvaluator:
         source_expression = source_expression.strip()
         if not source_expression:
             raise UnsupportedSourceError(f"unsupported empty source condition: {condition}")
-        if branch_keyword != "if" or not self._is_quoted_all_positionals_source_expression(source_expression):
+        if branch_keyword != "if":
+            raise UnsupportedSourceError(f"unsupported source condition branch: {condition}")
+        if has_unsupported_shell_operator(source_expression):
             raise UnsupportedSourceError(f"unsupported source if condition: {condition}")
 
-        column_offset = source_command_index(node.text)
-        column = node.location.column if column_offset < 0 else node.location.column + column_offset
+        column = self._source_condition_column(node, command_name)
         source_node = SourceSite(
             location=SourceLocation(node.location.path, node.location.line, column),
             text=f"{command_name} {source_expression}",
@@ -2881,7 +2902,21 @@ class SourceEvaluator:
             is_control_flow=False,
         )
         self._apply_source_site(source_node, state, stack)
-        return "false" if negated else "true"
+        source_status = state.last_status
+        if source_status is None:
+            return "unknown"
+        source_succeeded = source_status == 0
+        if negated:
+            source_succeeded = not source_succeeded
+        return "true" if source_succeeded else "false"
+
+    @staticmethod
+    def _source_condition_column(node, command_name: str):
+        match = re.search(rf'(?<!\S){re.escape(command_name)}(?=\s|$)', node.text)
+        if match:
+            return node.location.column + match.start()
+        command_index = source_command_index(node.text)
+        return node.location.column if command_index is None else node.location.column + command_index
 
     def _evaluate_condition_tokens(self, words: list[str], state: EvaluationState, condition: str):
         result, index = self._parse_condition_or(words, 0, state, condition)
@@ -2944,7 +2979,7 @@ class SourceEvaluator:
     def _evaluate_condition_unary(self, operator: str, operand: str, state: EvaluationState, condition: str):
         if operator in CONDITION_UNARY_FILE_OPERATORS:
             if has_unquoted_glob(operand):
-                raise UnsupportedSourceError(f"unsupported glob if condition: {condition}")
+                return self._evaluate_condition_glob_unary(operator, operand, state, condition)
             path = self._condition_path(operand, state, condition)
             if path is None:
                 return "unknown"
@@ -2953,12 +2988,47 @@ class SourceEvaluator:
                 result = path.is_file()
             elif operator == "-d":
                 result = path.is_dir()
+            elif operator == "-r":
+                result = os.access(path, os.R_OK)
             return "true" if result else "false"
 
         value = self._condition_value(operand, state)
         if value is None:
             return "unknown"
         result = bool(value) if operator == "-n" else not bool(value)
+        return "true" if result else "false"
+
+    def _evaluate_condition_glob_unary(
+        self,
+        operator: str,
+        operand: str,
+        state: EvaluationState,
+        condition: str,
+    ):
+        if operator not in {"-f", "-r"}:
+            raise UnsupportedSourceError(f"unsupported glob if condition: {condition}")
+        if state.ambiguous_cwd or state.ambiguous_shell_options or state.ambiguous_glob_options:
+            raise UnsupportedSourceError(f"unsupported branch-dependent glob if condition: {condition}")
+        if "noglob" in state.shell_options or state.glob_options:
+            raise UnsupportedSourceError(f"unsupported shell-option glob if condition: {condition}")
+        if state.runtime_variables.get("GLOBIGNORE") or "GLOBIGNORE" in state.ambiguous_variables:
+            raise UnsupportedSourceError(f"unsupported GLOBIGNORE glob if condition: {condition}")
+        if has_unquoted_extglob(operand) or has_unquoted_brace_expansion(operand):
+            raise UnsupportedSourceError(f"unsupported glob if condition: {condition}")
+
+        resolved = self._condition_value(operand, state)
+        if resolved is None:
+            return "unknown"
+
+        pattern = resolved if os.path.isabs(resolved) else str(state.cwd / resolved)
+        matches = sorted(glob.glob(pattern))
+        if not matches:
+            return "false"
+        if len(matches) != 1:
+            raise UnsupportedSourceError(f"unsupported multi-match glob if condition: {condition}")
+
+        path = Path(matches[0]).resolve()
+        result = path.is_file() if operator == "-f" else os.access(path, os.R_OK)
         return "true" if result else "false"
 
     def _evaluate_condition_binary(self, left_token: str, operator: str, right_token: str,
@@ -3061,7 +3131,28 @@ class SourceEvaluator:
             return "false"
         if command_name == "grep":
             return self._evaluate_grep_condition(words, state, condition)
+        if command_name == "shopt":
+            return self._evaluate_shopt_query_condition(words, state, condition)
         raise UnsupportedSourceError(f"unsupported command if condition: {condition}")
+
+    def _evaluate_shopt_query_condition(self, words: list[str], state: EvaluationState, condition: str):
+        if len(words) < 3 or strip_shell_word_quotes(words[1]) != "-q":
+            raise UnsupportedSourceError(f"unsupported shopt if condition: {condition}")
+        if state.ambiguous_shell_options or state.ambiguous_glob_options:
+            return "unknown"
+
+        for option_word in words[2:]:
+            option = strip_shell_word_quotes(option_word)
+            if option not in KNOWN_SHOPT_OPTIONS:
+                raise UnsupportedSourceError(f"unsupported shopt option in if condition: {condition}")
+            enabled = (
+                option in state.glob_options
+                if option in GLOB_SHOPT_OPTIONS
+                else option in state.shell_options
+            )
+            if not enabled:
+                return "false"
+        return "true"
 
     def _evaluate_grep_condition(self, words: list[str], state: EvaluationState, condition: str):
         options = set()
@@ -4517,11 +4608,10 @@ class SourceEvaluator:
                 status = 1
                 continue
             if option not in GLOB_SHOPT_OPTIONS:
-                if option in SHOPT_SHELL_OPTIONS:
-                    if action == "-s":
-                        state.shell_options.add(option)
-                    else:
-                        state.shell_options.discard(option)
+                if action == "-s":
+                    state.shell_options.add(option)
+                else:
+                    state.shell_options.discard(option)
                 continue
             if action == "-s":
                 state.glob_options.add(option)
@@ -4684,6 +4774,14 @@ class SourceEvaluator:
                 return True
         return False
 
+    def _if_block_may_source(self, node: IfBlock):
+        for branch in node.branches:
+            if branch.condition and self._raw_command_may_source(branch.condition):
+                return True
+            if self._node_list_may_source(branch.body):
+                return True
+        return False
+
     def _node_list_may_source(self, nodes):
         for node in nodes:
             if isinstance(node, SourceSite):
@@ -4699,7 +4797,7 @@ class SourceEvaluator:
             if isinstance(node, WhileLoop) and self._node_list_may_source(node.body):
                 return True
             if isinstance(node, IfBlock):
-                if any(self._node_list_may_source(branch.body) for branch in node.branches):
+                if self._if_block_may_source(node):
                     return True
             if isinstance(node, CaseBlock) and self._nodes_may_source(node.arms):
                 return True
@@ -4793,6 +4891,21 @@ class SourceEvaluator:
                 "unsupported.source.branch-state",
                 "unsupported source after branch-dependent cwd",
                 "Reset cwd with an exact cd before the next source, or keep branch cwd effects convergent.",
+            )
+
+        if has_unquoted_glob(source_expression) and (
+            state.ambiguous_shell_options
+            or state.ambiguous_glob_options
+            or "GLOBIGNORE" in state.ambiguous_variables
+        ):
+            raise unsupported_source_error(
+                str(node.location.path),
+                node.location.line - 1,
+                node.text,
+                node.text,
+                "unsupported.source.branch-state",
+                "unsupported glob source after branch-dependent shell state",
+                "Keep glob-affecting shell options and GLOBIGNORE exact before sourcing a glob.",
             )
 
         variable_names = {match.group(1) or match.group(2) for match in SCALAR_REFERENCE_PATTERN.finditer(source_expression)}
