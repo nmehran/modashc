@@ -463,8 +463,8 @@ These still need separate specs before implementation:
 - Broader glob semantics beyond ordinary deterministic file globs.
 - Static evaluation of conditional predicates outside the modeled
   side-effect-free subset.
-- Broader case pattern and fallthrough semantics, planned in
-  [Case Source Semantics Expansion](case-source-semantics.md).
+- Remaining case edge semantics such as `extglob` patterns, collating symbols,
+  equivalence classes, and broader locale-dependent pattern behavior.
 - Complex array/list-based source paths outside exact indexed, associative,
   append, command-substitution, and file-populated arrays.
 - Broader user-defined function semantics, including runtime-dynamic dispatch,
@@ -496,10 +496,9 @@ unsupported forms:
   frontend cannot preserve exact nested locations.
 - Branch-divergent cwd, variables, arrays, or shell options followed by later
   source resolution that depends on that divergent state.
-- Case subjects or arm patterns outside the exact modeled case subset.
-- Case patterns that need shell normalization for mixed quoting, backslash
-  escapes, or POSIX character classes.
-- Case fallthrough terminators, `;&` and `;;&`.
+- Case subjects or arm patterns outside the exact modeled case subset,
+  including `extglob`, collating symbols, equivalence classes, and broader
+  locale-dependent matching.
 
 These are not merely more dynamic resolvers. They require control-flow and
 multi-result semantics, and they should be designed separately.

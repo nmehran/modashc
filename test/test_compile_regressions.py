@@ -742,6 +742,85 @@ class CompileRegressionTestCase(unittest.TestCase):
                     """),
                 None,
             ),
+            "escaped literal pattern": (
+                textwrap.dedent("""\
+                    ENV='prod-*'
+                    case "$ENV" in
+                      prod\\-\\*) source ./prod.sh ;;
+                      *) source ./missing-default.sh ;;
+                    esac
+                    echo "main"
+                    """),
+                None,
+            ),
+            "mixed quoted pattern": (
+                textwrap.dedent("""\
+                    ENV=prod-eu
+                    case "$ENV" in
+                      prod"-"*) source ./prod.sh ;;
+                      dev) source ./missing-dev.sh ;;
+                    esac
+                    echo "main"
+                    """),
+                None,
+            ),
+            "bracket pattern": (
+                textwrap.dedent("""\
+                    ENV=b
+                    case "$ENV" in
+                      [abc]) source ./prod.sh ;;
+                      *) source ./missing-default.sh ;;
+                    esac
+                    echo "main"
+                    """),
+                None,
+            ),
+            "posix class pattern": (
+                textwrap.dedent("""\
+                    ENV=5
+                    case "$ENV" in
+                      [[:digit:]]) source ./prod.sh ;;
+                      *) source ./missing-default.sh ;;
+                    esac
+                    echo "main"
+                    """),
+                None,
+            ),
+            "quoted variable pattern": (
+                textwrap.dedent("""\
+                    ENV=prod
+                    PATTERN=prod
+                    case "$ENV" in
+                      "$PATTERN") source ./prod.sh ;;
+                      *) source ./missing-default.sh ;;
+                    esac
+                    echo "main"
+                    """),
+                None,
+            ),
+            "unquoted variable glob pattern": (
+                textwrap.dedent("""\
+                    ENV=prod-eu
+                    PATTERN='prod-*'
+                    case "$ENV" in
+                      $PATTERN) source ./prod.sh ;;
+                      *) source ./missing-default.sh ;;
+                    esac
+                    echo "main"
+                    """),
+                None,
+            ),
+            "unquoted variable pattern keeps expanded quotes literal": (
+                textwrap.dedent("""\
+                    PATTERN='"prod"'
+                    case '"prod"' in
+                      $PATTERN) source ./prod.sh ;;
+                      *) source ./missing-default.sh ;;
+                    esac
+                    echo "main"
+                    """),
+                None,
+            ),
             "no matching arm": (
                 textwrap.dedent("""\
                     ENV=qa
@@ -792,6 +871,67 @@ class CompileRegressionTestCase(unittest.TestCase):
                 project.write("main.sh", content)
 
                 project.assert_compiled_matches(self, "main.sh", env=env)
+
+    def test_case_fallthrough_sources_match_bash(self):
+        cases = {
+            "fallthrough executes next arm": textwrap.dedent("""\
+                ENV=prod
+                case "$ENV" in
+                  prod) source ./prod.sh ;&
+                  *) source ./default.sh ;;
+                esac
+                echo "main"
+                """),
+            "fallthrough test matches later arm": textwrap.dedent("""\
+                ENV=prod-eu
+                case "$ENV" in
+                  prod-*) source ./prod.sh ;;&
+                  *-eu) source ./default.sh ;;
+                  dev) source ./missing-dev.sh ;;
+                esac
+                echo "main"
+                """),
+            "fallthrough preserves sequential state": textwrap.dedent("""\
+                ENV=prod
+                case "$ENV" in
+                  prod) DEP=./prod.sh ;&
+                  *) source "$DEP" ;;
+                esac
+                echo "main"
+                """),
+        }
+
+        for name, content in cases.items():
+            with self.subTest(name=name), ScriptProject() as project:
+                project.write("prod.sh", 'echo "prod:$ENV"\n')
+                project.write("default.sh", 'echo "default:$ENV"\n')
+                project.write("main.sh", content)
+
+                project.assert_compiled_matches(self, "main.sh")
+
+    def test_runtime_case_fallthrough_sources_match_bash(self):
+        with ScriptProject() as project:
+            project.write("prod.sh", 'echo "prod:$ENV"\n')
+            project.write("default.sh", 'echo "default:$ENV"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                case "$ENV" in
+                  prod) source ./prod.sh ;&
+                  *) source ./default.sh ;;
+                esac
+                echo "main"
+                """))
+
+            output = project.compile("main.sh", mode="executable")
+            compiled_content = output.read_text()
+
+            self.assertNotIn("source ./prod.sh", compiled_content)
+            self.assertNotIn("source ./default.sh", compiled_content)
+            for env in ("prod", "dev"):
+                with self.subTest(env=env):
+                    expected = project.run("main.sh", env={"ENV": env})
+                    actual = project.run(output, env={"ENV": env})
+                    self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
+                    self.assertEqual(actual.stdout, expected.stdout)
 
     def test_case_block_state_after_arm_matches_bash(self):
         with ScriptProject() as project:
@@ -2304,36 +2444,32 @@ class CompileRegressionTestCase(unittest.TestCase):
                 'grep -q yes config || source ./setdep.sh\nsource "$DEP"\n',
                 'source "$DEP"',
             ),
-            "case fallthrough": (
-                'ENV=prod\ncase "$ENV" in\n  prod) source ./prod.sh ;&\n  *) source ./dev.sh ;;\nesac\n',
-                'case "$ENV" in',
-            ),
             "case dynamic subject": (
                 'case "$(cat env.txt)" in\n  prod) source ./prod.sh ;;\nesac\n',
                 'case "$(cat env.txt)" in',
             ),
-            "case variable pattern": (
-                'ENV=prod\nPATTERN=prod\ncase "$ENV" in\n  "$PATTERN") source ./prod.sh ;;\nesac\n',
+            "case unresolved variable pattern": (
+                'ENV=prod\ncase "$ENV" in\n  "$PATTERN") source ./prod.sh ;;\nesac\n',
                 'case "$ENV" in',
             ),
             "case divergent state": (
                 'case "$ENV" in\n  prod) DEP=./a.sh ;;\n  dev) DEP=./b.sh ;;\nesac\nsource "$DEP"\n',
                 'source "$DEP"',
             ),
+            "case empty pattern is not default": (
+                'case "$ENV" in\n  "") DEP=./prod.sh ;;\nesac\nsource "$DEP"\n',
+                'source "$DEP"',
+            ),
             "case hidden eval source": (
                 'case "$ENV" in\n  prod) COMMAND="source ./prod.sh"; eval "$COMMAND" ;;\nesac\n',
                 'eval "$COMMAND"',
             ),
-            "case escaped pattern": (
-                'ENV="prod*"\ncase "$ENV" in\n  prod\\*) source ./prod.sh ;;\n  *) source ./b.sh ;;\nesac\n',
+            "case extglob pattern": (
+                'ENV=prod\ncase "$ENV" in\n  @(prod|stage)) source ./prod.sh ;;\nesac\n',
                 'case "$ENV" in',
             ),
-            "case mixed-quoted pattern": (
-                'ENV="prod-eu"\ncase "$ENV" in\n  prod"-"*) source ./prod.sh ;;\nesac\n',
-                'case "$ENV" in',
-            ),
-            "case POSIX class pattern": (
-                'ENV=5\ncase "$ENV" in\n  [[:digit:]]) source ./prod.sh ;;\nesac\n',
+            "case variable extglob pattern": (
+                'shopt -s extglob\nENV=prod\nPATTERN="@(prod|stage)"\ncase "$ENV" in\n  $PATTERN) source ./prod.sh ;;\nesac\n',
                 'case "$ENV" in',
             ),
             "subshell source": (

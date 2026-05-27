@@ -101,14 +101,15 @@ Acceptance:
 - Unknown subjects with exact arms merge state conservatively after the case.
 - Later source sites depending on branch-divergent case state fail closed.
 - Existing exact-subject case behavior remains unchanged.
-- Existing unsupported case pattern families remain unsupported:
-  mixed quoting, backslash normalization, POSIX classes, extglob-dependent
-  patterns, variable-expanded patterns, and fallthrough terminators.
+- Remaining unsupported case pattern families stay fail-closed: `extglob`
+  patterns, collating symbols, equivalence classes, and broader
+  locale-dependent matching. Practical case pattern normalization and
+  fallthrough terminators are covered by
+  [Case Source Semantics Expansion](case-source-semantics.md).
 
 Implementation notes:
 
-- Start with the current supported case pattern subset and `;;` terminators.
-- Do not model `;&` or `;;&` in this iteration.
+- Start with the current supported case pattern subset and terminators.
 - Do not claim runtime parity for context mode beyond readable provenance.
 
 ## Tranche 3: Real-World And Ergonomics Promotion

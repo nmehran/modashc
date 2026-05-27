@@ -2,7 +2,7 @@
 
 ## Status
 
-Planned on the `iteration/case-source-semantics` development branch.
+Implemented on the `iteration/case-source-semantics` development branch.
 
 This iteration stays static. It does not run Bash, collect xtrace output, infer
 runtime source paths, or broaden arbitrary shell validation. The goal is to
@@ -11,7 +11,7 @@ subjects, runtime-guarded subjects, and compound `if` source conditions.
 
 ## Why This Is Next
 
-The main remaining static gaps are:
+At the start of this iteration, the main remaining static gaps were:
 
 - broader source-bearing `case` pattern semantics
 - source-bearing pipelines, subshells, command substitutions, and process
@@ -34,7 +34,7 @@ Current `case` support covers known scalar subjects, runtime-dynamic subjects
 with exact source-bearing arms, default arms, alternate patterns, quoted
 literals, and ordinary glob patterns in the modeled subset.
 
-This iteration expands that subset to handle more practical Bash `case` pattern
+This iteration expands that subset to handle practical Bash `case` pattern
 syntax and fallthrough behavior while keeping source effects exact:
 
 ```bash
@@ -64,9 +64,9 @@ writing output.
 
 ## Tranche 1: Practical Case Pattern Normalization
 
-Support more exact pattern syntax without changing case control-flow shape.
+Implemented more exact pattern syntax without changing case control-flow shape.
 
-Candidate support:
+Supported forms:
 
 - mixed quoted and unquoted literal segments in one pattern
 - backslash-escaped literal characters
@@ -101,7 +101,7 @@ Implementation notes:
 
 ## Tranche 2: Case Fallthrough Terminators
 
-Model Bash `case` fallthrough terminators for source-bearing arms:
+Implemented Bash `case` fallthrough terminators for source-bearing arms:
 
 - `;&` executes the next arm body without testing its pattern.
 - `;;&` continues pattern testing at the next arm.
@@ -130,8 +130,8 @@ Implementation notes:
 
 ## Tranche 3: Real-World And Runtime Promotion
 
-Add focused real-world fixtures and parity probes for the newly supported case
-forms.
+Added focused real-world fixtures and parity probes for the newly supported
+case forms.
 
 Acceptance:
 

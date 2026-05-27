@@ -163,6 +163,30 @@
           "path": ".modashc-fixtures/runtime-guarded-case-dev.sh"
         },
         {
+          "source": "pacman/case-semantics-wrapper.sh",
+          "path": ".modashc-fixtures/case-semantics-wrapper.sh"
+        },
+        {
+          "source": "pacman/case-semantics-escaped.sh",
+          "path": ".modashc-fixtures/case-semantics-escaped.sh"
+        },
+        {
+          "source": "pacman/case-semantics-mixed.sh",
+          "path": ".modashc-fixtures/case-semantics-mixed.sh"
+        },
+        {
+          "source": "pacman/case-semantics-digit.sh",
+          "path": ".modashc-fixtures/case-semantics-digit.sh"
+        },
+        {
+          "source": "pacman/case-semantics-variable.sh",
+          "path": ".modashc-fixtures/case-semantics-variable.sh"
+        },
+        {
+          "source": "pacman/case-semantics-default.sh",
+          "path": ".modashc-fixtures/case-semantics-default.sh"
+        },
+        {
           "source": "pacman/compound-source-wrapper.sh",
           "path": ".modashc-fixtures/compound-source-wrapper.sh"
         },
@@ -341,6 +365,21 @@
         },
         {
           "path": ".modashc-fixtures/runtime-guarded-case-wrapper.sh",
+          "modes": {
+            "context": {
+              "expected": "success"
+            },
+            "executable": {
+              "expected": "success"
+            }
+          },
+          "runtime": {
+            "expected": "match",
+            "cwd": ".modashc-fixtures"
+          }
+        },
+        {
+          "path": ".modashc-fixtures/case-semantics-wrapper.sh",
           "modes": {
             "context": {
               "expected": "success"

@@ -710,22 +710,47 @@ class SourceEvaluatorTestCase(unittest.TestCase):
         self.assertEqual(result.events[1].condition, None)
         self.assertEqual(result.events[1].occurrence_model, OccurrenceModel.ONCE)
 
-    def test_case_block_fallthrough_terminator_raises_structured_diagnostic(self):
+    def test_case_block_practical_patterns_are_evaluated(self):
         with ScriptProject() as project:
-            project.write("prod.sh", 'echo "prod"\n')
+            escaped = project.write("escaped.sh", 'echo "escaped"\n')
+            mixed = project.write("mixed.sh", 'echo "mixed"\n')
+            digit = project.write("digit.sh", 'echo "digit"\n')
+            variable = project.write("variable.sh", 'echo "variable"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                ENV=prod-us
+                PATTERN='prod-*'
+                case "$ENV" in
+                  prod\\*) source ./escaped.sh ;;
+                  prod"-"eu) source ./mixed.sh ;;
+                  [[:digit:]]) source ./digit.sh ;;
+                  $PATTERN) source ./variable.sh ;;
+                esac
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [variable])
+        self.assertEqual(
+            [disabled.source_site for disabled in result.disabled_sources],
+            ["source ./escaped.sh", "source ./mixed.sh", "source ./digit.sh"],
+        )
+
+    def test_case_block_fallthrough_terminators_are_evaluated(self):
+        with ScriptProject() as project:
+            prod = project.write("prod.sh", 'echo "prod"\n')
+            default = project.write("default.sh", 'echo "default"\n')
             entry = project.write("main.sh", textwrap.dedent("""\
                 ENV=prod
                 case "$ENV" in
                   prod) source ./prod.sh ;&
-                  *) echo done ;;
+                  *) source ./default.sh ;;
                 esac
                 """))
 
-            with self.assertRaisesRegex(NotImplementedError, "case terminator") as cm:
-                SourceEvaluator().evaluate(entry)
+            result = SourceEvaluator().evaluate(entry)
 
-        self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.case-terminator")
-        self.assertEqual(cm.exception.diagnostic.location.line, 2)
+        self.assertEqual([event.path for event in result.events], [prod, default])
+        self.assertEqual([event.condition for event in result.events], ['case "$ENV" in prod', 'case "$ENV" in *'])
 
     def test_context_control_flow_source_is_conditional_and_does_not_leak_state(self):
         with ScriptProject() as project:

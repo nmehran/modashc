@@ -19,12 +19,14 @@ including compound logical predicates, arithmetic predicates, regex and pattern
 matching, and safe `grep -q` file checks. Runtime-guarded lowering also
 preserves unknown `if` predicates when branch-local source sites are exact.
 Exact `case` blocks are implemented for known subjects and the modeled pattern
-subset; unknown scalar subjects preserve the runtime `case` and lower exact arm
-source sites. Bounded local function calls are implemented when the definition
-is known, arguments are exact, and source-relevant body effects are modeled. It
-remains fail-closed for broader glob semantics, source-bearing pipelines and
-unsupported compound grammar, broader case pattern semantics, recursive
-functions, runtime-dynamic function dispatch, and child-shell runtime dispatch.
+subset, including practical quoting, bracket/POSIX-class patterns, exact
+variable-expanded patterns, and fallthrough terminators. Unknown scalar subjects
+preserve the runtime `case` and lower exact arm source sites. Bounded local
+function calls are implemented when the definition is known, arguments are
+exact, and source-relevant body effects are modeled. It remains fail-closed for
+broader glob semantics, source-bearing pipelines and unsupported compound
+grammar, remaining case edge semantics such as `extglob`, recursive functions,
+runtime-dynamic function dispatch, and child-shell runtime dispatch.
 Exact source atoms in top-level logical condition lists are covered by
 [Compound Source Condition Lowering](compound-source-condition-lowering.md).
 
@@ -48,9 +50,9 @@ esac
 
 Supporting those safely requires continuing the compiler model, not adding more
 ad hoc source regexes. Branch-aware `if` lowering, exact `case` lowering, and
-bounded function calls are implemented for their first subsets. The next steps
-are broader practical conditional predicates, broader case patterns, and
-broader function control-flow semantics.
+bounded function calls are implemented for practical first subsets. The next
+steps are broader practical conditional predicates, remaining case edge
+semantics, and broader function control-flow semantics.
 
 ## Goals
 
@@ -389,20 +391,25 @@ Supported arm patterns:
 
 - literal patterns
 - quoted literal patterns
+- mixed quoted and unquoted literal segments
+- backslash-escaped literal characters
 - alternates such as `prod|stage`
 - default `*`
-- ordinary Bash case globs using `*`, `?`, or bracket classes, when the subject
-  is exact
+- ordinary Bash case globs using `*`, `?`, or bracket classes
+- POSIX character classes in the modeled C-locale subset
+- exact scalar variable-expanded patterns
 
-Executable mode evaluates the first matching arm, applies its source-relevant
-state, and neutralizes source sites in unreachable arms. If no arm matches, the
-case contributes no source-relevant state. Context mode may record all arm
-dependencies with mutually exclusive provenance because the output is
-readable-first.
+Executable mode evaluates matching arms in Bash order, including `;&` and
+`;;&` fallthrough semantics, applies source-relevant state, and neutralizes
+source sites in unreachable arms. If no arm matches, the case contributes no
+source-relevant state. Context mode records possible arm dependencies with
+readable provenance; fallthrough cases are annotated as conditional because
+multiple arms may run.
 
-Executable mode rejects unknown or runtime-dynamic subjects, fallthrough
-terminators (`;&`, `;;&`), extglob-dependent patterns, and case bodies whose
-source-relevant behavior cannot be modeled.
+Executable mode preserves unknown or runtime-dynamic subjects when all possible
+source sites are exact and the original `case` can be retained. It rejects
+`extglob`, collating symbols, equivalence classes, broader locale-dependent
+patterns, and case bodies whose source-relevant behavior cannot be modeled.
 
 ### Globs
 

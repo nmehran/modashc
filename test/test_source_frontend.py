@@ -477,17 +477,18 @@ class LineParserFrontendTestCase(unittest.TestCase):
         self.assertEqual(block.arms[0].patterns, ("*prod",))
         self.assertEqual(ir.source_sites[0].source_expression, "./prod.sh")
 
-    def test_parses_case_fallthrough_terminator_for_evaluator_rejection(self):
+    def test_parses_case_fallthrough_terminators(self):
         ir = self.parse("""\
             case "$ENV" in
               prod) source ./prod.sh ;&
+              stage) source ./stage.sh ;;&
               *) source ./default.sh ;;
             esac
             """)
 
         block = ir.nodes[0]
         self.assertIsInstance(block, CaseBlock)
-        self.assertEqual([arm.terminator for arm in block.arms], [";&", ";;"])
+        self.assertEqual([arm.terminator for arm in block.arms], [";&", ";;&", ";;"])
 
 
 if __name__ == "__main__":

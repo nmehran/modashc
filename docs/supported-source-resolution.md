@@ -248,10 +248,13 @@ options, functions, or positional state that diverged across possible
 condition paths.
 
 Supported `case` blocks use modeled arm patterns: literal patterns, alternate
-patterns, default arms, quoted literals, and ordinary glob patterns without
-mixed quoting, backslash escapes, POSIX character classes, or fallthrough
-terminators. Known scalar subjects are statically selected. Unknown runtime
-subjects preserve the original `case` and lower exact source sites in all arms.
+patterns, default arms, quoted literals, mixed quoted/unquoted segments,
+backslash-escaped literals, ordinary glob patterns, bracket expressions, POSIX
+character classes in the modeled C-locale subset, and exact scalar
+variable-expanded patterns. Known scalar subjects are statically selected.
+Unknown runtime subjects preserve the original `case` and lower exact source
+sites in all runtime-possible arms. Source-bearing `case` arms may use `;;`,
+`;&`, or `;;&` terminators.
 
 ```bash
 case "$ENV" in
@@ -319,8 +322,8 @@ The remaining source-resolution surface is narrower than general Bash support:
   nested source calls remain fail-closed; see
   [Source Argument Semantics Completion](source-argument-semantics.md).
 - `extglob` and full Bash edge semantics for `GLOBIGNORE`.
-- Broader `case` pattern and fallthrough semantics for source-bearing arms; see
-  [Case Source Semantics Expansion](case-source-semantics.md).
+- Remaining case edge semantics such as `extglob` patterns, collating symbols,
+  equivalence classes, and broader locale-dependent pattern behavior.
 - Recursive or runtime-dynamic source-bearing function dispatch. Exact
   makepkg-style helper calls using quoted `$@` / `$*` are covered by
   [Source Supplements And Exact Helper Sources](source-supplements.md).
