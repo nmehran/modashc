@@ -152,7 +152,7 @@ def parameter_expansion_value(reference, context):
         return None
 
     body = reference[2:-1]
-    match = re.fullmatch(r'([a-zA-Z_]\w*)(:?)-(.+)', body)
+    match = re.fullmatch(r'([a-zA-Z_]\w*)(:?)-(.*)', body)
     if not match:
         return None
 

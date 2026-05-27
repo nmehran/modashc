@@ -8,11 +8,17 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from methods.shell_line import get_commands
-from methods.sources import get_sources
+from methods.sources import get_sources, resolve_variable_references
 from test.support import ScriptProject
 
 
 class SourceRegressionTestCase(unittest.TestCase):
+    def test_empty_parameter_default_resolves_to_empty_string(self):
+        context = {"vars": {}, "current_directory": os.getcwd()}
+
+        self.assertEqual(resolve_variable_references("${MISSING:-}", context), "")
+        self.assertEqual(resolve_variable_references("${MISSING-}", context), "")
+
     def test_get_commands_keeps_hash_inside_words_and_paths(self):
         self.assertEqual(
             list(get_commands('echo foo#bar; source dep.sh')),

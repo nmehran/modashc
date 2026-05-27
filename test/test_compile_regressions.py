@@ -2283,6 +2283,24 @@ class CompileRegressionTestCase(unittest.TestCase):
 
             project.assert_compiled_matches(self, "main.sh")
 
+    def test_sourced_file_with_arguments_preserves_capture_when_default_guard_skips_nested_source(self):
+        with ScriptProject() as project:
+            project.write("nested.sh", ":\n")
+            project.write("dep.sh", textwrap.dedent("""\
+                set -- changed one
+                if [[ ${RUN_NESTED:-} ]]; then
+                  source ./nested.sh "$@"
+                fi
+                printf 'dep:%s:%s:%s\\n' "$1" "$2" "$#"
+                """))
+            project.write("main.sh", textwrap.dedent("""\
+                set -- outer
+                source ./dep.sh arg
+                printf 'after:%s:%s:%s\\n' "$1" "${2-}" "$#"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
     def test_sourced_file_with_arguments_keeps_shift_after_nested_source_temporary(self):
         with ScriptProject() as project:
             project.write("nested.sh", ":\n")
