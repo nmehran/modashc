@@ -19,6 +19,9 @@ keep only in code comments or tests.
 - [Source Argument Semantics Completion](source-argument-semantics.md):
   static iteration for direct multi-match source globs, wrapped positional
   mutation lowering, and real-world/runtime promotion.
+- [Source-Relevant Control Flow Boundaries](source-control-flow-boundaries.md):
+  planned iteration for source-free control-flow pass-through, exact source
+  conditions, and practical source guard predicates.
 - [Real-World Internal Test Suite](real-world-test-suite.md):
   opt-in corpus, supplement fixture, artifact, and runtime parity probes
   workflow.
@@ -50,6 +53,7 @@ The intended approach is captured in the
   requiring word splitting, full `GLOBIGNORE` edge behavior, and explicit
   source-argument frames that combine top-level `set --` with later nested
   source calls
-- Broader case pattern and fallthrough semantics for source-bearing arms
+- Source-relevant control-flow boundaries, exact source conditions, broader
+  source guard predicates, and case pattern/fallthrough semantics
 - Runtime-dynamic source dispatch, recursive source-bearing functions,
   non-equivalent branch-defined functions, and branch-dependent function returns

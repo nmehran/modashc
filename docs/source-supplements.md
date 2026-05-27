@@ -91,7 +91,8 @@ V1 intentionally rejects:
 Source commands in helper guards such as `if ! source "$@"; then` are lowered at
 the condition source site for the quoted all-positionals helper subset only.
 Arbitrary source-bearing conditions, such as `if source ./dep.sh; then`, remain
-unsupported until source-condition status semantics are modeled directly.
+unsupported until source-condition status semantics are modeled directly; see
+[Source-Relevant Control Flow Boundaries](source-control-flow-boundaries.md).
 Executable output must still contain no live unresolved source command.
 
 The V1 helper subset also models the common makepkg `source_safe` shopt restore

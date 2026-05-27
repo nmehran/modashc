@@ -477,6 +477,10 @@ These are intentionally tracked as practical future work, not permanently
 unsupported forms:
 
 - Glob-bearing conditional predicates such as `[ -f ./plugins/*.sh ]`.
+- Source-free unsupported control flow that should be passed through when it is
+  not source-relevant.
+- Direct source conditions such as `if source ./dep.sh; then` outside the
+  currently modeled helper paths.
 - Source arguments that require word splitting, command substitution, or
   unresolved runtime values.
 - Command predicates outside the safe `grep -q` file-check subset.
@@ -565,8 +569,10 @@ Structured diagnostic objects are implemented for unsupported source failures.
 Current diagnostics are raised as explicit `UnsupportedSourceError` instances
 with stable codes, source locations, rejected fragments, messages, and hints.
 
-Future resolver increments should stay small, tested, and fail-closed. Case,
-complex array, broader conditional, `extglob`, broader supplement-backed source
-resolution, recursive functions, non-equivalent branch-defined functions,
-branch-dependent function returns, and runtime-dispatch support should not be
-added as one-off resolver patches; those belong in the evaluator/IR design.
+Future resolver increments should stay small, tested, and fail-closed. The next
+planned control-flow increment is
+[Source-Relevant Control Flow Boundaries](source-control-flow-boundaries.md).
+Case, complex array, `extglob`, broader supplement-backed source resolution,
+recursive functions, non-equivalent branch-defined functions, branch-dependent
+function returns, and runtime-dispatch support should not be added as one-off
+resolver patches; those belong in the evaluator/IR design.

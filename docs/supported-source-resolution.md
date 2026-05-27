@@ -269,7 +269,7 @@ Common examples:
 source "$DEP"                        # DEP unknown
 source ./dep.sh "$UNKNOWN_ARG"       # source argument unknown
 source ./dep.sh $ARG_WITH_SPACES     # would require word splitting
-source ./plugins/*.sh                # direct glob with multiple matches
+source ./missing/*.sh                # unmatched direct glob
 source "$(cat one two)"              # ambiguous path output
 source "$(find . -name '*.sh')"      # ambiguous when multiple files match
 source "$(cat dep-path.txt | sort)"  # unapproved source-site pipeline
@@ -295,7 +295,8 @@ The remaining source-resolution surface is narrower than general Bash support:
   nested source calls remain fail-closed; see
   [Source Argument Semantics Completion](source-argument-semantics.md).
 - Broader source guards, including more command predicates and glob-bearing
-  file tests.
+  file tests. The next planned iteration is
+  [Source-Relevant Control Flow Boundaries](source-control-flow-boundaries.md).
 - `extglob` and full Bash edge semantics for `GLOBIGNORE`.
 - Broader `case` pattern and fallthrough semantics for source-bearing arms.
 - Recursive or runtime-dynamic source-bearing function dispatch. Exact

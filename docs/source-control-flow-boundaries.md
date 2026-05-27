@@ -1,0 +1,148 @@
+# Source-Relevant Control Flow Boundaries
+
+## Status
+
+Planned next product iteration on the `iteration/source-control-flow-boundaries`
+development branch. It builds on the completed source-argument semantics work
+and stays static: no xtrace, runtime source discovery, or shell execution during
+compilation.
+
+## Summary
+
+The compiler now handles the main static source-argument and wrapped-source
+positionals cases. The next practical gap is control flow that is either not
+source-relevant or source-bearing in a narrow, lowerable way.
+
+This iteration should make executable mode less eager to reject ordinary Bash
+logic while still failing closed when dependency resolution or generated output
+would become unsafe.
+
+## What Remains
+
+Current high-value remaining gaps:
+
+- Source-free unsupported control flow can still block executable output even
+  when no source command depends on that branch. The pinned bash-completion
+  `completions/cd` case is the visible real-world example.
+- Arbitrary source-bearing conditions such as `if source ./dep.sh; then` and
+  `if ! source ./dep.sh; then` remain unsupported outside modeled helper paths.
+- Broader source guards, especially glob-bearing file tests and shell-option
+  predicates, remain narrow.
+- `extglob`, full `GLOBIGNORE` edge behavior, broader case pattern semantics,
+  recursive/runtime-dynamic function dispatch, branch-dependent returns, and
+  runtime source discovery remain later work.
+
+## Non-Goals
+
+- Do not run Bash or collect xtrace output.
+- Do not infer dependencies from runtime-observed behavior.
+- Do not silently preserve live `source` or `.` commands in executable output.
+- Do not model arbitrary command predicates as a side effect of this iteration.
+- Do not broaden recursive or runtime-dynamic function dispatch.
+
+## Tranche 1: Source-Free Control Flow Pass-Through
+
+Executable mode should not fail just because an unsupported `if`, `case`, or
+loop predicate exists. It should fail only when unsupported control flow affects
+source resolution or source-relevant lowering.
+
+Acceptance:
+
+- An unsupported condition with no reachable source sites compiles and renders
+  unchanged.
+- If a source-free unsupported branch mutates variables, cwd, shell options,
+  arrays, or functions that a later source site needs exactly, the later source
+  site still fails closed with a source-relevant diagnostic.
+- Branch bodies with no source sites are not evaluated for lint-like validity.
+- The pinned bash-completion `completions/cd` executable case is promoted from
+  unsupported to success if the generated artifact contains no live source.
+
+Implementation notes:
+
+- Add a source-relevance scan over IR subtrees.
+- For unsupported source-free control flow, keep original text in output and
+  conservatively mark source-relevant state as ambiguous where needed.
+- Preserve current strict behavior when the unsupported construct contains or
+  guards a source site.
+
+## Tranche 2: Exact Source Conditions
+
+Support simple source commands used directly as `if` conditions:
+
+```bash
+if source ./dep.sh; then
+  echo loaded
+fi
+
+if ! source ./dep.sh; then
+  echo failed
+fi
+```
+
+Acceptance:
+
+- `if source FILE [args...]` and `if ! source FILE [args...]` lower in
+  executable mode when the source path and source arguments are exact.
+- Lowering preserves Bash status, parent-visible sourced state, `return` from
+  sourced files, and subsequent branch execution.
+- Context mode annotates the source relationship without claiming runtime
+  parity.
+- The generated executable contains no live source command for the lowered
+  condition.
+- Compound conditions, pipelines, command substitutions, multiple source
+  conditions, and mixed arbitrary predicates remain fail-closed unless a later
+  tranche explicitly models them.
+
+Implementation notes:
+
+- Reuse existing source-site rendering and sourced-file return wrappers.
+- Treat the lowered source condition as a status-producing same-shell block.
+- Keep exact diagnostics for unsupported source expressions and arguments.
+
+## Tranche 3: Practical Guard Predicate Expansion
+
+Add a small predicate subset that directly gates source sites and is common in
+shell-heavy projects.
+
+Candidate predicates:
+
+- `[ -f ./plugins/*.sh ]`, `[ -r FILE ]`, and `test -f FILE` when the file or
+  glob result is exact.
+- `shopt -q OPTION` for known shell options when the option state is exact.
+- Existing safe `grep -q` style predicates should remain covered and should not
+  be broadened to arbitrary command execution.
+
+Acceptance:
+
+- Guarded source branches with exact file/glob predicates lower correctly.
+- Unknown or multi-result predicate state remains fail-closed when it gates a
+  source site.
+- Source-free guard predicates can pass through under Tranche 1.
+
+## Real-World And Review
+
+Each tranche should have synthetic Bash parity tests first, then real-world
+promotion where applicable.
+
+Required checks:
+
+- `python -m unittest -v`
+- `MODASHC_REALWORLD=1` pinned corpus
+- `MODASHC_REALWORLD=1 MODASHC_REALWORLD_RUNTIME=1` runtime parity probes
+- generated executable artifact scan for live `source` commands
+- manual/LLM artifact spot-check for promoted real-world outputs
+
+Expected real-world movement:
+
+- Promote bash-completion `completions/cd` executable from unsupported to
+  success if Tranche 1 proves it is source-free from modashc's dependency
+  perspective.
+- Add one controlled fixture for direct `if ! source ./dep.sh; then`.
+- Keep top-level `bash_completion` timeouts as performance triage unless a
+  small profiling pass identifies an obvious non-invasive fix.
+
+## Later Work
+
+Runtime source discovery with xtrace remains a later 0.5-class feature. This
+iteration should make the static compiler more precise before introducing any
+runtime-observed supplement generation.

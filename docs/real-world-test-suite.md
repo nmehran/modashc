@@ -210,8 +210,10 @@ generation:
 
 Promoted findings so far:
 
-- `completions/cd` executable mode reports `if shopt -q cdable_vars; then` as
-  an explicit unsupported contract.
+- `completions/cd` executable mode currently reports
+  `if shopt -q cdable_vars; then` as an explicit unsupported contract. The next
+  planned control-flow iteration should promote this to success if the condition
+  is source-free from modashc's dependency perspective.
 - pacman/makepkg artifacts exposed that `if ! source "$@"; then` must be
   handled through exact helper argument binding and retained helper dispatch.
   The fixture-backed `source_safe` wrapper succeeds, and supplement-backed raw
@@ -440,5 +442,6 @@ Items 1 through 6 are implemented for the initial local smoke,
 enforcement, retained artifacts for successful pinned runs, supplement-backed
 pacman success expectations, direct glob source-argument fixtures,
 wrapped-source positional mutation fixtures, multiple safe runtime parity
-probes, and opt-in human-readable reports are also implemented. Broader runtime
-discovery and dynamic tracing remain deferred.
+probes, and opt-in human-readable reports are also implemented. Source-relevant
+control-flow boundary work is planned next; broader runtime discovery and
+dynamic tracing remain deferred.
