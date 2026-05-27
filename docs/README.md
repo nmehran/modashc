@@ -16,6 +16,9 @@ keep only in code comments or tests.
 - [Retained Helper Dispatch](retained-helper-dispatch.md):
   supplement-backed source helper definitions that remain callable in merged
   executable output.
+- [Source Argument Semantics Completion](source-argument-semantics.md):
+  planned static iteration for direct multi-match source globs, wrapped
+  positional mutation lowering, and real-world/runtime promotion.
 - [Real-World Internal Test Suite](real-world-test-suite.md):
   opt-in corpus, supplement fixture, artifact, and runtime parity probes
   workflow.

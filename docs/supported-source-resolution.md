@@ -276,7 +276,10 @@ multi-result command-substitution output where a single source path is required.
 
 The remaining source-resolution surface is narrower than general Bash support:
 
-- Direct source glob multi-match argument semantics.
+- Direct source glob multi-match argument semantics and wrapped-source
+  positional mutation lowering are the next planned static source-argument
+  iteration; see
+  [Source Argument Semantics Completion](source-argument-semantics.md).
 - Broader source guards, including more command predicates and glob-bearing
   file tests.
 - `extglob` and full Bash edge semantics for `GLOBIGNORE`.

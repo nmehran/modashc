@@ -438,4 +438,7 @@ Items 1 through 6 are implemented for the initial local smoke,
 enforcement, retained artifacts for successful pinned runs, supplement-backed
 pacman success expectations, multiple safe runtime parity probes, and opt-in
 human-readable reports are also implemented. Broader runtime discovery and
-dynamic tracing remain deferred.
+dynamic tracing remain deferred. The next planned real-world expansion is part
+of [Source Argument Semantics Completion](source-argument-semantics.md): direct
+multi-match source glob arguments and wrapped-source positional mutation
+fixtures.

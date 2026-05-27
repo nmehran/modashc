@@ -558,6 +558,8 @@ scope:
   same-shell wrapper so include guards and source status are preserved.
 - Wrapped sourced files that mutate caller positionals with top-level `set --`
   or `shift` fail closed until direct positional-mutation lowering is modeled.
+- The next planned static source-argument iteration is formalized in
+  [Source Argument Semantics Completion](source-argument-semantics.md).
 - Executable mode fails before output when unsupported source forms would leave
   live runtime `source` commands.
 
