@@ -24,6 +24,7 @@ from methods.source_effects import (
     SourceSite,
     WhileLoop,
 )
+from methods.source_patterns import extglob_operator_at
 from methods.source_resolver import (
     contains_source_command,
     contains_nested_source_command,
@@ -823,7 +824,7 @@ class LineParserFrontend:
 
     @staticmethod
     def _split_case_arm_header(command: str):
-        pattern_end = LineParserFrontend._unquoted_index(command, ")")
+        pattern_end = LineParserFrontend._case_pattern_end(command)
         if pattern_end <= 0:
             return None
 
@@ -833,10 +834,132 @@ class LineParserFrontend:
         if not pattern_text:
             return None
 
-        patterns = tuple(part.strip() for part in LineParserFrontend._split_unquoted(pattern_text, "|") if part.strip())
+        patterns = tuple(part.strip() for part in LineParserFrontend._split_case_patterns(pattern_text) if part.strip())
         if not patterns:
             return None
         return patterns, command[pattern_end + 1:].strip()
+
+    @staticmethod
+    def _case_pattern_end(command: str):
+        in_single_quote = False
+        in_double_quote = False
+        escaped = False
+        bracket_depth = 0
+        extglob_depth = 0
+        index = 0
+
+        while index < len(command):
+            char = command[index]
+            if escaped:
+                escaped = False
+                index += 1
+                continue
+
+            if char == "\\" and not in_single_quote:
+                escaped = True
+                index += 1
+                continue
+
+            if char == "'" and not in_double_quote:
+                in_single_quote = not in_single_quote
+                index += 1
+                continue
+
+            if char == '"' and not in_single_quote:
+                in_double_quote = not in_double_quote
+                index += 1
+                continue
+
+            if in_single_quote or in_double_quote:
+                index += 1
+                continue
+
+            if char == "[":
+                bracket_depth += 1
+                index += 1
+                continue
+            if char == "]" and bracket_depth:
+                bracket_depth -= 1
+                index += 1
+                continue
+
+            if bracket_depth == 0 and extglob_operator_at(command, index) is not None:
+                extglob_depth += 1
+                index += 2
+                continue
+
+            if char == ")" and bracket_depth == 0:
+                if extglob_depth:
+                    extglob_depth -= 1
+                    index += 1
+                    continue
+                return index
+
+            index += 1
+
+        return -1
+
+    @staticmethod
+    def _split_case_patterns(text: str):
+        parts = []
+        current = []
+        in_single_quote = False
+        in_double_quote = False
+        escaped = False
+        bracket_depth = 0
+        extglob_depth = 0
+        index = 0
+
+        while index < len(text):
+            char = text[index]
+            if escaped:
+                current.append(char)
+                escaped = False
+                index += 1
+                continue
+
+            if char == "\\" and not in_single_quote:
+                current.append(char)
+                escaped = True
+                index += 1
+                continue
+
+            if char == "'" and not in_double_quote:
+                in_single_quote = not in_single_quote
+                current.append(char)
+                index += 1
+                continue
+
+            if char == '"' and not in_single_quote:
+                in_double_quote = not in_double_quote
+                current.append(char)
+                index += 1
+                continue
+
+            if not in_single_quote and not in_double_quote:
+                if char == "[":
+                    bracket_depth += 1
+                elif char == "]" and bracket_depth:
+                    bracket_depth -= 1
+                elif bracket_depth == 0 and extglob_operator_at(text, index) is not None:
+                    extglob_depth += 1
+                    current.append(char)
+                    current.append("(")
+                    index += 2
+                    continue
+                elif char == ")" and bracket_depth == 0 and extglob_depth:
+                    extglob_depth -= 1
+                elif char == "|" and bracket_depth == 0 and extglob_depth == 0:
+                    parts.append("".join(current))
+                    current = []
+                    index += 1
+                    continue
+
+            current.append(char)
+            index += 1
+
+        parts.append("".join(current))
+        return parts
 
     @staticmethod
     def _split_unquoted(text: str, separator: str):

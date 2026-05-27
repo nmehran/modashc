@@ -26,6 +26,14 @@ def shell_pattern_regex_source(pattern: str, *, extglob: bool = False):
     return _translate_pattern(pattern, extglob=extglob)
 
 
+def read_extglob_body(pattern: str, body_start: int):
+    return _read_extglob_body(pattern, body_start)
+
+
+def split_extglob_alternatives(body: str):
+    return _split_extglob_alternatives(body)
+
+
 def _translate_pattern(pattern: str, *, extglob: bool):
     output = []
     index = 0

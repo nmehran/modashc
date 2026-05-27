@@ -68,8 +68,8 @@ The intended approach is captured in the
   bounded `while` / `until`, and modeled `while read` file enumeration from
   exact files and safe producers
 - Remaining glob/source-argument semantics: source arguments requiring word
-  splitting. Pattern semantics are scoped in
-  [Source Pattern Semantics Completion](source-pattern-semantics.md).
+  splitting, plus missing-source runtime-error lowering for unmatched or
+  all-ignored source-producing globs
 - Broader source guard predicates and remaining case edge semantics outside
   deterministic pattern completion
 - Runtime-dynamic source dispatch, recursive source-bearing functions,

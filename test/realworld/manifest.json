@@ -237,6 +237,34 @@
         {
           "source": "pacman/child-shell-target.sh",
           "path": ".modashc-fixtures/child-shell-target.sh"
+        },
+        {
+          "source": "pacman/pattern-semantics-wrapper.sh",
+          "path": ".modashc-fixtures/pattern-semantics-wrapper.sh"
+        },
+        {
+          "source": "pacman/pattern-fixtures/core.sh",
+          "path": ".modashc-fixtures/pattern-fixtures/core.sh"
+        },
+        {
+          "source": "pacman/pattern-fixtures/extra.sh",
+          "path": ".modashc-fixtures/pattern-fixtures/extra.sh"
+        },
+        {
+          "source": "pacman/pattern-fixtures/skip.sh",
+          "path": ".modashc-fixtures/pattern-fixtures/skip.sh"
+        },
+        {
+          "source": "pacman/pattern-fixtures/case.sh",
+          "path": ".modashc-fixtures/pattern-fixtures/case.sh"
+        },
+        {
+          "source": "pacman/pattern-fixtures/predicate.sh",
+          "path": ".modashc-fixtures/pattern-fixtures/predicate.sh"
+        },
+        {
+          "source": "pacman/pattern-fixtures/guard.sh",
+          "path": ".modashc-fixtures/pattern-fixtures/guard.sh"
         }
       ],
       "entrypoints": [
@@ -476,6 +504,21 @@
         },
         {
           "path": ".modashc-fixtures/compound-fallback-wrapper.sh",
+          "modes": {
+            "context": {
+              "expected": "success"
+            },
+            "executable": {
+              "expected": "success"
+            }
+          },
+          "runtime": {
+            "expected": "match",
+            "cwd": ".modashc-fixtures"
+          }
+        },
+        {
+          "path": ".modashc-fixtures/pattern-semantics-wrapper.sh",
           "modes": {
             "context": {
               "expected": "success"

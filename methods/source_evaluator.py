@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import ast
 import copy
-import glob
 import os
 import re
 from collections import Counter
 from dataclasses import dataclass, field, replace
-from fnmatch import fnmatch, fnmatchcase
+from fnmatch import fnmatch
 from pathlib import Path
 
 from methods.shell_line import get_commands
@@ -35,6 +34,13 @@ from methods.source_effects import (
     WhileLoop,
 )
 from methods.source_frontend import LineParserFrontend, ParserFrontend
+from methods.source_patterns import (
+    UnsupportedPatternError,
+    extglob_operator_at,
+    read_extglob_body,
+    shell_pattern_matches,
+    split_extglob_alternatives,
+)
 from methods.source_resolver import (
     ResolvedSource,
     UnsupportedSourceError,
@@ -2723,11 +2729,11 @@ class SourceEvaluator:
                 code="unsupported.source.case-pattern",
                 hint="Use literal case patterns in the modeled subset.",
             )
-        if any(contains_unquoted_token(stripped_pattern, token) for token in {"@(", "!(", "+(", "?(", "*("}):
+        if has_unquoted_extglob(stripped_pattern) and "extglob" not in state.glob_options:
             raise UnsupportedSourceError(
-                f"unsupported extglob case pattern: {stripped_pattern}",
+                f"unsupported disabled extglob case pattern: {stripped_pattern}",
                 code="unsupported.source.case-pattern",
-                hint="Extglob case patterns need explicit shell-option semantics.",
+                hint="Enable extglob exactly before source-bearing case patterns that use extglob syntax.",
             )
         self._case_pattern_regex(stripped_pattern, state)
 
@@ -2780,7 +2786,8 @@ class SourceEvaluator:
         return bool(regex.fullmatch(subject_value))
 
     def _case_pattern_regex(self, pattern: str, state: EvaluationState):
-        return re.compile(rf'\A{self._case_pattern_regex_source(pattern, state)}\Z', re.S)
+        flags = re.S | (re.I if "nocasematch" in state.shell_options else 0)
+        return re.compile(rf'\A{self._case_pattern_regex_source(pattern, state)}\Z', flags)
 
     def _case_pattern_regex_source(
         self,
@@ -2789,16 +2796,6 @@ class SourceEvaluator:
         *,
         allow_variables: bool = True,
     ):
-        if not allow_variables and any(
-            self._contains_unescaped_token(pattern, token)
-            for token in {"@(", "!(", "+(", "?(", "*("}
-        ):
-            raise UnsupportedSourceError(
-                f"unsupported extglob case pattern: {pattern}",
-                code="unsupported.source.case-pattern",
-                hint="Extglob case patterns need explicit shell-option semantics.",
-            )
-
         output = []
         in_single_quote = False
         in_double_quote = False
@@ -2851,6 +2848,49 @@ class SourceEvaluator:
                 index += 1
                 continue
 
+            operator = extglob_operator_at(pattern, index)
+            if operator is not None:
+                if "extglob" not in state.glob_options:
+                    raise UnsupportedSourceError(
+                        f"unsupported disabled extglob case pattern: {pattern}",
+                        code="unsupported.source.case-pattern",
+                        hint="Enable extglob exactly before source-bearing case patterns that use extglob syntax.",
+                    )
+                body, group_end = self._case_extglob_body(pattern, index)
+                alternatives = split_extglob_alternatives(body)
+                if not alternatives:
+                    raise UnsupportedSourceError(
+                        f"unsupported empty extglob case pattern: {pattern}",
+                        code="unsupported.source.case-pattern",
+                        hint="Extglob case patterns must have at least one alternative.",
+                    )
+                alternative_sources = [
+                    self._case_pattern_regex_source(
+                        alternative,
+                        state,
+                        allow_variables=allow_variables,
+                    )
+                    for alternative in alternatives
+                ]
+                alternative_group = "|".join(alternative_sources)
+                if operator == "@":
+                    output.append(f"(?:{alternative_group})")
+                elif operator == "?":
+                    output.append(f"(?:(?:{alternative_group}))?")
+                elif operator == "*":
+                    output.append(f"(?:(?:{alternative_group}))*")
+                elif operator == "+":
+                    output.append(f"(?:(?:{alternative_group}))+")
+                elif operator == "!":
+                    rest_source = self._case_pattern_regex_source(
+                        pattern[group_end + 1:],
+                        state,
+                        allow_variables=allow_variables,
+                    )
+                    output.append(f"(?!(?:{alternative_group}){rest_source}\\Z).*?")
+                index = group_end + 1
+                continue
+
             if char == "*":
                 output.append(".*")
                 index += 1
@@ -2877,16 +2917,15 @@ class SourceEvaluator:
         return ''.join(output)
 
     @staticmethod
-    def _contains_unescaped_token(text: str, token: str):
-        index = 0
-        while index < len(text):
-            if text[index] == "\\":
-                index += 2
-                continue
-            if text.startswith(token, index):
-                return True
-            index += 1
-        return False
+    def _case_extglob_body(pattern: str, operator_index: int):
+        try:
+            return read_extglob_body(pattern, operator_index + 2)
+        except UnsupportedPatternError as exc:
+            raise UnsupportedSourceError(
+                f"unsupported extglob case pattern: {pattern} ({exc})",
+                code="unsupported.source.case-pattern",
+                hint="Extglob case patterns must be balanced.",
+            ) from exc
 
     @staticmethod
     def _case_pattern_variable_value(name: str, state: EvaluationState, pattern: str):
@@ -3670,7 +3709,9 @@ class SourceEvaluator:
         condition_kind: str,
     ):
         if operator in CONDITION_UNARY_FILE_OPERATORS:
-            if condition_kind != "double-bracket" and has_unquoted_glob(operand):
+            if condition_kind != "double-bracket" and (
+                has_unquoted_glob(operand) or has_unquoted_extglob(operand)
+            ):
                 return self._evaluate_condition_glob_unary(operator, operand, state, condition)
             path = self._condition_path(operand, state, condition)
             if path is None:
@@ -3701,25 +3742,40 @@ class SourceEvaluator:
             raise UnsupportedSourceError(f"unsupported glob if condition: {condition}")
         if state.ambiguous_cwd or state.ambiguous_shell_options or state.ambiguous_glob_options:
             raise UnsupportedSourceError(f"unsupported branch-dependent glob if condition: {condition}")
-        if "noglob" in state.shell_options or state.glob_options:
-            raise UnsupportedSourceError(f"unsupported shell-option glob if condition: {condition}")
-        if state.runtime_variables.get("GLOBIGNORE") or "GLOBIGNORE" in state.ambiguous_variables:
+        if "GLOBIGNORE" in state.ambiguous_variables:
             raise UnsupportedSourceError(f"unsupported GLOBIGNORE glob if condition: {condition}")
-        if has_unquoted_extglob(operand) or has_unquoted_brace_expansion(operand):
-            raise UnsupportedSourceError(f"unsupported glob if condition: {condition}")
+        if "noglob" in state.shell_options:
+            path = self._condition_path(operand, state, condition)
+            if path is None:
+                return "unknown"
+            result = path.is_file() if operator == "-f" else os.access(path, os.R_OK)
+            return "true" if result else "false"
+        if has_unquoted_brace_expansion(operand):
+            raise UnsupportedSourceError(f"unsupported brace glob if condition: {condition}")
 
         resolved = self._condition_value(operand, state)
         if resolved is None:
             return "unknown"
 
-        pattern = resolved if os.path.isabs(resolved) else str(state.cwd / resolved)
-        matches = sorted(glob.glob(pattern))
+        try:
+            matches = expand_glob_word(resolved, state.resolver_context(), condition, raw_pattern=operand)
+        except UnsupportedSourceError as exc:
+            if "unsupported unmatched source glob" not in str(exc) and "unsupported GLOBIGNORE source pattern" not in str(exc):
+                raise
+            if "nullglob" in state.glob_options:
+                return "true"
+            path = self._condition_path(operand, state, condition)
+            if path is None:
+                return "unknown"
+            result = path.is_file() if operator == "-f" else os.access(path, os.R_OK)
+            return "true" if result else "false"
+
         if not matches:
-            return "false"
+            return "true"
         if len(matches) != 1:
             raise UnsupportedSourceError(f"unsupported multi-match glob if condition: {condition}")
 
-        path = Path(matches[0]).resolve()
+        path = Path(matches[0].path).resolve()
         result = path.is_file() if operator == "-f" else os.access(path, os.R_OK)
         return "true" if result else "false"
 
@@ -3741,9 +3797,20 @@ class SourceEvaluator:
             if left is None or right is None:
                 return "unknown"
             if is_double_bracket and self._condition_rhs_is_pattern(right_token, right):
-                result = fnmatchcase(left, right)
+                try:
+                    result = shell_pattern_matches(
+                        right,
+                        left,
+                        extglob=True,
+                        nocase="nocasematch" in state.shell_options,
+                    )
+                except UnsupportedPatternError as exc:
+                    raise UnsupportedSourceError(f"unsupported pattern if condition: {condition} ({exc})") from exc
             else:
-                result = left == right
+                if is_double_bracket and "nocasematch" in state.shell_options:
+                    result = left.lower() == right.lower()
+                else:
+                    result = left == right
             if operator == "!=":
                 result = not result
             return "true" if result else "false"
@@ -3772,11 +3839,11 @@ class SourceEvaluator:
 
     @staticmethod
     def _condition_rhs_is_pattern(raw_token: str, resolved_value: str):
-        if has_unquoted_glob(raw_token):
+        if has_unquoted_glob(raw_token) or has_unquoted_extglob(raw_token):
             return True
         if SourceEvaluator._raw_word_is_single_quoted(raw_token) or SourceEvaluator._raw_word_is_double_quoted(raw_token):
             return False
-        return has_unquoted_glob(resolved_value)
+        return has_unquoted_glob(resolved_value) or has_unquoted_extglob(resolved_value)
 
     @staticmethod
     def _condition_and(left: str, right: str):

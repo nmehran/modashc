@@ -2,7 +2,7 @@
 
 ## Status
 
-Planned on the `iteration/source-pattern-semantics` development branch.
+Implemented on the `iteration/source-pattern-semantics` development branch.
 
 This iteration stays static. It does not run Bash, collect xtrace output,
 discover runtime source paths, or broaden arbitrary shell validation. The goal
@@ -10,7 +10,7 @@ is to close the remaining deterministic pattern surface that affects source
 resolution: pathname expansion, `GLOBIGNORE`, `extglob`, and modeled
 case/predicate pattern matching.
 
-## What Remains
+## Starting Gaps
 
 After source-argument, control-flow, retained-helper, and child-shell work, the
 largest static gaps are:
@@ -25,6 +25,20 @@ largest static gaps are:
 This iteration takes the deterministic pattern family. Recursive dispatch and
 xtrace/runtime discovery remain separate later work because they require
 runtime input or broader execution modeling.
+
+## Implemented Scope
+
+- Condition evaluation now distinguishes pathname expansion, single-bracket
+  argv semantics, double-bracket literal file tests, and pattern matching.
+- Exact `extglob` pathname expansion is supported for direct source globs,
+  loop word globs, command word-list path operands, and exact source guards.
+- Exact `GLOBIGNORE` filtering supports colon-separated pattern lists,
+  extglob-aware ignore patterns, empty/null values, and dotfile side effects
+  for accepted source-producing patterns.
+- Modeled `case` arms and `[[ string == pattern ]]` predicates support the
+  deterministic pattern subset, including extglob where Bash permits it.
+- A pacman real-world fixture exercises extglob loops, GLOBIGNORE filtering,
+  extglob case arms, double-bracket pattern matching, and source guards.
 
 ## Semantics Contract
 
@@ -122,8 +136,9 @@ Acceptance:
 - `nullglob`, `failglob`, `dotglob`, `globstar`, `nocaseglob`, `set -f`, and
   `GLOBIGNORE` interactions are tested together for accepted and rejected
   source sites.
-- All-ignored direct source globs preserve Bash behavior rather than using the
-  current conservative rejection once the exact behavior is modeled.
+- All-ignored direct source globs remain fail-closed when preserving behavior
+  would require lowering Bash's missing-source runtime error without leaving a
+  live `source` command.
 
 Reject:
 
@@ -203,3 +218,5 @@ Reject:
 - xtrace/runtime source discovery and supplement generation
 - full parser replacement for unsupported shell grammar
 - broad source argument word splitting
+- missing-source runtime-error lowering for unmatched or all-ignored
+  source-producing globs

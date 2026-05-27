@@ -474,8 +474,8 @@ These still need separate specs before implementation:
 - Broader glob semantics beyond ordinary deterministic file globs.
 - Static evaluation of conditional predicates outside the modeled
   side-effect-free subset.
-- Remaining case edge semantics such as `extglob` patterns, collating symbols,
-  equivalence classes, and broader locale-dependent pattern behavior. See
+- Remaining case edge semantics such as collating symbols, equivalence
+  classes, and broader locale-dependent pattern behavior. See
   [Source Pattern Semantics Completion](source-pattern-semantics.md).
 - Complex array/list-based source paths outside exact indexed, associative,
   append, command-substitution, and file-populated arrays.

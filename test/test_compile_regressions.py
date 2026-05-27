@@ -747,6 +747,8 @@ class CompileRegressionTestCase(unittest.TestCase):
             project.write("fallback.sh", 'echo "fallback dep"\n')
             project.write("mismatch.sh", 'echo "should not be inlined"\n')
             project.write("variable-pattern.sh", 'echo "variable pattern dep"\n')
+            project.write("extglob-pattern.sh", 'echo "extglob pattern dep"\n')
+            project.write("nocasematch.sh", 'echo "nocasematch dep"\n')
             project.write("main.sh", textwrap.dedent("""\
                 LOAD_DEP=1
                 MODE=prod-eu
@@ -762,6 +764,13 @@ class CompileRegressionTestCase(unittest.TestCase):
                 fi
                 if [[ "$MODE" == $PATTERN ]]; then
                   source ./variable-pattern.sh
+                fi
+                if [[ "$MODE" == @(prod-eu|stage) ]]; then
+                  source ./extglob-pattern.sh
+                fi
+                shopt -s nocasematch
+                if [[ "$MODE" == PROD-EU ]]; then
+                  source ./nocasematch.sh
                 fi
                 echo "main"
                 """))
@@ -996,6 +1005,43 @@ class CompileRegressionTestCase(unittest.TestCase):
                 textwrap.dedent("""\
                     ENV=prod-eu
                     PATTERN='prod-*'
+                    case "$ENV" in
+                      $PATTERN) source ./prod.sh ;;
+                      *) source ./missing-default.sh ;;
+                    esac
+                    echo "main"
+                """),
+                None,
+            ),
+            "extglob pattern": (
+                textwrap.dedent("""\
+                    shopt -s extglob
+                    ENV=prod
+                    case "$ENV" in
+                      @(prod|stage)) source ./prod.sh ;;
+                      *) source ./missing-default.sh ;;
+                    esac
+                    echo "main"
+                    """),
+                None,
+            ),
+            "negative extglob pattern": (
+                textwrap.dedent("""\
+                    shopt -s extglob
+                    ENV=qa
+                    case "$ENV" in
+                      !(prod|stage)) source ./default.sh ;;
+                      *) source ./missing-default.sh ;;
+                    esac
+                    echo "main"
+                    """),
+                None,
+            ),
+            "variable extglob pattern": (
+                textwrap.dedent("""\
+                    shopt -s extglob
+                    ENV=stage
+                    PATTERN="@(prod|stage)"
                     case "$ENV" in
                       $PATTERN) source ./prod.sh ;;
                       *) source ./missing-default.sh ;;
@@ -2807,12 +2853,12 @@ class CompileRegressionTestCase(unittest.TestCase):
                 'case "$ENV" in\n  prod) COMMAND="source ./prod.sh"; eval "$COMMAND" ;;\nesac\n',
                 'eval "$COMMAND"',
             ),
-            "case extglob pattern": (
+            "case disabled extglob pattern": (
                 'ENV=prod\ncase "$ENV" in\n  @(prod|stage)) source ./prod.sh ;;\nesac\n',
                 'case "$ENV" in',
             ),
-            "case variable extglob pattern": (
-                'shopt -s extglob\nENV=prod\nPATTERN="@(prod|stage)"\ncase "$ENV" in\n  $PATTERN) source ./prod.sh ;;\nesac\n',
+            "case disabled variable extglob pattern": (
+                'ENV=prod\nPATTERN="@(prod|stage)"\ncase "$ENV" in\n  $PATTERN) source ./prod.sh ;;\nesac\n',
                 'case "$ENV" in',
             ),
             "backtick substitution source": (
@@ -3127,6 +3173,27 @@ class CompileRegressionTestCase(unittest.TestCase):
                 """))
 
             project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("plugins/core.sh", 'echo "core plugin"\n')
+            project.write("plugins/extra.sh", 'echo "unexpected extra plugin"\n')
+            project.write("dep.sh", 'echo "extglob guard dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                shopt -s extglob
+                GLOBIGNORE=./plugins/extra.sh
+                if [ -f ./plugins/@(core|extra).sh ]; then
+                  source ./dep.sh
+                fi
+                """))
+
+            output = project.compile("main.sh", mode="executable")
+            expected = project.run("main.sh", env={"LC_ALL": "C"})
+            actual = project.run(output, env={"LC_ALL": "C"})
+            compiled_content = output.read_text()
+
+        self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
+        self.assertEqual(actual.stdout, expected.stdout)
+        self.assertIn("extglob guard dep", compiled_content)
 
         with ScriptProject() as project:
             project.write("dep.sh", 'echo "dep"\n')
