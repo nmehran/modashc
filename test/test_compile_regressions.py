@@ -99,6 +99,21 @@ class CompileRegressionTestCase(unittest.TestCase):
                 if "parent:" in main_content:
                     self.assertIn("${VALUE-unset}", compiled)
 
+    def test_long_leading_pipeline_source_arguments_match_bash(self):
+        with ScriptProject() as project:
+            project.write("child-shell-target.sh", 'VALUE="${1-default}"\nprintf "dep:%s\\n" "$VALUE"\n')
+            project.write("unset.sh", 'printf "followup:unset\\n"\n')
+            project.write(
+                "main.sh",
+                "source ./child-shell-target.sh pipeline | sed 's/^/pipe:/'\n"
+                'printf "parent:%s\\n" "${VALUE-unset}"\n'
+                'source "./${VALUE-unset}.sh"\n',
+            )
+
+            project.assert_compiled_matches(self, "main.sh")
+            compiled = project.path("compiled.sh").read_text()
+            self.assertNotIn("source ./child-shell-target.sh", compiled)
+
     def test_final_pipeline_segment_source_remains_fail_closed(self):
         with ScriptProject() as project:
             project.write("dep.sh", 'echo "dep"\n')
@@ -111,6 +126,47 @@ class CompileRegressionTestCase(unittest.TestCase):
         self.assertIsNotNone(cm.exception.diagnostic)
         self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.child-shell")
         self.assertFalse(output.exists())
+
+    def test_process_substitution_and_bash_c_source_lowering_matches_bash(self):
+        cases = {
+            "process substitution": 'cat <(source ./dep.sh; printf "child:%s\\n" "$VALUE")\nprintf "parent:%s\\n" "${VALUE-unset}"\n',
+            "process substitution args": 'cat <(source ./dep.sh alpha; printf "child:%s\\n" "$VALUE")\n',
+            "bash c double quoted": 'bash -c "source ./dep.sh; printf \\"child:double\\\\n\\""\nprintf "parent:%s\\n" "${VALUE-unset}"\n',
+            "bash c single quoted": "bash -c 'source ./dep.sh; printf \"child:%s\\n\" \"$VALUE\"'\nprintf \"parent:%s\\n\" \"${VALUE-unset}\"\n",
+            "bash c env prefix": "CHILD_ENV=exact bash -c 'source ./dep.sh; printf \"env:%s\\n\" \"$CHILD_ENV\"'\n",
+        }
+
+        for name, main_content in cases.items():
+            with self.subTest(name=name), ScriptProject() as project:
+                project.write("dep.sh", 'VALUE="${1-default}:${2-none}"\nprintf "dep:%s\\n" "$VALUE"\n')
+                project.write("main.sh", main_content)
+
+                project.assert_compiled_matches(self, "main.sh")
+                compiled = project.path("compiled.sh").read_text()
+                self.assertNotIn("source ./dep.sh", compiled)
+                if name == "bash c env prefix":
+                    self.assertIn("CHILD_ENV=exact bash -c", compiled)
+                if "parent:" in main_content:
+                    self.assertIn("${VALUE-unset}", compiled)
+
+    def test_dynamic_bash_c_source_remains_fail_closed(self):
+        cases = {
+            "dynamic source path": 'DEP=./dep.sh\nbash -c "source $DEP"\n',
+            "parent expanded payload": 'bash -c "source ./dep.sh; echo $VALUE"\n',
+        }
+
+        for name, main_content in cases.items():
+            with self.subTest(name=name), ScriptProject() as project:
+                project.write("dep.sh", 'echo "dep"\n')
+                project.write("main.sh", main_content)
+                output = project.path("compiled.sh")
+
+                with self.assertRaisesRegex(NotImplementedError, "bash -c|dynamic|parent-expanded") as cm:
+                    project.compile("main.sh", output=output, mode="executable")
+
+            self.assertIsNotNone(cm.exception.diagnostic)
+            self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.child-shell")
+            self.assertFalse(output.exists())
 
     def test_absolute_dependency_forms_match_bash(self):
         with ScriptProject() as project:
@@ -2674,10 +2730,6 @@ class CompileRegressionTestCase(unittest.TestCase):
                 'shopt -s extglob\nENV=prod\nPATTERN="@(prod|stage)"\ncase "$ENV" in\n  $PATTERN) source ./prod.sh ;;\nesac\n',
                 'case "$ENV" in',
             ),
-            "process substitution source": (
-                'cat <(source ./dep.sh)\n',
-                'cat <(source ./dep.sh)',
-            ),
             "backtick substitution source": (
                 'echo `source ./dep.sh`\n',
                 'echo `source ./dep.sh`',
@@ -3933,17 +3985,15 @@ class CompileRegressionTestCase(unittest.TestCase):
                 self.assertTrue(cm.exception.diagnostic.code.startswith("unsupported.source."))
                 self.assertFalse(output.exists())
 
-    def test_bash_c_source_is_rejected_for_executable_mode(self):
+    def test_bash_c_source_is_lowered_for_executable_mode(self):
         with ScriptProject() as project:
             project.write("dep.sh", 'echo "dep"\n')
             project.write("main.sh", 'bash -c "source ./dep.sh"\n')
 
-            with self.assertRaisesRegex(NotImplementedError, "child-shell|unsupported") as cm:
-                project.compile("main.sh", mode="executable")
+            result = project.run(project.compile("main.sh", mode="executable"))
 
-        self.assertIsNotNone(cm.exception.diagnostic)
-        self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.command-resolution")
-        self.assertEqual(cm.exception.diagnostic.fragment, 'bash -c "source ./dep.sh"')
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(result.stdout, "dep\n")
 
 
 if __name__ == "__main__":

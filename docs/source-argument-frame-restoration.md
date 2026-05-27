@@ -70,7 +70,8 @@ source returns. The compiler now models those exact static cases.
 ## Non-Goals
 
 - Do not model source commands in pipelines, subshells, command substitutions,
-  process substitutions, or `bash -c`.
+  process substitutions, or `bash -c` in this iteration. That follow-up is
+  covered by [Source-Bearing Child-Shell Contexts](source-child-shell-contexts.md).
 - Do not add broad word splitting for source arguments.
 - Do not support runtime-dynamic or recursive source dispatch.
 - Do not add xtrace, sandboxing, runtime-observed supplements, or shell
@@ -163,11 +164,10 @@ Acceptance:
 - generated real-world artifacts receive the manual/LLM spot-check pass.
 - `git diff --check` passes.
 
-## Deferred After This Iteration
+## Follow-Up After This Iteration
 
-- source-bearing child-shell contexts: subshells, pipelines, command
-  substitutions, process substitutions, and `bash -c`; see
-  [Source-Bearing Child-Shell Contexts](source-child-shell-contexts.md)
+- Source-bearing child-shell contexts were implemented separately; see
+  [Source-Bearing Child-Shell Contexts](source-child-shell-contexts.md).
 - `extglob`, full `GLOBIGNORE`, collating symbols, equivalence classes, and
   broader locale-dependent pattern behavior
 - recursive or runtime-dynamic source-bearing function dispatch

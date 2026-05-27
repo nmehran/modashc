@@ -393,6 +393,8 @@ class ChildShellSourceCommand:
     source_site: str
     column: int
     replacement_kind: str = "source"
+    resolve_source_site: str | None = None
+    source_value: str | None = None
 
 
 @dataclass(frozen=True)
@@ -4582,7 +4584,7 @@ class SourceEvaluator:
             context_state = context_states.setdefault(source_command.context_id, state.child_shell_copy())
             source_node = SourceSite(
                 location=SourceLocation(node.location.path, node.location.line, source_command.column),
-                text=source_command.source_site,
+                text=source_command.resolve_source_site or source_command.source_site,
                 command_name=source_command.command_name,
                 source_expression=source_command.source_expression,
             )
@@ -4599,7 +4601,7 @@ class SourceEvaluator:
                 ExecutionModel.CHILD_SHELL,
                 source_command.replacement_kind,
                 context_state,
-                source_value=source_value,
+                source_value=source_command.source_value or source_value,
                 source_arguments=source_arguments,
             )
             context_state.last_status, sync_positionals = self._evaluate_sourced_file(
@@ -4654,6 +4656,8 @@ class SourceEvaluator:
         return (
             *cls._subshell_source_commands(command),
             *cls._command_substitution_source_commands(command),
+            *cls._process_substitution_source_commands(command),
+            *cls._bash_c_source_commands(command),
             *cls._pipeline_source_commands(command),
         )
 
@@ -4678,6 +4682,70 @@ class SourceEvaluator:
                 ("command-substitution", context_index),
             ))
         return tuple(commands)
+
+    @classmethod
+    def _process_substitution_source_commands(cls, command: str):
+        commands = []
+        for body, body_start, context_index in cls._process_substitution_bodies(command):
+            commands.extend(cls._direct_source_commands_in_body(
+                body,
+                body_start,
+                ("process-substitution", context_index),
+            ))
+        return tuple(commands)
+
+    @classmethod
+    def _bash_c_source_commands(cls, command: str):
+        try:
+            words = parse_shell_words_preserving_quotes(command.strip())
+        except UnsupportedSourceError:
+            return ()
+        if not words:
+            return ()
+
+        index = 0
+        while index < len(words) and ASSIGNMENT_WORD_PATTERN.match(words[index]):
+            index += 1
+        if index + 2 >= len(words):
+            return ()
+
+        command_name = strip_shell_word_quotes(words[index])
+        if command_name not in {"bash", "/bin/bash", "/usr/bin/bash"} or words[index + 1] != "-c":
+            return ()
+
+        if len(words) != index + 3:
+            if any("source" in strip_shell_word_quotes(word) for word in words[index + 2:]):
+                raise UnsupportedSourceError("unsupported bash -c source arguments")
+            return ()
+
+        payload_word = words[index + 2]
+        if payload_word.startswith('"') and "$" in payload_word:
+            raise UnsupportedSourceError("unsupported parent-expanded bash -c payload")
+
+        payload = strip_shell_word_quotes(payload_word)
+        source_commands = cls._direct_source_commands_in_body(payload, 0, ("bash-c", 1))
+        if not source_commands:
+            return ()
+        if len(source_commands) != 1:
+            raise UnsupportedSourceError("unsupported multi-source bash -c payload")
+
+        source_command = source_commands[0]
+        if re.search(r'[$`*?\[]', source_command.source_expression):
+            raise UnsupportedSourceError("unsupported dynamic bash -c source expression")
+
+        command_start = command.find(words[index])
+        if command_start < 0:
+            command_start = 0
+        return (ChildShellSourceCommand(
+            context_id=("bash-c", 1),
+            command_name=source_command.command_name,
+            source_expression=source_command.source_expression,
+            source_site=command.strip(),
+            column=command_start + 1,
+            replacement_kind="bash-c-source",
+            resolve_source_site=source_command.source_site,
+            source_value=source_command.source_site,
+        ),)
 
     @classmethod
     def _pipeline_source_commands(cls, command: str):
@@ -4793,6 +4861,52 @@ class SourceEvaluator:
                 continue
 
             if command.startswith("$(", index):
+                body, end_index = cls._read_balanced_body(command, index + 2)
+                if end_index is None:
+                    index += 2
+                    continue
+                context_index += 1
+                yield body, index + 2, context_index
+                index = end_index + 1
+                continue
+
+            index += 1
+
+    @classmethod
+    def _process_substitution_bodies(cls, command: str):
+        in_single_quote = False
+        in_double_quote = False
+        escaped = False
+        index = 0
+        context_index = 0
+
+        while index < len(command):
+            char = command[index]
+            if escaped:
+                escaped = False
+                index += 1
+                continue
+
+            if char == "\\" and not in_single_quote:
+                escaped = True
+                index += 1
+                continue
+
+            if char == "'" and not in_double_quote:
+                in_single_quote = not in_single_quote
+                index += 1
+                continue
+
+            if char == '"' and not in_single_quote:
+                in_double_quote = not in_double_quote
+                index += 1
+                continue
+
+            if in_single_quote or in_double_quote:
+                index += 1
+                continue
+
+            if command.startswith("<(", index) or command.startswith(">(", index):
                 body, end_index = cls._read_balanced_body(command, index + 2)
                 if end_index is None:
                     index += 2

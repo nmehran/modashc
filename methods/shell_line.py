@@ -109,3 +109,60 @@ def get_commands(line: str):
     append_current_command()
 
     return commands
+
+
+def first_top_level_pipeline_index(line: str):
+    in_single_quote = False
+    in_double_quote = False
+    in_backtick = False
+    escaped = False
+    paren_depth = 0
+    index = 0
+
+    while index < len(line):
+        char = line[index]
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+
+        if char == "\\" and not in_single_quote:
+            escaped = True
+            index += 1
+            continue
+
+        if char == "`" and not in_single_quote:
+            in_backtick = not in_backtick
+            index += 1
+            continue
+
+        if in_backtick:
+            index += 1
+            continue
+
+        if char == "'" and not in_double_quote:
+            in_single_quote = not in_single_quote
+            index += 1
+            continue
+
+        if char == '"' and not in_single_quote:
+            in_double_quote = not in_double_quote
+            index += 1
+            continue
+
+        if not in_single_quote and not in_double_quote:
+            if char == "(":
+                paren_depth += 1
+            elif char == ")" and paren_depth:
+                paren_depth -= 1
+            elif (
+                char == "|"
+                and paren_depth == 0
+                and not line.startswith("||", index)
+                and (index == 0 or line[index - 1] != "|")
+            ):
+                return index
+
+        index += 1
+
+    return None

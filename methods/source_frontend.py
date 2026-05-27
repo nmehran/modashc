@@ -38,7 +38,7 @@ from methods.source_resolver import (
     source_command_index,
     UnsupportedSourceError,
 )
-from methods.shell_line import get_commands
+from methods.shell_line import first_top_level_pipeline_index, get_commands
 
 ARRAY_ASSIGNMENT_PATTERN = re.compile(r'^(?:(declare)\s+(-[aA])\s+)?([a-zA-Z_]\w*)(\+?)=\((.*)\)$')
 ARRAY_INDEX_ASSIGNMENT_PATTERN = re.compile(r'^([a-zA-Z_]\w*)\[([^\]]+)\](\+?)=(.*)$')
@@ -175,32 +175,36 @@ class LineParserFrontend:
         nodes = []
         source_spans = []
 
-        for match in SOURCE_PATTERN.finditer(line):
-            if self._source_match_is_nested_shell(match):
-                continue
-            separator, command_name, arguments = match.groups()
-            if not command_name:
-                continue
+        if first_top_level_pipeline_index(line) is None:
+            for match in SOURCE_PATTERN.finditer(line):
+                if self._source_match_is_nested_shell(match):
+                    continue
+                separator, command_name, arguments = match.groups()
+                if not command_name:
+                    continue
 
-            text = ''.join(part or '' for part in (separator, command_name, arguments)).strip()
-            column = match.start(2) + 1
-            is_control_flow = self._column_in_ranges(column, control_flow_source_ranges)
-            nodes.append(SourceSite(
-                location=SourceLocation(script_path, line_number, column),
-                text=text,
-                command_name=command_name.strip(),
-                source_expression=(arguments or '').strip(),
-                separator=(separator or '').strip(),
-                is_control_flow=is_control_flow,
-            ))
-            source_spans.append(match.span())
+                text = ''.join(part or '' for part in (separator, command_name, arguments)).strip()
+                column = match.start(2) + 1
+                is_control_flow = self._column_in_ranges(column, control_flow_source_ranges)
+                nodes.append(SourceSite(
+                    location=SourceLocation(script_path, line_number, column),
+                    text=text,
+                    command_name=command_name.strip(),
+                    source_expression=(arguments or '').strip(),
+                    separator=(separator or '').strip(),
+                    is_control_flow=is_control_flow,
+                ))
+                source_spans.append(match.span())
 
-        for command in get_commands(line):
+        for command, command_start, command_end in self._commands_with_spans(line):
             if not command:
                 continue
-            if any(command in line[start:end] for start, end in source_spans):
+            if any(self._spans_overlap((command_start, command_end), source_span) for source_span in source_spans):
                 continue
             if contains_source_command(command):
+                if first_top_level_pipeline_index(command) is not None:
+                    nodes.append(self._command_node(script_path, line_number, line, command))
+                    continue
                 nodes.append(self._fallback_source_site(
                     script_path,
                     line_number,
@@ -212,6 +216,25 @@ class LineParserFrontend:
             nodes.append(self._command_node(script_path, line_number, line, command))
 
         return sorted(nodes, key=lambda node: node.location.column)
+
+    @staticmethod
+    def _commands_with_spans(line: str):
+        commands = []
+        search_start = 0
+        for command in get_commands(line):
+            command_start = line.find(command, search_start)
+            if command_start < 0:
+                command_start = line.find(command)
+            if command_start < 0:
+                command_start = 0
+            command_end = command_start + len(command)
+            commands.append((command, command_start, command_end))
+            search_start = command_end
+        return tuple(commands)
+
+    @staticmethod
+    def _spans_overlap(left, right):
+        return left[0] < right[1] and right[0] < left[1]
 
     @staticmethod
     def _source_match_is_nested_shell(match):

@@ -23,7 +23,7 @@ keep only in code comments or tests.
   static lowering for explicit source-argument frame restoration around later
   nested source sites.
 - [Source-Bearing Child-Shell Contexts](source-child-shell-contexts.md):
-  planned static lowering for exact source sites inside subshells, pipeline
+  static lowering for exact source sites inside subshells, pipeline
   segments, command substitutions, process substitutions, and `bash -c`
   boundaries.
 - [Source-Relevant Control Flow Boundaries](source-control-flow-boundaries.md):
@@ -66,9 +66,6 @@ The intended approach is captured in the
   exact files and safe producers
 - Remaining glob/source-argument semantics: `extglob`, source arguments
   requiring word splitting, and full `GLOBIGNORE` edge behavior.
-- Source-bearing child-shell contexts: subshells, pipelines, command
-  substitutions, process substitutions, and `bash -c`. See
-  [Source-Bearing Child-Shell Contexts](source-child-shell-contexts.md).
 - Broader source guard predicates and remaining case edge semantics such as
   `extglob`, collating symbols, and equivalence classes
 - Runtime-dynamic source dispatch, recursive source-bearing functions,

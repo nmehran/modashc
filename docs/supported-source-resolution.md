@@ -70,9 +70,6 @@ For loop word lists and read-loop producers, the supported safe commands are
 Modeled `find` producers preserve Bash/GNU `find` traversal order rather than
 sorting matches.
 
-Context mode can classify `bash -c "source ..."` as child-shell context. It is
-not executable-mode parent-source semantics.
-
 ## Arrays
 
 Supported when indexes and values are exact:
@@ -214,6 +211,32 @@ This covers common include guards:
 LIBRARY_SH=1
 ```
 
+## Child-Shell Source Contexts
+
+Supported exact source sites can be lowered inside child-shell boundaries when
+the compiler can preserve the boundary instead of treating child-local effects
+as parent-visible:
+
+```bash
+( source ./dep.sh; printf '%s\n' "$VALUE" )
+source ./dep.sh | sed 's/^/child:/'
+value="$(source ./dep.sh; printf '%s\n' "$VALUE")"
+cat <(source ./dep.sh; emit_child)
+bash -c 'source ./dep.sh; printf "%s\n" "$VALUE"'
+CHILD_ENV=exact bash -c 'source ./dep.sh; printf "%s\n" "$CHILD_ENV"'
+```
+
+Variables, functions, aliases, cwd, shell options, traps, positional
+parameters, and top-level `return` behavior from these source sites stay inside
+the child shell. Non-final pipeline segments are modeled as child shells.
+Pipeline final segments remain fail-closed because they can depend on
+`lastpipe` and job-control state.
+
+`bash -c` support is deliberately narrow: the payload must be a static
+single-source command string with no extra argv entries, no parent-expanded
+double-quoted `$` references, and no dynamic source expression. Assignment
+prefixes are preserved as environment for the child Bash process.
+
 ## Branches And Cases
 
 Supported branch-aware source lowering includes `if` / `elif` / `else` with
@@ -306,17 +329,18 @@ source "$(find . -name '*.sh')"      # ambiguous when multiple files match
 source "$(cat dep-path.txt | sort)"  # unapproved source-site pipeline
 source `cat dep-path.txt`            # backticks
 eval "source ./dep.sh; echo extra"   # unsafe eval payload
-bash -c "source ./dep.sh"            # child-shell semantics
+bash -c "source $DEP"                # parent-expanded dynamic payload
+printf ready | source ./dep.sh       # lastpipe-sensitive final segment
 ```
 
 Other fail-closed families include unmatched or quoted globs, `extglob`
 patterns, `set -f` / `noglob`, `failglob` unmatched globs, `GLOBIGNORE`
-patterns that remove every source match, source commands in pipelines,
-subshells, command substitutions, process substitutions, or unsupported shell
-grammar, unsupported dynamic `case` subjects or arm patterns, unsupported
-process substitution outside modeled read-loop input, unknown runtime-dynamic
-or recursive function dispatch, non-equivalent branch-defined functions,
-branch-dependent function returns, nested dynamic substitutions, and
+patterns that remove every source match, source commands in unsupported shell
+grammar, final pipeline segments whose semantics depend on `lastpipe`,
+unsupported dynamic `case` subjects or arm patterns, unsupported process
+substitution outside modeled read-loop or child-shell input, unknown
+runtime-dynamic or recursive function dispatch, non-equivalent branch-defined
+functions, branch-dependent function returns, nested dynamic substitutions, and
 multi-result command-substitution output where a single source path is
 required.
 
@@ -324,10 +348,6 @@ required.
 
 The remaining source-resolution surface is narrower than general Bash support:
 
-- Source-bearing child-shell contexts: subshells, pipelines, command
-  substitutions, process substitutions, and `bash -c`. The planned static
-  iteration is scoped in
-  [Source-Bearing Child-Shell Contexts](source-child-shell-contexts.md).
 - `extglob` and full Bash edge semantics for `GLOBIGNORE`.
 - Remaining case edge semantics such as `extglob` patterns, collating symbols,
   equivalence classes, and broader locale-dependent pattern behavior.

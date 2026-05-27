@@ -5,18 +5,21 @@
 Current implementation. The compiler supports static sources,
 variable/env-expanded paths, path command substitutions such as `dirname`,
 `basename`, and `realpath`, plus Python-only dynamic resolvers for safe `cat`,
-safe `find`, safe `eval source`, and context-only `bash -c source`
-classification. The source-effect evaluator also supports exact finite `for`
-loops over literal words, known scalar path variables, exact custom-IFS scalar
-word lists, exact `${array[@]}` expansions, safe command-substitution word
-lists, and deterministic ordinary file globs in finite loop word lists. Exact
-indexed, associative, appended, command-substitution, and file-populated arrays
-are modeled, as are bounded `while` / `until`, C-style `for ((...))`, and
-`while read` file enumeration from exact files, safe producer pipelines, and
-safe process substitutions.
+safe `find`, and safe `eval source`. The source-effect evaluator also supports
+exact finite `for` loops over literal words, known scalar path variables, exact
+custom-IFS scalar word lists, exact `${array[@]}` expansions, safe
+command-substitution word lists, and deterministic ordinary file globs in
+finite loop word lists. Exact indexed, associative, appended,
+command-substitution, and file-populated arrays are modeled, as are bounded
+`while` / `until`, C-style `for ((...))`, and `while read` file enumeration
+from exact files, safe producer pipelines, and safe process substitutions.
 Direct source globs are accepted when they resolve to one or more regular files;
 multi-match direct globs pass the remaining expanded words as source positional
 arguments.
+Exact source sites inside explicit subshells, non-final pipeline segments,
+command substitutions, process substitutions, and static single-source
+`bash -c` payloads are lowered with child-shell semantics when the boundary can
+be preserved exactly.
 Modeled `if` / `elif` / `else` blocks can lower source sites inside branches
 when branch predicates are side-effect-free and branch state is exact enough for
 later source resolution. Executable mode neutralizes source sites in statically
@@ -136,7 +139,7 @@ Resolvers should be tried from most explicit to most specialized:
 5. Safe `find` resolver
 6. Direct one-match glob resolver
 7. Safe `eval source` resolver
-8. Safe `bash -c source` classifier
+8. Exact child-shell source lowering
 9. Exact function-call argument binding
 10. Supplement-backed source resolution
 11. Unsupported dynamic diagnostic
@@ -387,23 +390,31 @@ limit fail before executable output is written.
 Target forms:
 
 ```bash
-bash -c "source ./dep.sh"
+bash -c 'source ./dep.sh; printf "%s\n" "$VALUE"'
 bash -c ". ./dep.sh"
+CHILD_ENV=exact bash -c 'source ./dep.sh; printf "%s\n" "$CHILD_ENV"'
 ```
 
 This is not equivalent to parent-shell `source`. The sourced file executes in a
 child Bash process, so variable and directory side effects do not propagate back
 to the parent script.
 
-Recommended initial handling:
+Current handling:
 
-- Context mode may record the dependency as `context-only` or `child-shell`.
-- Executable mode should reject unless it implements child-shell-equivalent
-  rendering.
-- Diagnostics must state that the command uses child-shell semantics.
+- Context mode records exact dependencies with `child-shell` semantics.
+- Executable mode lowers static single-source payloads with no extra argv
+  entries by rewriting only the inner source command inside the `bash -c`
+  payload.
+- Assignment prefixes before `bash` are preserved as child-process
+  environment.
+- Single-quoted payloads may keep child-Bash variable references after the
+  exact source site.
+- Double-quoted payloads containing `$`, dynamic source expressions, multiple
+  source commands, and payloads with extra `$0` / positional argv entries fail
+  closed.
 
-Executable support, if added later, should render an equivalent child-shell
-boundary rather than inline the file into the parent shell.
+Executable lowering renders an equivalent child-shell boundary rather than
+inlining the file into the parent shell.
 
 ### Function Argument Source Sites
 
@@ -471,15 +482,15 @@ These still need separate specs before implementation:
   recursive calls, non-equivalent branch-defined functions, and
   branch-dependent returns.
 - Unsupported process substitution and generated source streams outside exact
-  read-loop producer input.
+  read-loop producer input or exact child-shell source boundaries.
 
 ### Unsupported But Practical
 
 These are intentionally tracked as practical future work, not permanently
 unsupported forms:
 
-- Source commands in conditional pipelines, subshells, command substitutions,
-  process substitutions, or unsupported shell grammar. Exact source atoms in
+- Source commands in unsupported shell grammar or pipeline final segments whose
+  semantics depend on `lastpipe` / job-control state. Exact source atoms in
   top-level `if` / `elif` logical lists are covered by
   [Compound Source Condition Lowering](compound-source-condition-lowering.md).
 - Source-free control flow whose body effects exceed the current conservative
@@ -534,8 +545,7 @@ scope:
   source-event production.
 - `methods.sources` owns path-resolution helpers and the `get_sources()`
   compatibility wrapper over source-effect evaluation.
-- Safe `cat`, safe `find`, safe `eval source`, and context-only
-  `bash -c source` classification are implemented.
+- Safe `cat`, safe `find`, and safe `eval source` are implemented.
 - Exact finite `for` loop lowering is implemented for literal words, known
   scalar path variables, and exact `${array[@]}` expansion.
 - Deterministic file-glob loop lowering is implemented, including `nullglob`,
@@ -572,6 +582,10 @@ scope:
 - Explicit source-argument frame restoration is modeled around later nested
   source sites when the source paths and arguments remain exact; see
   [Explicit Source Argument Frame Restoration](source-argument-frame-restoration.md).
+- Exact source sites inside explicit subshells, non-final pipeline segments,
+  command substitutions, process substitutions, and static single-source
+  `bash -c` payloads are lowered with child-shell semantics; see
+  [Source-Bearing Child-Shell Contexts](source-child-shell-contexts.md).
 - Executable mode fails before output when unsupported source forms would leave
   live runtime `source` commands.
 

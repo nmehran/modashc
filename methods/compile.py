@@ -4,7 +4,7 @@ import re
 from collections import defaultdict
 
 from methods.regex.patterns import SOURCE_PATTERN
-from methods.shell_line import get_commands
+from methods.shell_line import first_top_level_pipeline_index, get_commands
 from methods.source_evaluator import SourceEvaluator
 from methods.source_effects import (
     CaseBlock,
@@ -19,12 +19,15 @@ from methods.source_effects import (
 )
 from methods.source_frontend import LineParserFrontend
 from methods.source_resolver import (
+    ASSIGNMENT_WORD_PATTERN,
     ResolvedSource,
     UnsupportedSourceError,
     contains_source_command,
     contains_nested_source_command,
     extract_heredoc_delimiters,
     is_heredoc_end,
+    parse_shell_words_preserving_quotes,
+    strip_shell_word_quotes,
 )
 from methods.source_supplements import load_source_supplement
 from methods.sources import validate_path
@@ -608,6 +611,13 @@ def replace_command_source_sites(
         indent = re.match(r'\s*', line[:source_index]).group(0)
         if source_declaration.replacement_kind == "noop-command":
             replacement = ":"
+        elif source_declaration.replacement_kind == "bash-c-source":
+            replacement = render_bash_c_source_command(
+                source_declaration,
+                render_source,
+                indent,
+                positional_frame_names,
+            )
         else:
             rendered_source = indent_block(
                 render_source(
@@ -629,6 +639,48 @@ def replace_command_source_sites(
         search_start = source_index + len(replacement)
 
     return line
+
+
+def render_bash_c_source_command(
+    source_declaration,
+    render_source,
+    indent: str,
+    positional_frame_names: dict[str, str] | None = None,
+):
+    command = source_declaration.source_site.strip()
+    words = parse_shell_words_preserving_quotes(command)
+    command_index = 0
+    while command_index < len(words) and ASSIGNMENT_WORD_PATTERN.match(words[command_index]):
+        command_index += 1
+
+    command_prefix = " ".join(words[:command_index])
+    command_name = strip_shell_word_quotes(words[command_index])
+    payload = strip_shell_word_quotes(words[command_index + 2])
+    inner_source_site = source_declaration.source_value or f"source {source_declaration.source_expression.strip()}"
+
+    rendered_source = indent_block(
+        render_source(
+            source_declaration.path,
+            source_arguments=source_declaration.source_arguments,
+            source_state_generation=source_declaration.positional_assignment_generation,
+            sync_positionals=source_declaration.sync_positionals,
+        ),
+        "",
+    )
+    rendered_source = wrap_rendered_source_for_positional_frame(
+        rendered_source,
+        source_declaration,
+        positional_frame_names,
+        "",
+    )
+    replacement = f"{{\n{rendered_source}\n}}"
+    if inner_source_site not in payload:
+        raise ValueError(f"Could not replace bash -c source payload: {inner_source_site}")
+    payload = payload.replace(inner_source_site, replacement, 1)
+    rewritten = f"{command_name} -c {shell_quote(payload)}"
+    if command_prefix:
+        return f"{command_prefix} {rewritten}"
+    return rewritten
 
 
 def source_site_for_match(match):
@@ -845,10 +897,13 @@ def replace_source_site_declarations(
     if not source_declarations:
         return line
 
-    matches = [
-        match for match in SOURCE_PATTERN.finditer(line)
-        if not match.group(0).lstrip().startswith('$(')
-    ]
+    if first_top_level_pipeline_index(line) is None:
+        matches = [
+            match for match in SOURCE_PATTERN.finditer(line)
+            if not match.group(0).lstrip().startswith('$(')
+        ]
+    else:
+        matches = []
     declarations_by_column, fallback_declarations = group_source_declarations_by_column(source_declarations)
     replacements = []
     occupied_spans = []
@@ -1027,7 +1082,7 @@ def render_executable_script(entry_point: str, context: dict):
                 line = replace_runtime_source_references(line, filepath, entry_point)
                 command_sources = [
                     source_declaration for source_declaration in source_declarations
-                    if source_declaration.replacement_kind in {"command", "noop-command"}
+                    if source_declaration.replacement_kind in {"command", "noop-command", "bash-c-source"}
                 ]
                 line = replace_command_source_sites(
                     line,

@@ -2,12 +2,13 @@
 
 ## Status
 
-Planned on the `iteration/source-child-shell-contexts` development branch.
+Implemented on the `iteration/source-child-shell-contexts` development branch.
 
 This iteration stays static. It does not run Bash, collect xtrace output,
-discover runtime source paths, execute `bash -c` payloads, or broaden arbitrary
-shell validation. The goal is to resolve exact source dependencies that execute
-inside child-shell-like boundaries when Bash-equivalent lowering is provable.
+discover runtime source paths, execute `bash -c` payloads for discovery, or
+broaden arbitrary shell validation. It resolves exact source dependencies that
+execute inside child-shell-like boundaries when Bash-equivalent lowering is
+provable.
 
 ## Scope Taken
 
@@ -154,10 +155,10 @@ diff <(source ./left.sh; emit_left) <(source ./right.sh; emit_right)
 Acceptance:
 
 - Context mode classifies source-bearing process substitutions and `bash -c`
-  payloads consistently as child-shell/context-only when executable lowering is
-  not implemented.
-- Executable mode lowers only exact static payloads when argv, environment,
-  cwd, output, and status semantics are preserved.
+  payloads consistently as child-shell dependencies.
+- Executable mode lowers exact process-substitution sources and exact static
+  `bash -c` payloads when argv, assignment-prefixed environment, cwd, output,
+  and status semantics are preserved.
 - Unsupported `bash -c` and process-substitution forms fail with stable,
   specific diagnostics instead of falling through to generic unresolved source
   text.
@@ -167,6 +168,11 @@ Acceptance:
 Reject:
 
 - Runtime-built `bash -c` payload strings.
+- Parent-expanded double-quoted `bash -c` payloads that contain `$`.
+- `bash -c` payloads with extra argv entries until `$0` / positional binding is
+  modeled.
+- `bash -c` payloads with multiple source commands or dynamic source
+  expressions.
 - Dynamic function dispatch inside a child shell.
 - Process substitutions that require unresolved producer/consumer stream
   modeling.
@@ -174,10 +180,13 @@ Reject:
 
 Implementation notes:
 
-- `bash -c` should remain fail-closed unless the script payload is a static
-  string and the compiler can model `$0` / positional argument binding.
-- Existing context-only `bash -c source` classification should be preserved and
-  made more precise before executable lowering is attempted.
+- `bash -c` lowering is intentionally narrower than general Bash invocation
+  modeling. Static single-source payloads with no extra argv are supported.
+  Dynamic payload construction, `$0` / positional argument binding, and
+  multiple source commands remain fail-closed.
+- Single-quoted payloads may contain child-Bash variable references after the
+  exact source site. Double-quoted payloads containing `$` are rejected because
+  the parent shell would expand them before `bash -c` runs.
 
 ## Real-World And Runtime Promotion
 
