@@ -7,7 +7,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from methods.shell_line import get_commands
+from methods.shell_line import first_top_level_pipeline_index, get_commands
 from methods.sources import get_sources, resolve_variable_references
 from test.support import ScriptProject
 
@@ -60,6 +60,13 @@ class SourceRegressionTestCase(unittest.TestCase):
             list(get_commands('[[ -f ./dep.sh ]] && source ./dep.sh')),
             ['[[ -f ./dep.sh ]]', 'source ./dep.sh'],
         )
+
+    def test_top_level_pipeline_detection_ignores_non_pipeline_bars(self):
+        self.assertIsNone(first_top_level_pipeline_index('source ./dep.sh || echo missing'))
+        self.assertIsNone(first_top_level_pipeline_index('[[ "$x" == a|b ]] && source ./dep.sh'))
+        self.assertIsNone(first_top_level_pipeline_index('[[ "$x" == "]]|[[" ]] && source ./dep.sh'))
+        self.assertIsNone(first_top_level_pipeline_index('cat <(printf "a|b")'))
+        self.assertEqual(first_top_level_pipeline_index('source ./dep.sh | cat'), len('source ./dep.sh '))
 
     def test_get_commands_preserves_nested_shell_constructs(self):
         self.assertEqual(

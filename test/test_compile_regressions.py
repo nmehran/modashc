@@ -132,7 +132,9 @@ class CompileRegressionTestCase(unittest.TestCase):
             "process substitution": 'cat <(source ./dep.sh; printf "child:%s\\n" "$VALUE")\nprintf "parent:%s\\n" "${VALUE-unset}"\n',
             "process substitution args": 'cat <(source ./dep.sh alpha; printf "child:%s\\n" "$VALUE")\n',
             "bash c double quoted": 'bash -c "source ./dep.sh; printf \\"child:double\\\\n\\""\nprintf "parent:%s\\n" "${VALUE-unset}"\n',
+            "bash c dot source": 'bash -c ". ./dep.sh; printf \\"child:dot\\\\n\\""\n',
             "bash c single quoted": "bash -c 'source ./dep.sh; printf \"child:%s\\n\" \"$VALUE\"'\nprintf \"parent:%s\\n\" \"${VALUE-unset}\"\n",
+            "bash c source args": "bash -c 'source ./dep.sh alpha \"beta gamma\"; printf \"child:%s\\n\" \"$VALUE\"'\n",
             "bash c env prefix": "CHILD_ENV=exact bash -c 'source ./dep.sh; printf \"env:%s\\n\" \"$CHILD_ENV\"'\n",
         }
 
@@ -153,11 +155,14 @@ class CompileRegressionTestCase(unittest.TestCase):
         cases = {
             "dynamic source path": 'DEP=./dep.sh\nbash -c "source $DEP"\n',
             "parent expanded payload": 'bash -c "source ./dep.sh; echo $VALUE"\n',
+            "extra argv": "bash -c 'source ./dep.sh' child-name\n",
+            "multi source payload": "bash -c 'source ./dep.sh; source ./other.sh'\n",
         }
 
         for name, main_content in cases.items():
             with self.subTest(name=name), ScriptProject() as project:
                 project.write("dep.sh", 'echo "dep"\n')
+                project.write("other.sh", 'echo "other"\n')
                 project.write("main.sh", main_content)
                 output = project.path("compiled.sh")
 
