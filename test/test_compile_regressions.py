@@ -1511,6 +1511,31 @@ class CompileRegressionTestCase(unittest.TestCase):
 
                 project.assert_compiled_matches(self, "main.sh")
 
+    def test_unknown_sourced_file_status_preserves_guarded_followup_source(self):
+        for fail, expected_state in (("0", "unset"), ("1", "loaded")):
+            with self.subTest(fail=fail), ScriptProject() as project:
+                project.write("dep.sh", "awk 'BEGIN { exit ENVIRON[\"SOURCE_FAIL\"] == \"1\" ? 1 : 0 }'\n")
+                project.write("fallback.sh", textwrap.dedent("""\
+                    echo fallback
+                    FOLLOWUP_STATE=loaded
+                    """))
+                project.write("main.sh", textwrap.dedent("""\
+                    FOLLOWUP_STATE=unset
+                    source ./dep.sh || source ./fallback.sh
+                    echo "state=$FOLLOWUP_STATE"
+                    """))
+
+                output = project.compile("main.sh", mode="executable")
+                compiled_text = output.read_text()
+                expected = project.run("main.sh", env={"SOURCE_FAIL": fail})
+                actual = project.run(output, env={"SOURCE_FAIL": fail})
+
+                self.assertNotIn("source ./fallback.sh", compiled_text)
+                self.assertIn("echo fallback", compiled_text)
+                self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
+                self.assertEqual(actual.stdout, expected.stdout)
+                self.assertIn(f"state={expected_state}", actual.stdout)
+
     def test_source_inside_multiline_function_matches_bash(self):
         with ScriptProject() as project:
             project.write("runtime.sh", 'echo "runtime"\n')
@@ -3350,6 +3375,35 @@ class CompileRegressionTestCase(unittest.TestCase):
                 """))
 
             project.assert_compiled_matches(self, "main.sh")
+
+    def test_compound_source_if_condition_preserves_unknown_source_status(self):
+        for fail, expected_state in (("0", "unset"), ("1", "loaded")):
+            with self.subTest(fail=fail), ScriptProject() as project:
+                project.write("dep.sh", "awk 'BEGIN { exit ENVIRON[\"SOURCE_FAIL\"] == \"1\" ? 1 : 0 }'\n")
+                project.write("fallback.sh", textwrap.dedent("""\
+                    echo fallback
+                    FALLBACK_STATE=loaded
+                    """))
+                project.write("main.sh", textwrap.dedent("""\
+                    FALLBACK_STATE=unset
+                    if source ./dep.sh || source ./fallback.sh; then
+                      echo "state=$FALLBACK_STATE"
+                    else
+                      echo failed
+                    fi
+                    """))
+
+                output = project.compile("main.sh", mode="executable")
+                compiled_text = output.read_text()
+
+                self.assertNotIn("source ./fallback.sh", compiled_text)
+                self.assertIn("echo fallback", compiled_text)
+                expected = project.run("main.sh", env={"SOURCE_FAIL": fail})
+                actual = project.run(output, env={"SOURCE_FAIL": fail})
+
+                self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
+                self.assertEqual(actual.stdout, expected.stdout)
+                self.assertIn(f"state={expected_state}", actual.stdout)
 
     def test_negated_compound_source_if_condition_matches_bash(self):
         with ScriptProject() as project:

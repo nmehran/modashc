@@ -4665,6 +4665,8 @@ class SourceEvaluator:
         bracket_status = self._raw_bracket_status(stripped, state)
         if bracket_status is not None:
             return bracket_status
+        if has_unsupported_shell_operator(stripped):
+            return None
 
         try:
             words = parse_shell_words_preserving_quotes(stripped)
@@ -4680,11 +4682,69 @@ class SourceEvaluator:
             return 0
 
         command_name = strip_shell_word_quotes(words[index])
-        if command_name in {":", "true"}:
+        if command_name in {":", "true", "echo"}:
             return 0
         if command_name == "false":
             return 1
+        if command_name == "printf" and self._printf_status_is_exact_success(words[index + 1:]):
+            return 0
         return None
+
+    @staticmethod
+    def _printf_status_is_exact_success(arguments: list[str]):
+        if not arguments:
+            return False
+
+        index = 0
+        first = strip_shell_word_quotes(arguments[index])
+        if first == "--":
+            index += 1
+            if index >= len(arguments):
+                return False
+            first = strip_shell_word_quotes(arguments[index])
+        if first == "-v":
+            return False
+        if first.startswith("-"):
+            return False
+
+        format_word = arguments[index]
+        if "$" in format_word or "`" in format_word:
+            return False
+        return SourceEvaluator._printf_format_is_string_only(strip_shell_word_quotes(format_word))
+
+    @staticmethod
+    def _printf_format_is_string_only(format_value: str):
+        index = 0
+        while index < len(format_value):
+            if format_value[index] != "%":
+                index += 1
+                continue
+
+            index += 1
+            if index >= len(format_value):
+                return False
+            if format_value[index] == "%":
+                index += 1
+                continue
+            if format_value[index] == "(":
+                return False
+
+            while index < len(format_value) and format_value[index] in "#0- +":
+                index += 1
+            if index < len(format_value) and format_value[index] == "*":
+                return False
+            while index < len(format_value) and format_value[index].isdigit():
+                index += 1
+            if index < len(format_value) and format_value[index] == ".":
+                index += 1
+                if index < len(format_value) and format_value[index] == "*":
+                    return False
+                while index < len(format_value) and format_value[index].isdigit():
+                    index += 1
+            if index >= len(format_value) or format_value[index] not in {"b", "c", "q", "Q", "s"}:
+                return False
+            index += 1
+        return True
 
     def _raw_bracket_status(self, stripped: str, state: EvaluationState):
         if not (
@@ -5055,7 +5115,7 @@ class SourceEvaluator:
                 return signal.status
             if not had_nodes:
                 return 0
-            return state.last_status if state.last_status is not None else 0
+            return state.last_status
         finally:
             if source_arguments is not None:
                 final_positional_arguments = state.positional_arguments
