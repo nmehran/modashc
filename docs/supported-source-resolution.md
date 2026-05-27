@@ -350,7 +350,9 @@ The remaining source-resolution surface is narrower than general Bash support:
 
 - `extglob` and full Bash edge semantics for `GLOBIGNORE`.
 - Remaining case edge semantics such as `extglob` patterns, collating symbols,
-  equivalence classes, and broader locale-dependent pattern behavior.
+  equivalence classes, and broader locale-dependent pattern behavior. The
+  planned deterministic pattern iteration is scoped in
+  [Source Pattern Semantics Completion](source-pattern-semantics.md).
 - Recursive or runtime-dynamic source-bearing function dispatch. Exact
   makepkg-style helper calls using quoted `$@` / `$*` are covered by
   [Source Supplements And Exact Helper Sources](source-supplements.md).

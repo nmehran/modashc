@@ -26,6 +26,9 @@ keep only in code comments or tests.
   static lowering for exact source sites inside subshells, pipeline
   segments, command substitutions, process substitutions, and `bash -c`
   boundaries.
+- [Source Pattern Semantics Completion](source-pattern-semantics.md):
+  planned static completion for pattern context boundaries, `extglob`,
+  `GLOBIGNORE`, and modeled case/source-guard pattern semantics.
 - [Source-Relevant Control Flow Boundaries](source-control-flow-boundaries.md):
   source-free control-flow pass-through, exact source
   conditions, and practical source guard predicates.
@@ -64,9 +67,10 @@ The intended approach is captured in the
 - Remaining loop forms outside exact `for`, bounded C-style `for ((...))`,
   bounded `while` / `until`, and modeled `while read` file enumeration from
   exact files and safe producers
-- Remaining glob/source-argument semantics: `extglob`, source arguments
-  requiring word splitting, and full `GLOBIGNORE` edge behavior.
-- Broader source guard predicates and remaining case edge semantics such as
-  `extglob`, collating symbols, and equivalence classes
+- Remaining glob/source-argument semantics: source arguments requiring word
+  splitting. Pattern semantics are scoped in
+  [Source Pattern Semantics Completion](source-pattern-semantics.md).
+- Broader source guard predicates and remaining case edge semantics outside
+  deterministic pattern completion
 - Runtime-dynamic source dispatch, recursive source-bearing functions,
   non-equivalent branch-defined functions, and branch-dependent function returns

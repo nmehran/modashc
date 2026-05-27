@@ -475,7 +475,8 @@ These still need separate specs before implementation:
 - Static evaluation of conditional predicates outside the modeled
   side-effect-free subset.
 - Remaining case edge semantics such as `extglob` patterns, collating symbols,
-  equivalence classes, and broader locale-dependent pattern behavior.
+  equivalence classes, and broader locale-dependent pattern behavior. See
+  [Source Pattern Semantics Completion](source-pattern-semantics.md).
 - Complex array/list-based source paths outside exact indexed, associative,
   append, command-substitution, and file-populated arrays.
 - Broader user-defined function semantics, including runtime-dynamic dispatch,
