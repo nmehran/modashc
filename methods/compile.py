@@ -849,14 +849,6 @@ def replace_source_site_declarations(
         match for match in SOURCE_PATTERN.finditer(line)
         if not match.group(0).lstrip().startswith('$(')
     ]
-    if not matches:
-        return replace_source_site_substrings(
-            line,
-            source_declarations,
-            render_source,
-            positional_frame_names,
-        )
-
     declarations_by_column, fallback_declarations = group_source_declarations_by_column(source_declarations)
     replacements = []
     occupied_spans = []

@@ -4044,6 +4044,15 @@ class SourceEvaluator:
         if self._source_site_skipped_by_known_status(node, state):
             return
 
+        if len(self._pipeline_segments(node.text)) > 1:
+            raw_node = RawCommand(
+                location=node.location,
+                text=node.text,
+                separator=node.separator,
+            )
+            if self._apply_child_shell_sources(raw_node, state, stack):
+                return
+
         if not self._is_plain_source_site(node) and self.mode == "executable":
             raise unsupported_source_error(
                 str(node.location.path),
@@ -4552,7 +4561,19 @@ class SourceEvaluator:
         state.last_status = source_status
 
     def _apply_child_shell_sources(self, node: RawCommand, state: EvaluationState, stack: tuple[Path, ...]):
-        source_commands = self._child_shell_source_commands(node.text)
+        try:
+            source_commands = self._child_shell_source_commands(node.text)
+        except UnsupportedSourceError as exc:
+            if self.mode == "context":
+                return False
+            raise with_source_diagnostic(
+                exc,
+                str(node.location.path),
+                node.location.line - 1,
+                node.text,
+                node.text,
+                "unsupported.source.child-shell",
+            ) from exc
         if not source_commands:
             return False
 
@@ -4630,7 +4651,11 @@ class SourceEvaluator:
 
     @classmethod
     def _child_shell_source_commands(cls, command: str):
-        return tuple(cls._subshell_source_commands(command))
+        return (
+            *cls._subshell_source_commands(command),
+            *cls._command_substitution_source_commands(command),
+            *cls._pipeline_source_commands(command),
+        )
 
     @classmethod
     def _subshell_source_commands(cls, command: str):
@@ -4641,6 +4666,40 @@ class SourceEvaluator:
                 body_start,
                 ("subshell", context_index),
             ))
+        return tuple(commands)
+
+    @classmethod
+    def _command_substitution_source_commands(cls, command: str):
+        commands = []
+        for body, body_start, context_index in cls._command_substitution_bodies(command):
+            commands.extend(cls._direct_source_commands_in_body(
+                body,
+                body_start,
+                ("command-substitution", context_index),
+            ))
+        return tuple(commands)
+
+    @classmethod
+    def _pipeline_source_commands(cls, command: str):
+        segments = cls._pipeline_segments(command)
+        if len(segments) <= 1:
+            return ()
+
+        commands = []
+        final_index = len(segments) - 1
+        for index, (segment, segment_start) in enumerate(segments):
+            source_commands = cls._direct_source_commands_in_body(
+                segment,
+                segment_start,
+                ("pipeline", index + 1),
+            )
+            if not source_commands:
+                continue
+            if index == final_index:
+                raise UnsupportedSourceError(
+                    "unsupported source in final pipeline segment; lastpipe-sensitive semantics are not modeled"
+                )
+            commands.extend(source_commands)
         return tuple(commands)
 
     @classmethod
@@ -4693,6 +4752,116 @@ class SourceEvaluator:
                 continue
 
             index += 1
+
+    @classmethod
+    def _command_substitution_bodies(cls, command: str):
+        in_single_quote = False
+        in_double_quote = False
+        escaped = False
+        index = 0
+        context_index = 0
+
+        while index < len(command):
+            char = command[index]
+            if escaped:
+                escaped = False
+                index += 1
+                continue
+
+            if char == "\\" and not in_single_quote:
+                escaped = True
+                index += 1
+                continue
+
+            if char == "'" and not in_double_quote:
+                in_single_quote = not in_single_quote
+                index += 1
+                continue
+
+            if char == '"' and not in_single_quote:
+                in_double_quote = not in_double_quote
+                index += 1
+                continue
+
+            if in_single_quote:
+                index += 1
+                continue
+
+            if command.startswith("$((", index):
+                body, end_index = cls._read_balanced_body(command, index + 3)
+                index = end_index + 1 if end_index is not None else index + 3
+                continue
+
+            if command.startswith("$(", index):
+                body, end_index = cls._read_balanced_body(command, index + 2)
+                if end_index is None:
+                    index += 2
+                    continue
+                context_index += 1
+                yield body, index + 2, context_index
+                index = end_index + 1
+                continue
+
+            index += 1
+
+    @staticmethod
+    def _pipeline_segments(command: str):
+        segments = []
+        current_start = 0
+        in_single_quote = False
+        in_double_quote = False
+        escaped = False
+        paren_depth = 0
+        index = 0
+
+        while index < len(command):
+            char = command[index]
+            if escaped:
+                escaped = False
+                index += 1
+                continue
+
+            if char == "\\" and not in_single_quote:
+                escaped = True
+                index += 1
+                continue
+
+            if char == "'" and not in_double_quote:
+                in_single_quote = not in_single_quote
+                index += 1
+                continue
+
+            if char == '"' and not in_single_quote:
+                in_double_quote = not in_double_quote
+                index += 1
+                continue
+
+            if not in_single_quote and not in_double_quote:
+                if command.startswith("||", index):
+                    index += 2
+                    continue
+
+                if char == "(":
+                    paren_depth += 1
+                elif char == ")" and paren_depth:
+                    paren_depth -= 1
+
+                if char == "|" and paren_depth == 0 and not command.startswith("||", index):
+                    segment = command[current_start:index].strip()
+                    if segment:
+                        leading = len(command[current_start:index]) - len(command[current_start:index].lstrip())
+                        segments.append((segment, current_start + leading))
+                    current_start = index + 1
+                    index += 1
+                    continue
+
+            index += 1
+
+        tail = command[current_start:].strip()
+        if tail:
+            leading = len(command[current_start:]) - len(command[current_start:].lstrip())
+            segments.append((tail, current_start + leading))
+        return tuple(segments)
 
     @classmethod
     def _direct_source_commands_in_body(cls, body: str, body_start: int, context_id: tuple[str, int]):

@@ -26,6 +26,7 @@ from methods.source_effects import (
 )
 from methods.source_resolver import (
     contains_source_command,
+    contains_nested_source_command,
     ends_unsupported_control_block,
     extract_heredoc_delimiters,
     is_unsupported_control_flow_source,
@@ -1267,6 +1268,9 @@ class LineParserFrontend:
 
     @staticmethod
     def _assignment_node(location: SourceLocation, command: str):
+        if contains_nested_source_command(command):
+            return None
+
         match = VARIABLE_ASSIGNMENT_PATTERN.match(command)
         if not match:
             return None

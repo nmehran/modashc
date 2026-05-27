@@ -80,6 +80,38 @@ class CompileRegressionTestCase(unittest.TestCase):
                 if "parent:" in main_content:
                     self.assertIn("${VALUE-unset}", compiled)
 
+    def test_pipeline_and_command_substitution_source_lowering_matches_bash(self):
+        cases = {
+            "pipeline": 'source ./dep.sh | cat\nprintf "parent:%s\\n" "${VALUE-unset}"\n',
+            "pipeline args": 'source ./dep.sh alpha "beta gamma" | cat\nprintf "parent:%s\\n" "${VALUE-unset}"\n',
+            "command substitution": 'value="$(source ./dep.sh; printf "child:%s" "$VALUE")"\nprintf "[%s]\\n" "$value"\nprintf "parent:%s\\n" "${VALUE-unset}"\n',
+            "command substitution args": 'value="$(source ./dep.sh alpha; printf "child:%s" "$VALUE")"\nprintf "[%s]\\n" "$value"\n',
+        }
+
+        for name, main_content in cases.items():
+            with self.subTest(name=name), ScriptProject() as project:
+                project.write("dep.sh", 'VALUE="${1-default}:${2-none}"\nprintf "dep:%s\\n" "$VALUE"\n')
+                project.write("main.sh", main_content)
+
+                project.assert_compiled_matches(self, "main.sh")
+                compiled = project.path("compiled.sh").read_text()
+                self.assertNotIn("source ./dep.sh", compiled)
+                if "parent:" in main_content:
+                    self.assertIn("${VALUE-unset}", compiled)
+
+    def test_final_pipeline_segment_source_remains_fail_closed(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "dep"\n')
+            project.write("main.sh", 'printf "x\\n" | source ./dep.sh\n')
+            output = project.path("compiled.sh")
+
+            with self.assertRaisesRegex(NotImplementedError, "lastpipe|pipeline") as cm:
+                project.compile("main.sh", output=output, mode="executable")
+
+        self.assertIsNotNone(cm.exception.diagnostic)
+        self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.child-shell")
+        self.assertFalse(output.exists())
+
     def test_absolute_dependency_forms_match_bash(self):
         with ScriptProject() as project:
             absolute_dep = project.write("dep.sh", 'echo "absolute"\n')
@@ -2641,10 +2673,6 @@ class CompileRegressionTestCase(unittest.TestCase):
             "case variable extglob pattern": (
                 'shopt -s extglob\nENV=prod\nPATTERN="@(prod|stage)"\ncase "$ENV" in\n  $PATTERN) source ./prod.sh ;;\nesac\n',
                 'case "$ENV" in',
-            ),
-            "command substitution source": (
-                'echo "$(source ./dep.sh)"\n',
-                'echo "$(source ./dep.sh)"',
             ),
             "process substitution source": (
                 'cat <(source ./dep.sh)\n',
