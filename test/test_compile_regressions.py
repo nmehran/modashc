@@ -2500,6 +2500,19 @@ class CompileRegressionTestCase(unittest.TestCase):
 
             project.assert_compiled_matches(self, "main.sh")
 
+        with ScriptProject() as project:
+            project.write("enabled.sh", 'echo "enabled"\n')
+            project.write("disabled.sh", 'echo "disabled"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                if shopt -q checkwinsize; then
+                  source ./enabled.sh
+                else
+                  source ./disabled.sh
+                fi
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
     def test_exact_glob_file_source_guard_matches_bash(self):
         with ScriptProject() as project:
             project.write("plugins/only.sh", 'echo "plugin marker"\n')

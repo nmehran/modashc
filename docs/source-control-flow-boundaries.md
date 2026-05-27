@@ -107,7 +107,8 @@ Candidate predicates:
 
 - `[ -f ./plugins/*.sh ]`, `[ -r FILE ]`, and `test -f FILE` when the file or
   glob result is exact.
-- `shopt -q OPTION` for known shell options when the option state is exact.
+- `shopt -q OPTION` for known shell options when the option state is exact,
+  including Bash's non-interactive default-enabled shopt options.
 - Existing safe `grep -q` style predicates should remain covered and should not
   be broadened to arbitrary command execution.
 

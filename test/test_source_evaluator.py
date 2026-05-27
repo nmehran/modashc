@@ -69,7 +69,8 @@ class SourceEvaluatorTestCase(unittest.TestCase):
 
             result = SourceEvaluator().evaluate(entry)
 
-        self.assertEqual(result.events[0].state_before.shell_options, frozenset({"nounset", "pipefail"}))
+        self.assertTrue({"nounset", "pipefail"} <= result.events[0].state_before.shell_options)
+        self.assertNotIn("errexit", result.events[0].state_before.shell_options)
 
     def test_exact_array_index_source_is_resolved(self):
         with ScriptProject() as project:

@@ -110,6 +110,21 @@ VALID_SET_OPTIONS = frozenset({
 SHOPT_SHELL_OPTIONS = frozenset({
     'lastpipe',
 })
+DEFAULT_ENABLED_SHOPT_OPTIONS = frozenset({
+    'checkwinsize',
+    'cmdhist',
+    'complete_fullquote',
+    'extquote',
+    'force_fignore',
+    'globasciiranges',
+    'globskipdots',
+    'hostcomplete',
+    'interactive_comments',
+    'patsub_replacement',
+    'progcomp',
+    'promptvars',
+    'sourcepath',
+})
 GLOB_SHOPT_OPTIONS = frozenset({
     'dotglob',
     'extglob',
@@ -395,6 +410,7 @@ class SourceEvaluator:
             cwd=entrypoint.parent,
             variables=copy.deepcopy(initial_variables),
             runtime_variables=copy.deepcopy(initial_variables),
+            shell_options=set(DEFAULT_ENABLED_SHOPT_OPTIONS),
             bash_source_stack=(entrypoint,),
         )
         self.events = []
