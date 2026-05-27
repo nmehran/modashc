@@ -201,6 +201,34 @@
         {
           "source": "pacman/compound-fallback-lib.sh",
           "path": ".modashc-fixtures/compound-fallback-lib.sh"
+        },
+        {
+          "source": "pacman/source-frame-wrapper.sh",
+          "path": ".modashc-fixtures/source-frame-wrapper.sh"
+        },
+        {
+          "source": "pacman/source-frame-explicit-barrier.sh",
+          "path": ".modashc-fixtures/source-frame-explicit-barrier.sh"
+        },
+        {
+          "source": "pacman/source-frame-shared-mutation.sh",
+          "path": ".modashc-fixtures/source-frame-shared-mutation.sh"
+        },
+        {
+          "source": "pacman/source-frame-post-set.sh",
+          "path": ".modashc-fixtures/source-frame-post-set.sh"
+        },
+        {
+          "source": "pacman/source-frame-nested-set.sh",
+          "path": ".modashc-fixtures/source-frame-nested-set.sh"
+        },
+        {
+          "source": "pacman/source-frame-nested-noop.sh",
+          "path": ".modashc-fixtures/source-frame-nested-noop.sh"
+        },
+        {
+          "source": "pacman/source-frame-set-shift.sh",
+          "path": ".modashc-fixtures/source-frame-set-shift.sh"
         }
       ],
       "entrypoints": [
@@ -335,6 +363,21 @@
         },
         {
           "path": ".modashc-fixtures/runtime-positionals-wrapper.sh",
+          "modes": {
+            "context": {
+              "expected": "success"
+            },
+            "executable": {
+              "expected": "success"
+            }
+          },
+          "runtime": {
+            "expected": "match",
+            "cwd": ".modashc-fixtures"
+          }
+        },
+        {
+          "path": ".modashc-fixtures/source-frame-wrapper.sh",
           "modes": {
             "context": {
               "expected": "success"

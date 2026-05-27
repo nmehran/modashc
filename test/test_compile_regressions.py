@@ -2252,7 +2252,22 @@ class CompileRegressionTestCase(unittest.TestCase):
 
             project.assert_compiled_matches(self, "main.sh")
 
-    def test_sourced_file_with_arguments_rejects_positional_mutation_before_nested_source(self):
+    def test_sourced_file_with_arguments_syncs_set_followed_by_shift(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", textwrap.dedent("""\
+                set -- changed one
+                shift
+                printf 'dep:%s:%s\\n' "$1" "$#"
+                """))
+            project.write("main.sh", textwrap.dedent("""\
+                set -- outer
+                source ./dep.sh arg
+                printf 'after:%s:%s\\n' "$1" "$#"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_sourced_file_with_arguments_restores_frame_after_nested_explicit_source(self):
         with ScriptProject() as project:
             project.write("nested.sh", "printf 'nested:%s:%s:%s\\n' \"$1\" \"$2\" \"$#\"\n")
             project.write("dep.sh", textwrap.dedent("""\
@@ -2265,15 +2280,27 @@ class CompileRegressionTestCase(unittest.TestCase):
                 source ./dep.sh arg
                 printf 'after:%s:%s:%s\\n' "$1" "$2" "$#"
                 """))
-            output = project.path("compiled.sh")
 
-            with self.assertRaisesRegex(NotImplementedError, "positional mutation before nested source") as cm:
-                project.compile("main.sh", output=output, mode="executable")
+            project.assert_compiled_matches(self, "main.sh")
 
-            self.assertEqual(cm.exception.code, "unsupported.source.positionals")
-            self.assertFalse(output.exists())
+    def test_sourced_file_with_arguments_keeps_shift_after_nested_source_temporary(self):
+        with ScriptProject() as project:
+            project.write("nested.sh", ":\n")
+            project.write("dep.sh", textwrap.dedent("""\
+                set -- changed one
+                source ./nested.sh
+                shift
+                printf 'dep:%s:%s\\n' "$1" "$#"
+                """))
+            project.write("main.sh", textwrap.dedent("""\
+                set -- outer
+                source ./dep.sh arg
+                printf 'after:%s:%s\\n' "$1" "$#"
+                """))
 
-    def test_sourced_file_with_arguments_rejects_positional_mutation_before_helper_source(self):
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_sourced_file_with_arguments_restores_frame_after_helper_source(self):
         with ScriptProject() as project:
             project.write("nested.sh", "printf 'nested:%s:%s\\n' \"$1\" \"$#\"\n")
             project.write("dep.sh", textwrap.dedent("""\
@@ -2288,13 +2315,68 @@ class CompileRegressionTestCase(unittest.TestCase):
                 source ./dep.sh arg
                 printf 'after:%s:%s\\n' "$1" "$#"
                 """))
-            output = project.path("compiled.sh")
 
-            with self.assertRaisesRegex(NotImplementedError, "positional mutation before nested source") as cm:
-                project.compile("main.sh", output=output, mode="executable")
+            project.assert_compiled_matches(self, "main.sh")
 
-            self.assertEqual(cm.exception.code, "unsupported.source.positionals")
-            self.assertFalse(output.exists())
+    def test_sourced_file_with_arguments_syncs_nested_no_argument_positional_mutation(self):
+        with ScriptProject() as project:
+            project.write("nested.sh", textwrap.dedent("""\
+                set -- nested value
+                printf 'nested:%s:%s:%s\\n' "$1" "$2" "$#"
+                """))
+            project.write("dep.sh", textwrap.dedent("""\
+                set -- changed one
+                source ./nested.sh
+                printf 'dep-after:%s:%s:%s\\n' "$1" "$2" "$#"
+                """))
+            project.write("main.sh", textwrap.dedent("""\
+                set -- outer
+                source ./dep.sh arg
+                printf 'after:%s:%s:%s\\n' "$1" "$2" "$#"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_sourced_file_with_arguments_preserves_nested_no_argument_source_status(self):
+        with ScriptProject() as project:
+            project.write("nested.sh", textwrap.dedent("""\
+                set -- nested value
+                return 4
+                """))
+            project.write("dep.sh", textwrap.dedent("""\
+                set -- changed one
+                source ./nested.sh
+                nested_status=$?
+                printf 'dep-after:%s:%s:%s:%s\\n' "$1" "$2" "$#" "$nested_status"
+                """))
+            project.write("main.sh", textwrap.dedent("""\
+                set -- outer
+                source ./dep.sh arg
+                printf 'after:%s:%s:%s\\n' "$1" "$2" "$#"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_sourced_file_with_arguments_restores_nested_explicit_mutation_until_later_set(self):
+        with ScriptProject() as project:
+            project.write("nested.sh", textwrap.dedent("""\
+                set -- nested value
+                printf 'nested:%s:%s:%s\\n' "$1" "$2" "$#"
+                """))
+            project.write("dep.sh", textwrap.dedent("""\
+                set -- changed one
+                source ./nested.sh "$@"
+                printf 'dep-after-nested:%s:%s:%s\\n' "$1" "$2" "$#"
+                set -- final value
+                printf 'dep-after-set:%s:%s:%s\\n' "$1" "$2" "$#"
+                """))
+            project.write("main.sh", textwrap.dedent("""\
+                set -- outer
+                source ./dep.sh arg
+                printf 'after:%s:%s:%s\\n' "$1" "$2" "$#"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
 
     def test_sourced_file_with_arguments_syncs_positional_mutation_after_nested_source(self):
         with ScriptProject() as project:

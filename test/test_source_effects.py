@@ -30,12 +30,14 @@ class SourceEffectsTestCase(unittest.TestCase):
             execution_model=ExecutionModel.PARENT_SOURCE,
             occurrence_model=OccurrenceModel.ONCE,
             state_before=state,
+            sync_positionals=True,
         )
 
         self.assertEqual(event.location, location)
         self.assertEqual(event.state_before.variables["DEP"], "./dep.sh")
         self.assertEqual(event.execution_model, ExecutionModel.PARENT_SOURCE)
         self.assertEqual(event.occurrence_model, OccurrenceModel.ONCE)
+        self.assertTrue(event.sync_positionals)
 
     def test_diagnostic_has_stable_code_and_source_location(self):
         diagnostic = Diagnostic(

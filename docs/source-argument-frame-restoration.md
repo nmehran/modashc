@@ -2,17 +2,17 @@
 
 ## Status
 
-Planned on the `iteration/source-argument-frame-restoration` development
+Implemented on the `iteration/source-argument-frame-restoration` development
 branch.
 
 This iteration stays static. It does not run Bash, collect xtrace output, infer
 runtime source paths, or broaden arbitrary shell validation. The goal is to
 close the remaining source-argument edge where Bash restores explicit source
-argument frames differently after nested explicit source calls.
+argument frames differently around later nested source calls.
 
-## What Remains Before This Iteration
+## Scope Taken
 
-After the case semantics work, the main remaining source-resolution gaps are:
+After the case semantics work, the main remaining source-resolution gaps were:
 
 - explicit source-argument frames that run top-level `set --` before a later
   nested source call
@@ -24,7 +24,7 @@ After the case semantics work, the main remaining source-resolution gaps are:
   helpers
 - xtrace/runtime source discovery and supplement generation
 
-This iteration takes the first item because it is the narrowest static
+This iteration took the first item because it was the narrowest static
 correctness gap. The child-shell and xtrace families have larger runtime
 surfaces and should remain separate.
 
@@ -45,8 +45,8 @@ when Bash does:
 set -- changed one
 ```
 
-The remaining edge appears when that sourced file mutates top-level
-positionals, then performs a later nested source with explicit arguments:
+The final modeled edge appears when that sourced file mutates top-level
+positionals, then performs a later nested source:
 
 ```bash
 # main.sh
@@ -59,11 +59,12 @@ set -- changed one
 source ./nested.sh "$@"
 ```
 
-In Bash, the nested explicit source call creates and restores its own source
-argument frame. For the outer source, top-level `set --` before that nested
-explicit source does not escape to the original caller unless a later top-level
-positional mutation supersedes it after the nested source returns. The current
-compiler fails closed for this shape rather than guessing.
+In Bash, any later nested source site inside the outer explicit source frame
+changes which top-level positional mutation escapes to the original caller.
+Pre-nested `set --` is not enough by itself. A nested no-argument source can
+dirty the current frame when it mutates positionals, and a later top-level
+`set --` in the outer sourced file can supersede the barrier after the nested
+source returns. The compiler now models those exact static cases.
 
 ## Non-Goals
 
@@ -77,19 +78,19 @@ compiler fails closed for this shape rather than guessing.
 
 ## Tranche 1: Explicit Frame Barrier Semantics
 
-Goal: model the Bash positional-frame effect of nested explicit source calls
-inside a sourced file that itself was entered with explicit arguments.
+Goal: model the Bash positional-frame effect of nested source calls inside a
+sourced file that itself was entered with explicit arguments.
 
 Acceptance:
 
 - `source ./dep.sh arg` where `dep.sh` runs `set -- changed; source ./nested.sh
   "$@"` matches Bash output, status, and caller positionals.
 - Pre-nested top-level `set --` mutations are not synchronized to the original
-  caller when a later nested explicit source frame prevents them from escaping.
+  caller when a later nested source prevents them from escaping.
 - Top-level `set --` mutations after that nested source still synchronize to
   the caller.
-- Nested sources without explicit arguments continue to inherit the current
-  sourced-file positional state and do not introduce this barrier.
+- Nested sources without explicit arguments inherit the current sourced-file
+  positional state and synchronize back only when they mutate it.
 - Existing supported cases for top-level `set --`, `shift`, and top-level
   `return` remain unchanged.
 
@@ -97,8 +98,8 @@ Implementation notes:
 
 - Treat explicit source-argument frames as an ordered same-shell positional
   stack, not just a boolean "positionals changed" flag.
-- Reuse the existing source-state generation metadata to distinguish mutation
-  before, during, and after nested source sites.
+- Track explicit source-argument frame dirtiness while evaluating nested source
+  sites.
 - Renderer instrumentation should discard or supersede only the positional
   capture that Bash would not expose to the original caller.
 - Preserve `$?` across instrumentation.
@@ -119,8 +120,8 @@ Acceptance:
   following `status=$?`, `&&`, `||`, `if source ...`, and direct source
   conditions.
 - Source-bearing helper calls after a top-level positional mutation are
-  supported only when the helper source path and arguments are exact and the
-  same frame-barrier semantics can be proven.
+  supported when the helper source path and arguments are exact and the same
+  frame-barrier semantics can be proven.
 - Branch-dependent positional mutation or branch-dependent return/status still
   fails closed unless all possible outcomes are equivalent.
 

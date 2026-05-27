@@ -134,24 +134,6 @@ def write_output(filename, content):
         file.write(content)
 
 
-def render_source_block(
-    filepath: str,
-    render_source,
-    indent: str,
-    source_arguments=None,
-    source_state_generation=None,
-):
-    rendered_source = indent_block(
-        render_source(
-            filepath,
-            source_arguments=source_arguments,
-            source_state_generation=source_state_generation,
-        ),
-        indent,
-    )
-    return f"{{\n{rendered_source}\n{indent}}}"
-
-
 def generated_source_function_name(filepath: str):
     digest = hashlib.sha1(os.path.abspath(filepath).encode("utf-8")).hexdigest()[:12]
     return f"__modashc_source_{digest}"
@@ -263,11 +245,19 @@ def render_set_positional_capture(command: str, names: dict[str, str]):
     )
 
 
-def render_shift_positional_capture(command: str, names: dict[str, str]):
+def render_shift_positional_capture(
+    command: str,
+    names: dict[str, str],
+    *,
+    require_existing_capture: bool = False,
+):
+    capture_condition = f"{names['shift_status']} == 0"
+    if require_existing_capture:
+        capture_condition = f"{capture_condition} && {names['positionals_set']}"
     return (
         f"{{ {command}; "
         f"local {names['shift_status']}=$?; "
-        f"if (( {names['shift_status']} == 0 )); then "
+        f"if (( {capture_condition} )); then "
         f"{names['positionals']}=(\"$@\"); "
         f"{names['positionals_set']}=1; "
         f"fi; "
@@ -276,12 +266,41 @@ def render_shift_positional_capture(command: str, names: dict[str, str]):
     )
 
 
+def render_positional_frame_reset(names: dict[str, str], indent: str):
+    return f"{indent}{names['positionals_set']}=0"
+
+
+def render_positional_frame_capture(names: dict[str, str], indent: str):
+    return (
+        f"{indent}{names['source_status']}=$?\n"
+        f"{indent}{names['positionals']}=(\"$@\"); "
+        f"{names['positionals_set']}=1\n"
+        f"{indent}( exit \"${names['source_status']}\" )"
+    )
+
+
+def wrap_rendered_source_for_positional_frame(
+    rendered_source: str,
+    source_declaration,
+    names: dict[str, str] | None,
+    indent: str,
+):
+    if names is None or source_declaration.replacement_kind.startswith("noop-"):
+        return rendered_source
+
+    lines = [render_positional_frame_reset(names, indent), rendered_source]
+    if source_declaration.source_arguments is None and source_declaration.sync_positionals:
+        lines.append(render_positional_frame_capture(names, indent))
+    return '\n'.join(lines)
+
+
 def _collect_positional_sync_replacements(
     nodes,
     names: dict[str, str],
     replacements: dict[int, list],
     *,
     capture_shift: bool,
+    capture_shift_when_set: bool,
 ):
     for node in nodes:
         if isinstance(node, FunctionDef):
@@ -311,7 +330,11 @@ def _collect_positional_sync_replacements(
             replacements.setdefault(node.location.line - 1, []).append(LineReplacement(
                 node.location,
                 node.text,
-                render_shift_positional_capture(node.text, names),
+                render_shift_positional_capture(
+                    node.text,
+                    names,
+                    require_existing_capture=capture_shift_when_set,
+                ),
             ))
             continue
         if isinstance(node, (ForLoop, CStyleForLoop, WhileLoop)):
@@ -320,6 +343,7 @@ def _collect_positional_sync_replacements(
                 names,
                 replacements,
                 capture_shift=capture_shift,
+                capture_shift_when_set=capture_shift_when_set,
             )
         elif isinstance(node, IfBlock):
             for branch in node.branches:
@@ -328,6 +352,7 @@ def _collect_positional_sync_replacements(
                     names,
                     replacements,
                     capture_shift=capture_shift,
+                    capture_shift_when_set=capture_shift_when_set,
                 )
         elif isinstance(node, CaseBlock):
             for arm in node.arms:
@@ -336,10 +361,17 @@ def _collect_positional_sync_replacements(
                     names,
                     replacements,
                     capture_shift=capture_shift,
+                    capture_shift_when_set=capture_shift_when_set,
                 )
 
 
-def source_positional_sync_replacements(filepath: str, content: str, *, capture_shift: bool):
+def source_positional_sync_replacements(
+    filepath: str,
+    content: str,
+    *,
+    capture_shift: bool,
+    capture_shift_when_set: bool = False,
+):
     names = source_positional_capture_names(filepath)
     ir = LineParserFrontend().parse(os.path.abspath(filepath), content)
     replacements = {}
@@ -348,6 +380,7 @@ def source_positional_sync_replacements(filepath: str, content: str, *, capture_
         names,
         replacements,
         capture_shift=capture_shift,
+        capture_shift_when_set=capture_shift_when_set,
     )
     return replacements
 
@@ -406,7 +439,13 @@ def source_values_are_path_ambiguous(source_declarations):
     return any(len(paths) > 1 for paths in paths_by_source_value.values())
 
 
-def render_source_dispatch(source_expression: str, source_declarations, render_source, indent: str):
+def render_source_dispatch(
+    source_expression: str,
+    source_declarations,
+    render_source,
+    indent: str,
+    positional_frame_names: dict[str, str] | None = None,
+):
     use_resolved_path = source_values_are_path_ambiguous(source_declarations)
     dispatch_expression = (
         f'"$(realpath -- {source_expression.strip()})"'
@@ -432,7 +471,14 @@ def render_source_dispatch(source_expression: str, source_declarations, render_s
                     source_declaration.path,
                     source_arguments=source_declaration.source_arguments,
                     source_state_generation=source_declaration.positional_assignment_generation,
+                    sync_positionals=source_declaration.sync_positionals,
                 ),
+                f"{indent}    ",
+            )
+            rendered_source = wrap_rendered_source_for_positional_frame(
+                rendered_source,
+                source_declaration,
+                positional_frame_names,
                 f"{indent}    ",
             )
         output.extend([
@@ -453,7 +499,12 @@ def render_source_dispatch(source_expression: str, source_declarations, render_s
     return '\n'.join(output)
 
 
-def render_retained_source_dispatch(source_declarations, render_source, indent: str):
+def render_retained_source_dispatch(
+    source_declarations,
+    render_source,
+    indent: str,
+    positional_frame_names: dict[str, str] | None = None,
+):
     output = ["{"]
     seen_arguments = set()
     branch_keyword = "if"
@@ -471,7 +522,14 @@ def render_retained_source_dispatch(source_declarations, render_source, indent: 
                 source_declaration.path,
                 source_arguments=source_declaration.source_arguments,
                 source_state_generation=source_declaration.positional_assignment_generation,
+                sync_positionals=source_declaration.sync_positionals,
             ),
+            f"{indent}      ",
+        )
+        rendered_source = wrap_rendered_source_for_positional_frame(
+            rendered_source,
+            source_declaration,
+            positional_frame_names,
             f"{indent}      ",
         )
         if not rendered_source:
@@ -533,7 +591,12 @@ def find_unquoted_substring(text: str, needle: str, start: int = 0):
     return -1
 
 
-def replace_command_source_sites(line: str, source_declarations, render_source):
+def replace_command_source_sites(
+    line: str,
+    source_declarations,
+    render_source,
+    positional_frame_names: dict[str, str] | None = None,
+):
     search_start = 0
 
     for source_declaration in source_declarations:
@@ -546,13 +609,22 @@ def replace_command_source_sites(line: str, source_declarations, render_source):
         if source_declaration.replacement_kind == "noop-command":
             replacement = ":"
         else:
-            replacement = render_source_block(
-                source_declaration.path,
-                render_source,
+            rendered_source = indent_block(
+                render_source(
+                    source_declaration.path,
+                    source_arguments=source_declaration.source_arguments,
+                    source_state_generation=source_declaration.positional_assignment_generation,
+                    sync_positionals=source_declaration.sync_positionals,
+                ),
                 indent,
-                source_arguments=source_declaration.source_arguments,
-                source_state_generation=source_declaration.positional_assignment_generation,
             )
+            rendered_source = wrap_rendered_source_for_positional_frame(
+                rendered_source,
+                source_declaration,
+                positional_frame_names,
+                indent,
+            )
+            replacement = f"{{\n{rendered_source}\n{indent}}}"
         line = line[:source_index] + replacement + line[source_index + len(source_site):]
         search_start = source_index + len(replacement)
 
@@ -599,13 +671,19 @@ def group_source_declarations_by_column(source_declarations):
     return declarations_by_column, fallback_declarations
 
 
-def render_source_site_replacement(separator: str, declarations, render_source, indent: str):
+def render_source_site_replacement(
+    separator: str,
+    declarations,
+    render_source,
+    indent: str,
+    positional_frame_names: dict[str, str] | None = None,
+):
     retained_declarations = [
         declaration for declaration in declarations
         if declaration.replacement_kind == "retained-source"
     ]
     if retained_declarations:
-        return f"{separator}{render_retained_source_dispatch(retained_declarations, render_source, indent)}"
+        return f"{separator}{render_retained_source_dispatch(retained_declarations, render_source, indent, positional_frame_names)}"
 
     declaration = declarations[0]
     if declaration.replacement_kind == "noop-source":
@@ -613,20 +691,32 @@ def render_source_site_replacement(separator: str, declarations, render_source, 
 
     unique_paths = {source_declaration.path for source_declaration in declarations}
     if len(declarations) > 1 and len(unique_paths) > 1:
-        return f"{separator}{render_source_dispatch(declaration.source_expression, declarations, render_source, indent)}"
+        return f"{separator}{render_source_dispatch(declaration.source_expression, declarations, render_source, indent, positional_frame_names)}"
 
     rendered_source = indent_block(
         render_source(
             declaration.path,
             source_arguments=declaration.source_arguments,
             source_state_generation=declaration.positional_assignment_generation,
+            sync_positionals=declaration.sync_positionals,
         ),
+        indent,
+    )
+    rendered_source = wrap_rendered_source_for_positional_frame(
+        rendered_source,
+        declaration,
+        positional_frame_names,
         indent,
     )
     return f"{separator}{{\n{rendered_source}\n{indent}}}"
 
 
-def replace_source_site_substrings(line: str, source_declarations, render_source):
+def replace_source_site_substrings(
+    line: str,
+    source_declarations,
+    render_source,
+    positional_frame_names: dict[str, str] | None = None,
+):
     search_start = 0
     index = 0
 
@@ -644,7 +734,13 @@ def replace_source_site_substrings(line: str, source_declarations, render_source
             index += 1
 
         indent = re.match(r'\s*', line[:source_index]).group(0)
-        replacement = render_source_site_replacement("", grouped_declarations, render_source, indent)
+        replacement = render_source_site_replacement(
+            "",
+            grouped_declarations,
+            render_source,
+            indent,
+            positional_frame_names,
+        )
         line = line[:source_index] + replacement + line[source_index + len(source_site):]
         search_start = source_index + len(replacement)
 
@@ -724,13 +820,23 @@ def replace_exact_line_fragments(line: str, line_replacements):
     return apply_line_replacements(line, replacements)
 
 
-def replace_source_site_declarations(line: str, source_declarations, render_source):
+def replace_source_site_declarations(
+    line: str,
+    source_declarations,
+    render_source,
+    positional_frame_names: dict[str, str] | None = None,
+):
     if not source_declarations:
         return line
 
     matches = list(SOURCE_PATTERN.finditer(line))
     if not matches:
-        return replace_source_site_substrings(line, source_declarations, render_source)
+        return replace_source_site_substrings(
+            line,
+            source_declarations,
+            render_source,
+            positional_frame_names,
+        )
 
     declarations_by_column, fallback_declarations = group_source_declarations_by_column(source_declarations)
     replacements = []
@@ -749,7 +855,13 @@ def replace_source_site_declarations(line: str, source_declarations, render_sour
 
         separator = match.group(1) or ''
         indent = re.match(r'\s*', separator).group(0) if separator else ''
-        replacement = render_source_site_replacement(separator, grouped_declarations, render_source, indent)
+        replacement = render_source_site_replacement(
+            separator,
+            grouped_declarations,
+            render_source,
+            indent,
+            positional_frame_names,
+        )
         span = (match.start(), match.end())
         replacements.append((*span, replacement))
         occupied_spans.append(span)
@@ -761,7 +873,13 @@ def replace_source_site_declarations(line: str, source_declarations, render_sour
             raise ValueError(f"Could not replace resolved source declaration: {source_site}")
 
         indent = re.match(r'\s*', line[:span[0]]).group(0)
-        replacement = render_source_site_replacement("", grouped_declarations, render_source, indent)
+        replacement = render_source_site_replacement(
+            "",
+            grouped_declarations,
+            render_source,
+            indent,
+            positional_frame_names,
+        )
         replacements.append((*span, replacement))
         occupied_spans.append(span)
 
@@ -821,6 +939,7 @@ def render_executable_script(entry_point: str, context: dict):
         as_source=False,
         source_arguments=None,
         source_state_generation=None,
+        sync_positionals=False,
     ):
         filepath = os.path.abspath(filepath)
         if filepath in render_stack:
@@ -836,55 +955,42 @@ def render_executable_script(entry_point: str, context: dict):
                 source_filepath,
                 source_arguments=None,
                 source_state_generation=None,
+                sync_positionals=False,
             ):
                 return render_file(
                     source_filepath,
                     as_source=True,
                     source_arguments=source_arguments,
                     source_state_generation=source_state_generation,
+                    sync_positionals=sync_positionals,
                 )
 
             content = get_content(filepath)
             has_top_level_return, has_top_level_positional_mutation = top_level_traits(filepath, content)
             wraps_top_level_return = as_source and has_top_level_return
+            positional_frame_names = (
+                source_positional_capture_names(filepath)
+                if as_source and source_arguments is not None and sync_positionals
+                else None
+            )
             positional_sync_replacements = (
                 source_positional_sync_replacements(
                     filepath,
                     content,
-                    capture_shift=source_arguments is None,
+                    capture_shift=True,
+                    capture_shift_when_set=source_arguments is not None,
                 )
                 if (
                     as_source
-                    and (source_arguments is not None or wraps_top_level_return)
+                    and (
+                        (source_arguments is not None and sync_positionals)
+                        or (source_arguments is None and wraps_top_level_return)
+                    )
                     and has_top_level_positional_mutation
                 )
                 else {}
             )
-            if source_arguments is not None and positional_sync_replacements:
-                nested_source_after_mutation = (
-                    any(
-                        source_declaration.positional_assignment_generation is not None
-                        and source_state_generation is not None
-                        and source_declaration.positional_assignment_generation > source_state_generation
-                        for source_declarations in source_context.values()
-                        for source_declaration in source_declarations
-                    )
-                    if source_state_generation is not None
-                    else None
-                )
-                if nested_source_after_mutation is None:
-                    first_mutation_line = min(positional_sync_replacements)
-                    nested_source_after_mutation = any(line >= first_mutation_line for line in source_context)
-                if nested_source_after_mutation:
-                    raise UnsupportedSourceError(
-                        f"unsupported positional mutation before nested source in sourced file: {filepath}",
-                        code="unsupported.source.positionals",
-                        hint=(
-                            "Bash restores explicit source-argument frames differently after nested source calls; "
-                            "keep positional mutation after nested sources or avoid source arguments."
-                        ),
-                    )
-            sync_positionals = bool(positional_sync_replacements)
+            should_sync_positionals = bool(positional_sync_replacements) or positional_frame_names is not None
             for num, line in enumerate(content.splitlines()):
                 stripped_line = line.strip()
                 if not stripped_line or stripped_line.startswith("#"):
@@ -912,7 +1018,12 @@ def render_executable_script(entry_point: str, context: dict):
                     source_declaration for source_declaration in source_declarations
                     if source_declaration.replacement_kind in {"command", "noop-command"}
                 ]
-                line = replace_command_source_sites(line, command_sources, render_source_file)
+                line = replace_command_source_sites(
+                    line,
+                    command_sources,
+                    render_source_file,
+                    positional_frame_names,
+                )
                 source_site_declarations = [
                     source_declaration for source_declaration in source_declarations
                     if source_declaration.replacement_kind in {"source", "noop-source", "retained-source"}
@@ -922,6 +1033,7 @@ def render_executable_script(entry_point: str, context: dict):
                         line,
                         source_site_declarations,
                         render_source_file,
+                        positional_frame_names,
                     )
                 output.append(line)
 
@@ -931,7 +1043,7 @@ def render_executable_script(entry_point: str, context: dict):
                     filepath,
                     rendered,
                     source_arguments,
-                    sync_positionals=sync_positionals,
+                    sync_positionals=should_sync_positionals,
                 )
             return rendered
         finally:
@@ -994,6 +1106,7 @@ def context_from_source_events(events, disabled_sources=(), line_replacements=()
                 if event.state_before
                 else None
             ),
+            sync_positionals=event.sync_positionals,
         ))
 
     for disabled_source in disabled_sources:

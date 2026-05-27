@@ -39,14 +39,9 @@ Implemented behavior:
 - The real-world suite has controlled pacman fixtures for direct glob source
   arguments and wrapped positional mutation.
 
-Known remaining source-argument edge:
-
-- A sourced file entered with explicit source arguments that runs top-level
-  `set --` before a later nested `source` remains fail-closed. Bash restores the
-  explicit source-argument frame differently after the nested source returns,
-  so the compiler rejects that shape until the narrower model in
-  [Explicit Source Argument Frame Restoration](source-argument-frame-restoration.md)
-  is implemented.
+Explicit source-argument frame restoration around later nested source sites was
+finished in
+[Explicit Source Argument Frame Restoration](source-argument-frame-restoration.md).
 
 ## Non-Goals
 
@@ -120,10 +115,9 @@ Implementation notes:
 - Function bodies inside sourced files must be skipped by the top-level scan.
 - If status preservation or source-site scope cannot be proven, keep the
   current fail-closed diagnostic.
-- For explicit source-argument frames, reject top-level `set --` before a later
-  nested source command until
-  [Explicit Source Argument Frame Restoration](source-argument-frame-restoration.md)
-  is implemented.
+- Explicit source-argument frame restoration around later nested source sites is
+  covered by
+  [Explicit Source Argument Frame Restoration](source-argument-frame-restoration.md).
 
 ## Tranche 3: Real-World And Runtime Promotion
 

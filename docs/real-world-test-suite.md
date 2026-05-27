@@ -247,6 +247,7 @@ The runtime probe set starts with controlled pacman fixtures:
 - cwd-sensitive nested source behavior
 - top-level sourced-file return status and state
 - wrapped sourced-file positional mutation
+- explicit source-argument frame restoration around later nested source sites
 - skipped dynamic source payloads behind known `&&` / `||` status
 
 Most real distro scripts should remain compile/classification fixtures, not
@@ -442,7 +443,8 @@ Items 1 through 6 are implemented for the initial local smoke,
 enforcement, retained artifacts for successful pinned runs, supplement-backed
 pacman success expectations, direct glob source-argument fixtures,
 wrapped-source positional mutation fixtures, multiple safe runtime parity
-probes, opt-in human-readable reports, and source-relevant control-flow
-boundary promotion are also implemented. Runtime-guarded static source
-fixtures are implemented for guarded `if` and `case` source lowering; broader
-runtime discovery and dynamic tracing remain deferred.
+probes, explicit source-argument frame restoration fixtures, opt-in
+human-readable reports, and source-relevant control-flow boundary promotion are
+also implemented. Runtime-guarded static source fixtures are implemented for
+guarded `if` and `case` source lowering; broader runtime discovery and dynamic
+tracing remain deferred.

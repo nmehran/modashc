@@ -50,6 +50,7 @@ class ResolvedSource:
     occurrence_model: str | None = None
     condition: str | None = None
     positional_assignment_generation: int | None = None
+    sync_positionals: bool = False
 
 
 @dataclass(frozen=True)

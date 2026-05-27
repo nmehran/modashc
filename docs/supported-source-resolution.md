@@ -175,17 +175,21 @@ require word-splitting support remain fail-closed.
 
 Executable mode models top-level positional mutation in wrapped sourced files
 when Bash behavior is exact. Top-level `set -- ...` can update caller
-positionals after a source site returns, while top-level `shift` inside an
-explicit source-argument frame remains temporary as Bash restores that frame.
-Sourced files without explicit source arguments can also mutate caller
-positionals through top-level `set --` or `shift` when a generated return
-wrapper is needed.
+positionals after a source site returns. Top-level `shift` by itself inside an
+explicit source-argument frame remains temporary as Bash restores that frame,
+while `shift` after a caller-visible `set --` updates the captured positional
+mutation. Sourced files without explicit source arguments can also mutate
+caller positionals through top-level `set --` or `shift` when a generated
+return wrapper is needed.
 
-One Bash edge remains fail-closed: a sourced file entered with explicit source
-arguments that runs top-level `set --` before a later nested `source` command.
-Bash restores that explicit source-argument frame differently after the nested
-source returns, so executable mode rejects the shape rather than guessing. This
-is planned in
+Executable mode also models explicit source-argument frame restoration around
+later nested source sites. A pre-nested top-level `set --` inside a sourced file
+entered with explicit arguments does not escape merely because it ran before a
+nested source. Nested sources without explicit arguments can dirty the current
+frame when they mutate positionals, nested sources with explicit arguments
+restore their own frame before returning to the outer source body, and later
+top-level `set --` mutations in the outer sourced file can supersede the
+barrier. See
 [Explicit Source Argument Frame Restoration](source-argument-frame-restoration.md).
 
 ## Sourced-File Return
@@ -320,9 +324,6 @@ required.
 
 The remaining source-resolution surface is narrower than general Bash support:
 
-- Explicit source-argument frames that combine top-level `set --` with later
-  nested source calls remain fail-closed; see
-  [Explicit Source Argument Frame Restoration](source-argument-frame-restoration.md).
 - `extglob` and full Bash edge semantics for `GLOBIGNORE`.
 - Remaining case edge semantics such as `extglob` patterns, collating symbols,
   equivalence classes, and broader locale-dependent pattern behavior.

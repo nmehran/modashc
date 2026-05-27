@@ -111,8 +111,7 @@ A retained helper can be lowered when all of these are true:
 - The renderer can preserve source status, local scope, cwd, shell option, and
   variable effects for the lowered source content.
 - The supplemented source graph uses supported top-level sourced-file `return`
-  semantics and does not require top-level positional mutation with `set --` or
-  `shift`.
+  semantics and source-argument positional mutation semantics.
 
 V1 should reject the helper instead of guessing when any of these are false.
 
@@ -178,8 +177,8 @@ contract is normal sourced-library behavior; source files that intentionally
 inspect top-level `FUNCNAME` identity or invalid top-level `local` behavior are
 still outside V1. Caller positional mutation through top-level `set --` /
 `shift` follows the source-argument semantics contract: supported when the
-lowering can preserve Bash behavior exactly, and fail-closed for the documented
-explicit source-argument plus later nested-source edge.
+lowering can preserve Bash behavior exactly, including explicit frame
+restoration around later nested source sites.
 
 ## Context Mode
 

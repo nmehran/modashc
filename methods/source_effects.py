@@ -68,6 +68,7 @@ class SourceEvent:
     source_arguments: tuple[str, ...] | None = None
     state_before: StateSnapshot | None = None
     condition: str | None = None
+    sync_positionals: bool = False
 
 
 @dataclass(frozen=True)

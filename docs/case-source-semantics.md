@@ -17,9 +17,6 @@ At the start of this iteration, the main remaining static gaps were:
 - source-bearing pipelines, subshells, command substitutions, and process
   substitutions
 - `extglob` and full `GLOBIGNORE` edge behavior
-- the explicit source-argument frame edge where top-level `set --` precedes a
-  later nested source; see
-  [Explicit Source Argument Frame Restoration](source-argument-frame-restoration.md)
 - recursive or runtime-dynamic source-bearing dispatch
 - xtrace/runtime source discovery
 
@@ -166,8 +163,5 @@ After this iteration, the major remaining static/runtime gaps are:
   parent-source semantics
 - source commands in command substitutions and process substitutions
 - `extglob` patterns and full `GLOBIGNORE` edge behavior
-- the explicit source-argument frame edge involving top-level `set --` before a
-  later nested source; see
-  [Explicit Source Argument Frame Restoration](source-argument-frame-restoration.md)
 - recursive or runtime-dynamic source-bearing dispatch
 - xtrace/runtime source discovery and supplement generation

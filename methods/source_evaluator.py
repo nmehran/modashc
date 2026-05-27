@@ -6,7 +6,7 @@ import glob
 import os
 import re
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from fnmatch import fnmatch, fnmatchcase
 from pathlib import Path
 
@@ -229,6 +229,7 @@ class EvaluationState:
     positional_arguments: tuple[str, ...] = ()
     ambiguous_positionals: bool = False
     positional_assignment_generation: int = 0
+    source_argument_frame_dirty_stack: tuple[bool, ...] = ()
     local_scopes: list[dict[str, tuple[bool, str | None, bool, str | None, bool]]] = field(default_factory=list)
     last_status: int | None = 0
     loop_depth: int = 0
@@ -288,6 +289,7 @@ class EvaluationState:
             positional_arguments=self.positional_arguments,
             ambiguous_positionals=self.ambiguous_positionals,
             positional_assignment_generation=self.positional_assignment_generation,
+            source_argument_frame_dirty_stack=self.source_argument_frame_dirty_stack,
             local_scopes=copy.deepcopy(self.local_scopes),
             last_status=self.last_status,
             loop_depth=self.loop_depth,
@@ -323,6 +325,7 @@ class EvaluationState:
         self.positional_arguments = other.positional_arguments
         self.ambiguous_positionals = other.ambiguous_positionals
         self.positional_assignment_generation = other.positional_assignment_generation
+        self.source_argument_frame_dirty_stack = other.source_argument_frame_dirty_stack
         self.local_scopes = copy.deepcopy(other.local_scopes)
         self.last_status = other.last_status
         self.loop_depth = other.loop_depth
@@ -1170,6 +1173,7 @@ class SourceEvaluator:
         state: EvaluationState,
         *,
         source_argument_escape: bool = False,
+        mark_source_argument_frame: bool = True,
     ):
         previous_names = {
             name
@@ -1191,12 +1195,15 @@ class SourceEvaluator:
         state.ambiguous_positionals = False
         if source_argument_escape:
             state.positional_assignment_generation += 1
+            if mark_source_argument_frame:
+                SourceEvaluator._mark_current_source_argument_frame_dirty(state)
 
     @staticmethod
     def _mark_positionals_ambiguous(
         state: EvaluationState,
         *,
         source_argument_escape: bool = False,
+        mark_source_argument_frame: bool = True,
     ):
         positional_names = {
             name
@@ -1212,6 +1219,34 @@ class SourceEvaluator:
         state.ambiguous_positionals = True
         if source_argument_escape:
             state.positional_assignment_generation += 1
+            if mark_source_argument_frame:
+                SourceEvaluator._mark_current_source_argument_frame_dirty(state)
+
+    @staticmethod
+    def _push_source_argument_frame(state: EvaluationState):
+        state.source_argument_frame_dirty_stack = (*state.source_argument_frame_dirty_stack, False)
+
+    @staticmethod
+    def _pop_source_argument_frame(state: EvaluationState):
+        dirty = state.source_argument_frame_dirty_stack[-1]
+        state.source_argument_frame_dirty_stack = state.source_argument_frame_dirty_stack[:-1]
+        return dirty
+
+    @staticmethod
+    def _mark_current_source_argument_frame_dirty(state: EvaluationState):
+        if not state.source_argument_frame_dirty_stack:
+            return
+        stack = list(state.source_argument_frame_dirty_stack)
+        stack[-1] = True
+        state.source_argument_frame_dirty_stack = tuple(stack)
+
+    @staticmethod
+    def _clear_current_source_argument_frame_dirty(state: EvaluationState):
+        if not state.source_argument_frame_dirty_stack:
+            return
+        stack = list(state.source_argument_frame_dirty_stack)
+        stack[-1] = False
+        state.source_argument_frame_dirty_stack = tuple(stack)
 
     @staticmethod
     def _unsupported_positional_mutation(node, message: str):
@@ -3047,6 +3082,18 @@ class SourceEvaluator:
         target.positional_assignment_generation = max(
             state.positional_assignment_generation
             for state in possible_states
+        )
+        max_frame_depth = max(
+            len(state.source_argument_frame_dirty_stack)
+            for state in possible_states
+        )
+        target.source_argument_frame_dirty_stack = tuple(
+            any(
+                index < len(state.source_argument_frame_dirty_stack)
+                and state.source_argument_frame_dirty_stack[index]
+                for state in possible_states
+            )
+            for index in range(max_frame_depth)
         )
 
     @staticmethod
@@ -5291,16 +5338,21 @@ class SourceEvaluator:
                             state: EvaluationState, stack: tuple[Path, ...], execution_model: ExecutionModel,
                             replacement_kind: str, source_value: str | None = None,
                             source_arguments: tuple[str, ...] | None = None):
+        event_index = len(self.events)
         self._record_event(
             source_path, node, source_expression, source_site, execution_model, replacement_kind, state,
             source_value=source_value,
             source_arguments=source_arguments,
         )
-        state.last_status = self._evaluate_sourced_file(
+        state.last_status, sync_positionals = self._evaluate_sourced_file(
             source_path,
             state,
             stack,
             source_arguments=source_arguments,
+        )
+        self.events[event_index] = replace(
+            self.events[event_index],
+            sync_positionals=sync_positionals,
         )
 
     def _evaluate_sourced_file(
@@ -5312,36 +5364,60 @@ class SourceEvaluator:
     ):
         previous_positional_arguments = None
         previous_positionals = None
-        source_positional_assignment_generation = None
         previous_ambiguous_positionals = None
+        return_status = 0
+        sync_positionals = False
+        source_argument_frame_active = bool(state.source_argument_frame_dirty_stack)
+        if source_argument_frame_active:
+            self._clear_current_source_argument_frame_dirty(state)
         if source_arguments is not None:
             previous_positional_arguments = state.positional_arguments
             previous_ambiguous_positionals = state.ambiguous_positionals
             previous_positionals = self._push_function_positionals(source_arguments, state)
             state.positional_arguments = source_arguments
             state.ambiguous_positionals = False
-            source_positional_assignment_generation = state.positional_assignment_generation
+            self._push_source_argument_frame(state)
         try:
             try:
                 had_nodes = self._evaluate_file(source_path, state, stack, as_source=True)
             except SourceReturnSignal as signal:
-                return signal.status
-            if not had_nodes:
-                return 0
-            return state.last_status
+                return_status = signal.status
+            else:
+                if not had_nodes:
+                    return_status = 0
+                else:
+                    return_status = state.last_status
+            if source_arguments is None:
+                sync_positionals = (
+                    source_argument_frame_active
+                    and bool(state.source_argument_frame_dirty_stack)
+                    and state.source_argument_frame_dirty_stack[-1]
+                )
         finally:
             if source_arguments is not None:
                 final_positional_arguments = state.positional_arguments
                 final_ambiguous_positionals = state.ambiguous_positionals
-                positional_mutated = state.positional_assignment_generation != source_positional_assignment_generation
+                frame_dirty = self._pop_source_argument_frame(state)
+                sync_positionals = frame_dirty
                 self._restore_function_positionals(previous_positionals, len(source_arguments), state)
                 state.positional_arguments = previous_positional_arguments
                 state.ambiguous_positionals = previous_ambiguous_positionals
-                if positional_mutated:
+                if frame_dirty:
+                    mark_parent_frame = not state.source_argument_frame_dirty_stack
                     if final_ambiguous_positionals:
-                        self._mark_positionals_ambiguous(state, source_argument_escape=True)
+                        self._mark_positionals_ambiguous(
+                            state,
+                            source_argument_escape=True,
+                            mark_source_argument_frame=mark_parent_frame,
+                        )
                     else:
-                        self._set_positionals(final_positional_arguments, state, source_argument_escape=True)
+                        self._set_positionals(
+                            final_positional_arguments,
+                            state,
+                            source_argument_escape=True,
+                            mark_source_argument_frame=mark_parent_frame,
+                        )
+        return return_status, sync_positionals
 
     def _record_event(self, source_path: Path, node, source_expression: str, source_site: str,
                       execution_model: ExecutionModel, replacement_kind: str, state: EvaluationState,
@@ -5726,6 +5802,7 @@ class SourceEvaluator:
                 source_arguments=event.source_arguments,
                 state_before=event.state_before,
                 condition=event.condition,
+                sync_positionals=event.sync_positionals,
             )
             for event in events
         )

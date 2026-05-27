@@ -20,8 +20,8 @@ keep only in code comments or tests.
   static iteration for direct multi-match source globs, wrapped positional
   mutation lowering, and real-world/runtime promotion.
 - [Explicit Source Argument Frame Restoration](source-argument-frame-restoration.md):
-  planned static iteration for nested explicit source argument frame
-  restoration after top-level positional mutation.
+  static lowering for explicit source-argument frame restoration around later
+  nested source sites.
 - [Source-Relevant Control Flow Boundaries](source-control-flow-boundaries.md):
   source-free control-flow pass-through, exact source
   conditions, and practical source guard predicates.
@@ -61,10 +61,7 @@ The intended approach is captured in the
   bounded `while` / `until`, and modeled `while read` file enumeration from
   exact files and safe producers
 - Remaining glob/source-argument semantics: `extglob`, source arguments
-  requiring word splitting, and full `GLOBIGNORE` edge behavior. Explicit
-  source-argument frames that combine top-level `set --` with later nested
-  source calls are covered by
-  [Explicit Source Argument Frame Restoration](source-argument-frame-restoration.md)
+  requiring word splitting, and full `GLOBIGNORE` edge behavior.
 - Broader source guard predicates and remaining case edge semantics such as
   `extglob`, collating symbols, and equivalence classes
 - Runtime-dynamic source dispatch, recursive source-bearing functions,

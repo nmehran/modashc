@@ -569,10 +569,9 @@ scope:
   same-shell wrapper so include guards and source status are preserved.
 - Wrapped sourced files can synchronize modeled top-level positional mutation
   back to the caller when Bash semantics are exact.
-- Explicit source-argument frames that run top-level `set --` before a later
-  nested source command remain fail-closed until
-  [Explicit Source Argument Frame Restoration](source-argument-frame-restoration.md)
-  is implemented.
+- Explicit source-argument frame restoration is modeled around later nested
+  source sites when the source paths and arguments remain exact; see
+  [Explicit Source Argument Frame Restoration](source-argument-frame-restoration.md).
 - Executable mode fails before output when unsupported source forms would leave
   live runtime `source` commands.
 

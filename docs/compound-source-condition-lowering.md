@@ -145,9 +145,8 @@ Required checks before merging implementation work:
 Pipelines, subshells, command substitutions, process substitutions, and broad
 Bash condition grammar remain separate iterations.
 
-The explicit source-argument frame edge where a sourced file runs top-level
-`set --` before a later nested source remains separate source-argument work;
-see
+Explicit source-argument frame restoration around later nested source sites is
+covered by
 [Explicit Source Argument Frame Restoration](source-argument-frame-restoration.md).
 
 Case pattern/fallthrough semantics are covered by
