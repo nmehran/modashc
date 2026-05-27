@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "functions": {
+    "source_safe": [
+      {
+        "arguments": [
+          "{root}/.modashc-fixtures/PKGBUILD"
+        ]
+      }
+    ]
+  }
+}

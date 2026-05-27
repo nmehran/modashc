@@ -214,6 +214,8 @@ class EvaluationState:
     local_scopes: list[dict[str, tuple[bool, str | None, bool, str | None, bool]]] = field(default_factory=list)
     last_status: int | None = 0
     loop_depth: int = 0
+    source_depth: int = 0
+    function_body_depth: int = 0
 
     def resolver_context(self):
         return {
@@ -268,6 +270,8 @@ class EvaluationState:
             local_scopes=copy.deepcopy(self.local_scopes),
             last_status=self.last_status,
             loop_depth=self.loop_depth,
+            source_depth=self.source_depth,
+            function_body_depth=self.function_body_depth,
         )
 
     def conditional_copy(self):
@@ -299,10 +303,18 @@ class EvaluationState:
         self.local_scopes = copy.deepcopy(other.local_scopes)
         self.last_status = other.last_status
         self.loop_depth = other.loop_depth
+        self.source_depth = other.source_depth
+        self.function_body_depth = other.function_body_depth
 
 
 @dataclass
 class FunctionReturnSignal(Exception):
+    status: int
+    node: RawCommand
+
+
+@dataclass
+class SourceReturnSignal(Exception):
     status: int
     node: RawCommand
 
@@ -325,7 +337,7 @@ class ReadLoopWords:
 @dataclass
 class EvaluationOutcome:
     state: EvaluationState
-    return_signal: FunctionReturnSignal | None = None
+    return_signal: FunctionReturnSignal | SourceReturnSignal | None = None
 
 
 @dataclass(frozen=True)
@@ -385,7 +397,14 @@ class SourceEvaluator:
             final_state=state.snapshot(),
         )
 
-    def _evaluate_file(self, path: Path, state: EvaluationState, stack: tuple[Path, ...]):
+    def _evaluate_file(
+        self,
+        path: Path,
+        state: EvaluationState,
+        stack: tuple[Path, ...],
+        *,
+        as_source: bool = False,
+    ):
         path = path.resolve()
         if path in stack:
             chain = " -> ".join(str(item) for item in (*stack, path))
@@ -397,9 +416,14 @@ class SourceEvaluator:
         previous_bash_source = state.variables.get('BASH_SOURCE')
         previous_runtime_bash_source = state.runtime_variables.get('BASH_SOURCE')
         previous_stack = state.bash_source_stack
+        previous_source_depth = state.source_depth
+        previous_function_body_depth = state.function_body_depth
         state.variables['BASH_SOURCE'] = str(path)
         state.runtime_variables['BASH_SOURCE'] = str(path)
         state.bash_source_stack = (*previous_stack, path) if previous_stack[-1:] != (path,) else previous_stack
+        if as_source:
+            state.source_depth += 1
+            state.function_body_depth = 0
 
         try:
             self._evaluate_nodes(ir.nodes, state, current_stack)
@@ -413,6 +437,8 @@ class SourceEvaluator:
             else:
                 state.runtime_variables['BASH_SOURCE'] = previous_runtime_bash_source
             state.bash_source_stack = previous_stack
+            state.source_depth = previous_source_depth
+            state.function_body_depth = previous_function_body_depth
 
     def _evaluate_nodes(self, nodes, state: EvaluationState, stack: tuple[Path, ...]):
         nodes = tuple(nodes)
@@ -442,7 +468,7 @@ class SourceEvaluator:
                     self._apply_source_site(node, state, stack)
                 elif isinstance(node, RawCommand):
                     self._apply_raw_command(node, state, stack)
-            except FunctionReturnSignal:
+            except (FunctionReturnSignal, SourceReturnSignal):
                 self._disable_unreachable_sources(nodes[index + 1:], "return")
                 raise
 
@@ -755,7 +781,7 @@ class SourceEvaluator:
             retained_state = state.child_shell_copy()
             self._retained_helper_stack.append(function_def.name)
             try:
-                return_status = self._apply_function_call_variant(
+                self._apply_function_call_variant(
                     function_def,
                     function_def.name,
                     signature,
@@ -764,14 +790,6 @@ class SourceEvaluator:
                     retained_state,
                     stack,
                 )
-                if return_status is not None:
-                    raise self._unsupported_retained_helper(
-                        function_def.name,
-                        function_def.location,
-                        function_def.text,
-                        "unsupported retained source helper return behavior",
-                        "Retained helper dispatch cannot yet lower sourced files whose top-level return affects source status.",
-                    )
             except UnsupportedSourceError as exc:
                 raise with_source_diagnostic(
                     exc,
@@ -1943,7 +1961,7 @@ class SourceEvaluator:
             return_signal = None
             try:
                 self._evaluate_nodes(branch.body, branch_state, stack)
-            except FunctionReturnSignal as signal:
+            except (FunctionReturnSignal, SourceReturnSignal) as signal:
                 return_signal = signal
             branch_outcomes.append(EvaluationOutcome(branch_state, return_signal))
 
@@ -1982,7 +2000,7 @@ class SourceEvaluator:
             return_signal = None
             try:
                 self._evaluate_nodes(branch.body, branch_state, stack)
-            except FunctionReturnSignal as signal:
+            except (FunctionReturnSignal, SourceReturnSignal) as signal:
                 return_signal = signal
             branch_outcomes.append(EvaluationOutcome(branch_state, return_signal))
 
@@ -2048,6 +2066,10 @@ class SourceEvaluator:
     def _apply_possible_outcomes(self, node, state: EvaluationState, outcomes: list[EvaluationOutcome]):
         returning_outcomes = [outcome for outcome in outcomes if outcome.return_signal is not None]
         continuing_outcomes = [outcome for outcome in outcomes if outcome.return_signal is None]
+        return_kind = "source" if (
+            returning_outcomes
+            and isinstance(returning_outcomes[0].return_signal, SourceReturnSignal)
+        ) else "function"
 
         if returning_outcomes and continuing_outcomes:
             raise unsupported_source_error(
@@ -2056,22 +2078,26 @@ class SourceEvaluator:
                 node.text,
                 node.text,
                 "unsupported.source.function-control",
-                "unsupported branch-dependent function return",
-                "Make function return flow exact before later source-aware effects.",
+                f"unsupported branch-dependent {return_kind} return",
+                f"Make {return_kind} return flow exact before later source-aware effects.",
             )
 
         selected_outcomes = returning_outcomes or continuing_outcomes
         if returning_outcomes:
             first_status = returning_outcomes[0].return_signal.status
-            if any(outcome.return_signal.status != first_status for outcome in returning_outcomes):
+            if any(
+                outcome.return_signal.status != first_status
+                or type(outcome.return_signal) is not type(returning_outcomes[0].return_signal)
+                for outcome in returning_outcomes
+            ):
                 raise unsupported_source_error(
                     str(node.location.path),
                     node.location.line - 1,
                     node.text,
                     node.text,
                     "unsupported.source.function-control",
-                    "unsupported branch-dependent function return",
-                    "Make function return status exact before later source-aware effects.",
+                    f"unsupported branch-dependent {return_kind} return",
+                    f"Make {return_kind} return status exact before later source-aware effects.",
                 )
         self._merge_possible_states(state, [outcome.state for outcome in selected_outcomes])
         if returning_outcomes:
@@ -2138,7 +2164,7 @@ class SourceEvaluator:
             return_signal = None
             try:
                 self._evaluate_nodes(arm.body, arm_state, stack)
-            except FunctionReturnSignal as signal:
+            except (FunctionReturnSignal, SourceReturnSignal) as signal:
                 return_signal = signal
             arm_outcomes.append(EvaluationOutcome(arm_state, return_signal))
 
@@ -2174,7 +2200,7 @@ class SourceEvaluator:
             return_signal = None
             try:
                 self._evaluate_nodes(arm.body, arm_state, stack)
-            except FunctionReturnSignal as signal:
+            except (FunctionReturnSignal, SourceReturnSignal) as signal:
                 return_signal = signal
             arm_outcomes.append(EvaluationOutcome(arm_state, return_signal))
 
@@ -2207,7 +2233,7 @@ class SourceEvaluator:
             return_signal = None
             try:
                 self._evaluate_nodes(arm.body, arm_state, stack)
-            except FunctionReturnSignal as signal:
+            except (FunctionReturnSignal, SourceReturnSignal) as signal:
                 return_signal = signal
             arm_outcomes.append(EvaluationOutcome(arm_state, return_signal))
 
@@ -3154,7 +3180,7 @@ class SourceEvaluator:
                 occurrence_model=OccurrenceModel.CONDITIONAL,
                 source_value=source_value,
             )
-            self._evaluate_file(source_path, branch_state, stack)
+            branch_state.last_status = self._evaluate_sourced_file(source_path, branch_state, stack)
             self._merge_possible_states(state, [base_state, branch_state])
             return
 
@@ -3171,7 +3197,7 @@ class SourceEvaluator:
                 occurrence_model=OccurrenceModel.CONDITIONAL,
                 source_value=source_value,
             )
-            self._evaluate_file(source_path, branch_state, stack)
+            branch_state.last_status = self._evaluate_sourced_file(source_path, branch_state, stack)
             return
 
         self._record_and_descend(
@@ -3185,7 +3211,6 @@ class SourceEvaluator:
             replacement_kind,
             source_value,
         )
-        state.last_status = 0
 
     def _resolve_positional_source_expression(
         self,
@@ -3302,14 +3327,20 @@ class SourceEvaluator:
         return False
 
     def _apply_raw_command(self, node: RawCommand, state: EvaluationState, stack: tuple[Path, ...]):
+        if self._raw_command_skipped_by_known_status(node, state):
+            return
+
         if self._apply_function_call(node, state, stack):
             return
 
         if self._apply_loop_control(node, state):
             return
 
-        if state.function_call_stack and self._raw_function_return_command(node):
-            raise FunctionReturnSignal(self._function_return_status(node, state), node)
+        if self._raw_function_return_command(node):
+            if state.function_body_depth > 0:
+                raise FunctionReturnSignal(self._function_return_status(node, state), node)
+            if state.source_depth > 0:
+                raise SourceReturnSignal(self._function_return_status(node, state), node)
 
         if state.function_call_stack and self._raw_function_shift_command(node):
             self._apply_function_shift(node, state)
@@ -3324,7 +3355,7 @@ class SourceEvaluator:
         if self._apply_exact_non_source_eval(node, state):
             return
 
-        exact_status = self._raw_exact_status_command(node)
+        exact_status = self._raw_exact_status_command(node, state)
         if exact_status is not None:
             state.last_status = exact_status
             return
@@ -3365,6 +3396,7 @@ class SourceEvaluator:
                 "Use a direct source command or a supported dynamic source expression.",
             )
 
+        source_status = 0 if resolved_sources else None
         for resolved_source in resolved_sources:
             execution_model = ExecutionModel(resolved_source.execution_model)
             source_path = Path(resolved_source.path)
@@ -3379,10 +3411,11 @@ class SourceEvaluator:
                 source_value=resolved_source.source_value,
             )
             if execution_model == ExecutionModel.CHILD_SHELL:
-                self._evaluate_file(source_path, state.child_shell_copy(), stack)
+                child_state = state.child_shell_copy()
+                source_status = self._evaluate_sourced_file(source_path, child_state, stack)
             else:
-                self._evaluate_file(source_path, state, stack)
-        state.last_status = 0 if resolved_sources else None
+                source_status = self._evaluate_sourced_file(source_path, state, stack)
+        state.last_status = source_status
 
     def _apply_exact_non_source_eval(self, node: RawCommand, state: EvaluationState):
         try:
@@ -3411,7 +3444,7 @@ class SourceEvaluator:
         if shopt_status is not None:
             state.last_status = shopt_status
         else:
-            state.last_status = self._raw_exact_status_command(payload_node)
+            state.last_status = self._raw_exact_status_command(payload_node, state)
             if not payload.strip():
                 state.last_status = 0
         return True
@@ -3518,8 +3551,10 @@ class SourceEvaluator:
         previous_positional_arguments = state.positional_arguments
         previous_positionals = self._push_function_positionals(arguments, state)
         previous_call_stack = state.function_call_stack
+        previous_function_body_depth = state.function_body_depth
         state.function_call_stack = (*state.function_call_stack, function_name)
         state.positional_arguments = arguments
+        state.function_body_depth += 1
         state.local_scopes.append({})
         return_status = None
         try:
@@ -3534,6 +3569,7 @@ class SourceEvaluator:
             state.positional_arguments = previous_positional_arguments
             self._restore_local_scope(prefix_scope, state)
             state.function_call_stack = previous_call_stack
+            state.function_body_depth = previous_function_body_depth
         if return_status is not None:
             state.last_status = return_status
         return return_status
@@ -3753,11 +3789,14 @@ class SourceEvaluator:
         stripped = node.text.strip()
         return bool(re.match(r'^shift(?:\s|$)', stripped))
 
-    @staticmethod
-    def _raw_exact_status_command(node: RawCommand):
+    def _raw_exact_status_command(self, node: RawCommand, state: EvaluationState):
         stripped = node.text.strip()
         if contains_source_command(stripped) or contains_nested_source_command(stripped):
             return None
+
+        bracket_status = self._raw_bracket_status(stripped, state)
+        if bracket_status is not None:
+            return bracket_status
 
         try:
             words = parse_shell_words_preserving_quotes(stripped)
@@ -3779,6 +3818,48 @@ class SourceEvaluator:
             return 1
         return None
 
+    def _raw_bracket_status(self, stripped: str, state: EvaluationState):
+        if not (
+            (stripped.startswith("[[") and stripped.endswith("]]"))
+            or (stripped.startswith("[") and stripped.endswith("]"))
+        ):
+            return None
+        include_guard_status = self._raw_include_guard_status(stripped, state)
+        if include_guard_status is not None:
+            return include_guard_status
+        try:
+            result = self._evaluate_condition(stripped, state)
+        except UnsupportedSourceError:
+            return None
+        if result == "true":
+            return 0
+        if result == "false":
+            return 1
+        return None
+
+    @staticmethod
+    def _raw_include_guard_status(stripped: str, state: EvaluationState):
+        match = re.fullmatch(
+            r'\[\[?\s+-n\s+"?\$(?:\{([a-zA-Z_]\w*)\}|([a-zA-Z_]\w*))"?\s+\]?\]',
+            stripped,
+        )
+        if not match:
+            return None
+        name = match.group(1) or match.group(2)
+        if name in state.ambiguous_variables:
+            return None
+        value = state.runtime_variables.get(name, os.environ.get(name, ""))
+        return 0 if value else 1
+
+    def _raw_command_skipped_by_known_status(self, node: RawCommand, state: EvaluationState):
+        if node.separator == "&&" and state.last_status not in {None, 0}:
+            self._disable_unreachable_sources([node], "&& previous command status")
+            return True
+        if node.separator == "||" and state.last_status == 0:
+            self._disable_unreachable_sources([node], "|| previous command status")
+            return True
+        return False
+
     def _function_return_status(self, node: RawCommand, state: EvaluationState):
         try:
             words = parse_shell_words_preserving_quotes(node.text.strip())
@@ -3788,7 +3869,9 @@ class SourceEvaluator:
         if len(words) > 2 or not words or words[0] != "return":
             raise self._unsupported_function_control(node, "unsupported function return syntax")
         if len(words) == 1:
-            return 0
+            if state.last_status is None:
+                raise self._unsupported_function_control(node, "unsupported implicit return status")
+            return state.last_status % 256
 
         status_text = self._resolve_function_control_word(words[1], node, state, "return")
         if not re.fullmatch(r'[+-]?\d+', status_text):
@@ -4087,7 +4170,14 @@ class SourceEvaluator:
             source_path, node, source_expression, source_site, execution_model, replacement_kind, state,
             source_value=source_value,
         )
-        self._evaluate_file(source_path, state, stack)
+        state.last_status = self._evaluate_sourced_file(source_path, state, stack)
+
+    def _evaluate_sourced_file(self, source_path: Path, state: EvaluationState, stack: tuple[Path, ...]):
+        try:
+            self._evaluate_file(source_path, state, stack, as_source=True)
+        except SourceReturnSignal as signal:
+            return signal.status
+        return 0
 
     def _record_event(self, source_path: Path, node, source_expression: str, source_site: str,
                       execution_model: ExecutionModel, replacement_kind: str, state: EvaluationState,
@@ -4158,11 +4248,12 @@ class SourceEvaluator:
                     condition=condition,
                 ))
             elif isinstance(node, RawCommand):
-                if self._raw_command_may_source(node.text):
+                stripped_text = node.text.strip()
+                if self._raw_command_contains_literal_source(node.text):
                     self.disabled_sources.append(DisabledSourceSite(
                         location=node.location,
-                        source_expression=node.text.strip(),
-                        source_site=node.text.strip(),
+                        source_expression=stripped_text,
+                        source_site=stripped_text,
                         replacement_kind="command",
                         condition=condition,
                     ))
@@ -4210,11 +4301,23 @@ class SourceEvaluator:
 
     @staticmethod
     def _raw_command_may_source(command: str):
+        if command.strip() in {"(", ")", "{", "}"}:
+            return False
         return bool(
             contains_source_command(command)
             or contains_nested_source_command(command)
             or SourceEvaluator._raw_command_payload_may_source(command)
             or SourceEvaluator._raw_command_may_expand_to_source(command)
+        )
+
+    @staticmethod
+    def _raw_command_contains_literal_source(command: str):
+        if command.strip() in {"(", ")", "{", "}"}:
+            return False
+        return bool(
+            contains_source_command(command)
+            or contains_nested_source_command(command)
+            or SourceEvaluator._raw_command_payload_may_source(command)
         )
 
     @staticmethod

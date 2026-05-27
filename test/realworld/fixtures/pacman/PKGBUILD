@@ -1,0 +1,2 @@
+pkgname=modashc-realworld
+echo "pkg:$pkgname"

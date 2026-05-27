@@ -1,0 +1,129 @@
+{
+  "projects": [
+    {
+      "name": "bash-completion",
+      "kind": "pinned",
+      "version": "2.16.0",
+      "source": {
+        "url": "https://github.com/scop/bash-completion/releases/download/2.16.0/bash-completion-2.16.0.tar.xz",
+        "archive": "bash-completion-2.16.0.tar.xz",
+        "sha256": "3369bd5e418a75fb990863925aed5b420398acebb320ec4c0306b3eae23f107a",
+        "strip_components": 1
+      },
+      "entrypoints": [
+        {
+          "path": "bash_completion",
+          "modes": {
+            "context": {
+              "expected": "timeout"
+            },
+            "executable": {
+              "expected": "timeout"
+            }
+          }
+        },
+        {
+          "path": "bash_completion.d/000_bash_completion_compat.bash",
+          "modes": {
+            "context": {
+              "expected": "success"
+            },
+            "executable": {
+              "expected": "success"
+            }
+          }
+        },
+        {
+          "path": "completions/cd",
+          "modes": {
+            "context": {
+              "expected": "success"
+            },
+            "executable": {
+              "expected": "unsupported",
+              "diagnostic": {
+                "code": "unsupported.source.if-condition",
+                "fragment": "if shopt -q cdable_vars; then"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "pacman",
+      "kind": "pinned",
+      "version": "7.1.0",
+      "source": {
+        "url": "https://gitlab.archlinux.org/pacman/pacman/-/releases/v7.1.0/downloads/pacman-7.1.0.tar.xz",
+        "archive": "pacman-7.1.0.tar.xz",
+        "sha256": "530e50d7edbb2a22581c6d6707d2113240276c1bec4ee39a99488e1243c32171",
+        "strip_components": 1
+      },
+      "source_aliases": [
+        {
+          "from_suffix": ".sh.in",
+          "to_suffix": ".sh"
+        }
+      ],
+      "environment": {
+        "MAKEPKG_LIBRARY": "{root}/scripts/libmakepkg"
+      },
+      "fixture_files": [
+        {
+          "source": "pacman/source-safe-wrapper.sh",
+          "path": ".modashc-fixtures/source-safe-wrapper.sh"
+        },
+        {
+          "source": "pacman/source-safe-target.sh",
+          "path": ".modashc-fixtures/source-safe-target.sh"
+        },
+        {
+          "source": "pacman/PKGBUILD",
+          "path": ".modashc-fixtures/PKGBUILD"
+        }
+      ],
+      "entrypoints": [
+        {
+          "path": "scripts/libmakepkg/buildenv.sh",
+          "modes": {
+            "context": {
+              "expected": "success"
+            },
+            "executable": {
+              "expected": "success",
+              "source_supplement": "pacman/source-safe-supplement.json"
+            }
+          }
+        },
+        {
+          "path": "scripts/libmakepkg/lint_package.sh",
+          "modes": {
+            "context": {
+              "expected": "success"
+            },
+            "executable": {
+              "expected": "success",
+              "source_supplement": "pacman/source-safe-supplement.json"
+            }
+          }
+        },
+        {
+          "path": ".modashc-fixtures/source-safe-wrapper.sh",
+          "modes": {
+            "context": {
+              "expected": "success"
+            },
+            "executable": {
+              "expected": "success"
+            }
+          },
+          "runtime": {
+            "expected": "match",
+            "cwd": ".modashc-fixtures"
+          }
+        }
+      ]
+    }
+  ]
+}

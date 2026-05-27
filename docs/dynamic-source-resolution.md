@@ -552,6 +552,8 @@ scope:
   functions and exact function-call status for chained source sites.
 - Supplement-backed retained helper dispatch is implemented for modeled
   positional source helpers with finite one-path argument vectors.
+- Top-level `return` in supported sourced files is lowered with a generated
+  same-shell wrapper so include guards and source status are preserved.
 - Executable mode fails before output when unsupported source forms would leave
   live runtime `source` commands.
 
@@ -561,8 +563,8 @@ with stable codes, source locations, rejected fragments, messages, and hints.
 
 Future resolver increments should stay small, tested, and fail-closed. Case,
 complex array, broader conditional, `extglob`, direct source positional and
-glob argument semantics, Bash-equivalent top-level source `return` lowering,
-broader supplement-backed source resolution, recursive functions,
+glob argument semantics, broader supplement-backed source resolution,
+recursive functions,
 non-equivalent branch-defined functions, branch-dependent function returns, and
 runtime-dispatch support should not be added as one-off resolver patches; those
 belong in the evaluator/IR design.

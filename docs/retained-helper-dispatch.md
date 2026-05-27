@@ -3,7 +3,8 @@
 ## Status
 
 Implemented V1 behavior. This is the static source-resolution iteration that
-lands before runtime source discovery or runtime parity probes.
+lands before runtime source discovery. A small opt-in runtime parity probe path
+now exists in the internal real-world suite.
 
 The feature extends the existing source supplement contract. It does not add a
 new public interface and it does not execute project shell code.
@@ -103,8 +104,8 @@ A retained helper can be lowered when all of these are true:
   contract.
 - The renderer can preserve source status, local scope, cwd, shell option, and
   variable effects for the lowered source content.
-- The supplemented source graph does not require top-level `return` semantics
-  that the current executable renderer cannot preserve.
+- The supplemented source graph uses supported top-level sourced-file `return`
+  semantics.
 
 V1 should reject the helper instead of guessing when any of these are false.
 
@@ -115,8 +116,9 @@ allowed supplement vectors. The generated output must not contain a live
 runtime `source` or `.` command for the lowered site.
 
 The dispatch must run in the same function scope as the original `source`
-command. A separate generated helper function is not acceptable if it changes
-`local`, `return`, positional parameter, `FUNCNAME`, or shell option behavior.
+command. Lowered sourced-file `return` behavior may use the shared executable
+source-return wrapper, but the retained dispatch itself must not move the
+source site into an unrelated shell context.
 
 Conceptually, this:
 
@@ -160,9 +162,14 @@ these properties:
 - path literal quoting is deterministic and safe for spaces and shell
   metacharacters allowed by supplement validation
 
-The current V1 renderer fails before output when a retained helper supplement
-would require top-level `return` behavior from the lowered source graph.
-Bash-equivalent source-return lowering is separate future work.
+When lowered source content contains a top-level sourced-file `return`, the
+renderer wraps that sourced body in generated same-shell helper functions,
+calls them at the source site, and cleans them up before returning. This makes
+`return` legal, stops only the sourced body, and preserves the source command
+status for guard shapes such as `if ! source "$@"; then`. The supported
+contract is normal sourced-library behavior; source files that intentionally
+inspect top-level `FUNCNAME` identity or invalid top-level `local` behavior are
+still outside V1.
 
 ## Context Mode
 
@@ -192,8 +199,6 @@ Useful stable diagnostic families:
 - retained helper source site is outside the accepted positional subset
 - retained helper body has unsupported source-relevant behavior
 - retained helper dispatch would require unsupported direct source arguments
-- retained helper dispatch would require unsupported top-level source `return`
-  lowering
 
 ## Tests
 
@@ -208,17 +213,15 @@ Synthetic tests should land before real-world promotion:
 - Missing supplement fails before output and emits a valid skeleton.
 - Zero-argument, multi-argument, unquoted `$@` / `$*`, recursive helper, and
   dynamic dispatch cases fail with explicit diagnostics.
-- Source files containing `return` are either rendered with Bash-equivalent
-  source status or rejected before output. V1 rejects them in retained helper
-  dispatch.
+- Source files containing top-level `return` are rendered with Bash-equivalent
+  source status for supported direct and retained helper source sites.
 - Context mode remains readable and does not overstate exactness.
 
 Real-world acceptance:
 
 - Promote pacman/makepkg raw `source_safe` library cases from unsupported to
   success in the internal real-world suite once the synthetic tests are green.
-- Keep runtime parity probes deferred; this tranche should prove static
-  lowering only.
+- Add a safe runtime parity probe for the pacman wrapper fixture.
 
 ## Iteration Tranches
 
@@ -242,6 +245,9 @@ Real-world acceptance:
 - Promote the pacman/makepkg retained `source_safe` case in the internal suite.
   Local verification has covered pacman `libmakepkg/util/util.sh` and
   `libmakepkg/lint_package.sh` with a PKGBUILD-like supplemented path.
+- Cover makepkg include-guard `return` lowering in the synthetic suite and the
+  pacman corpus.
+- Add a first opt-in runtime parity probe for the controlled pacman wrapper.
 - Review generated executable and context artifacts manually.
 - Tighten diagnostics and docs from the real-world findings.
 - Keep aggressive performance work and runtime discovery out of scope.
@@ -252,4 +258,6 @@ Real-world acceptance:
 - Existing full test suite passes.
 - Executable failures do not create or overwrite output.
 - A pacman/makepkg retained helper corpus probe succeeds with a supplement.
+- The controlled pacman wrapper runtime probe matches original Bash behavior
+  when `MODASHC_REALWORLD_RUNTIME=1` is enabled.
 - Product docs link to this spec from the supplement and support matrix docs.

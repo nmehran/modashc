@@ -146,6 +146,28 @@ Direct source globs with multiple matches remain unsupported because Bash treats
 the first match as the source file and passes the remaining matches as
 positional arguments to that sourced file.
 
+## Sourced-File Return
+
+Supported sourced files may contain top-level `return` statements. Executable
+mode lowers those sourced bodies through generated same-shell helper functions
+that are cleaned up after the source site runs. The lowered return stops the
+sourced body, preserves source status, and does not exit the caller. This is
+intended for normal sourced libraries and include guards; files that depend on
+top-level `FUNCNAME` identity or invalid top-level `local` behavior remain
+outside the supported contract.
+
+```bash
+source ./guarded-library.sh
+echo "source status: $?"
+```
+
+This covers common include guards:
+
+```bash
+[[ -n "$LIBRARY_SH" ]] && return
+LIBRARY_SH=1
+```
+
 ## Branches And Cases
 
 Supported branch-aware source lowering includes `if` / `elif` / `else` with
@@ -239,5 +261,3 @@ The remaining source-resolution surface is narrower than general Bash support:
   [Source Supplements And Exact Helper Sources](source-supplements.md).
   Retained helper definitions that remain callable after merging are covered in
   [Retained Helper Dispatch](retained-helper-dispatch.md).
-- Bash-equivalent lowering for top-level `return` in inlined sourced files.
-  Retained helper dispatch rejects this case before output today.

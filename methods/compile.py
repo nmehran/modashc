@@ -1,3 +1,4 @@
+import hashlib
 import os
 import re
 from collections import defaultdict
@@ -5,6 +6,16 @@ from collections import defaultdict
 from methods.regex.patterns import SOURCE_PATTERN
 from methods.shell_line import get_commands
 from methods.source_evaluator import SourceEvaluator
+from methods.source_effects import (
+    CaseBlock,
+    CStyleForLoop,
+    ForLoop,
+    FunctionDef,
+    IfBlock,
+    RawCommand,
+    WhileLoop,
+)
+from methods.source_frontend import LineParserFrontend
 from methods.source_resolver import (
     ResolvedSource,
     UnsupportedSourceError,
@@ -117,6 +128,56 @@ def write_output(filename, content):
 def render_source_block(filepath: str, render_source, indent: str):
     rendered_source = indent_block(render_source(filepath), indent)
     return f"{{\n{rendered_source}\n{indent}}}"
+
+
+def generated_source_function_name(filepath: str):
+    digest = hashlib.sha1(os.path.abspath(filepath).encode("utf-8")).hexdigest()[:12]
+    return f"__modashc_source_{digest}"
+
+
+def raw_command_is_return(node: RawCommand):
+    return bool(re.match(r'^return(?:\s|$)', node.text.strip()))
+
+
+def nodes_have_top_level_return(nodes):
+    for node in nodes:
+        if isinstance(node, RawCommand) and raw_command_is_return(node):
+            return True
+        if isinstance(node, FunctionDef):
+            continue
+        if isinstance(node, (ForLoop, CStyleForLoop, WhileLoop)):
+            if nodes_have_top_level_return(node.body):
+                return True
+        elif isinstance(node, IfBlock):
+            if any(nodes_have_top_level_return(branch.body) for branch in node.branches):
+                return True
+        elif isinstance(node, CaseBlock):
+            if any(nodes_have_top_level_return(arm.body) for arm in node.arms):
+                return True
+    return False
+
+
+def file_has_top_level_return(filepath: str, content: str):
+    if "return" not in content:
+        return False
+    ir = LineParserFrontend().parse(os.path.abspath(filepath), content)
+    return nodes_have_top_level_return(ir.nodes)
+
+
+def render_source_return_wrapper(filepath: str, content: str):
+    body_function = generated_source_function_name(filepath)
+    wrapper_function = f"{body_function}_run"
+    status_variable = f"{body_function}_status"
+    return (
+        f"{body_function}() {{\n{content}\n}}\n"
+        f"{wrapper_function}() {{\n"
+        f"{body_function}\n"
+        f"local {status_variable}=$?\n"
+        f"unset -f {wrapper_function} {body_function}\n"
+        f"return ${status_variable}\n"
+        f"}}\n"
+        f"{wrapper_function}"
+    )
 
 
 def source_values_are_path_ambiguous(source_declarations):
@@ -488,6 +549,7 @@ def line_contains_unresolved_source(line: str):
 
 def render_executable_script(entry_point: str, context: dict):
     file_contents = {}
+    top_level_return_cache = {}
     render_stack = []
 
     def get_content(filepath):
@@ -496,7 +558,12 @@ def render_executable_script(entry_point: str, context: dict):
             file_contents[filepath] = content
         return file_contents[filepath]
 
-    def render_file(filepath):
+    def has_top_level_return(filepath, content):
+        if filepath not in top_level_return_cache:
+            top_level_return_cache[filepath] = file_has_top_level_return(filepath, content)
+        return top_level_return_cache[filepath]
+
+    def render_file(filepath, *, as_source=False):
         filepath = os.path.abspath(filepath)
         if filepath in render_stack:
             chain = " -> ".join([*render_stack, filepath])
@@ -507,7 +574,11 @@ def render_executable_script(entry_point: str, context: dict):
             source_context = context.get('source_declarations', {}).get(filepath, {})
             output = []
 
-            for num, line in enumerate(get_content(filepath).splitlines()):
+            def render_source_file(source_filepath):
+                return render_file(source_filepath, as_source=True)
+
+            content = get_content(filepath)
+            for num, line in enumerate(content.splitlines()):
                 stripped_line = line.strip()
                 if not stripped_line or stripped_line.startswith("#"):
                     continue
@@ -530,7 +601,7 @@ def render_executable_script(entry_point: str, context: dict):
                     source_declaration for source_declaration in source_declarations
                     if source_declaration.replacement_kind in {"command", "noop-command"}
                 ]
-                line = replace_command_source_sites(line, command_sources, render_file)
+                line = replace_command_source_sites(line, command_sources, render_source_file)
                 source_site_declarations = [
                     source_declaration for source_declaration in source_declarations
                     if source_declaration.replacement_kind in {"source", "noop-source", "retained-source"}
@@ -539,11 +610,14 @@ def render_executable_script(entry_point: str, context: dict):
                     line = replace_source_site_declarations(
                         line,
                         source_site_declarations,
-                        render_file,
+                        render_source_file,
                     )
                 output.append(line)
 
-            return '\n'.join(output)
+            rendered = '\n'.join(output)
+            if as_source and has_top_level_return(filepath, content):
+                return render_source_return_wrapper(filepath, rendered)
+            return rendered
         finally:
             render_stack.pop()
 

@@ -1,5 +1,6 @@
 # Project
 /test/outputs/*.sh
+/.realworld/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

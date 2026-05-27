@@ -217,6 +217,7 @@ class LineParserFrontend:
 
     def _command_node(self, script_path: Path, line_number: int, line: str, command: str):
         location = SourceLocation(script_path, line_number, self._command_column(line, command))
+        separator = self._command_separator(line, command)
 
         if array_assignment := self._array_assignment_node(location, command):
             return array_assignment
@@ -230,7 +231,7 @@ class LineParserFrontend:
         if set_command := self._set_node(location, command):
             return set_command
 
-        return RawCommand(location=location, text=command)
+        return RawCommand(location=location, text=command, separator=separator)
 
     def _parse_if_block(self, script_path: Path, line_number: int, code_line: str, lines: list[str], line_index: int):
         commands = get_commands(code_line)
@@ -1126,6 +1127,18 @@ class LineParserFrontend:
     def _command_column(line: str, command: str):
         column = line.find(command)
         return 1 if column < 0 else column + 1
+
+    @staticmethod
+    def _command_separator(line: str, command: str):
+        column = line.find(command)
+        if column <= 0:
+            return ""
+
+        prefix = line[:column].rstrip()
+        for separator in ("&&", "||", ";"):
+            if prefix.endswith(separator):
+                return separator
+        return ""
 
     @staticmethod
     def _array_assignment_node(location: SourceLocation, command: str):

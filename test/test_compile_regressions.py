@@ -933,6 +933,16 @@ class CompileRegressionTestCase(unittest.TestCase):
 
             project.assert_compiled_matches(self, "main.sh")
 
+        for operator_script in (
+            'false && eval "source ./missing.sh"\necho "after:$?"\n',
+            'true || eval "source ./missing.sh"\necho "after:$?"\n',
+        ):
+            with ScriptProject() as project:
+                project.write("main.sh", operator_script)
+
+                project.assert_compiled_matches(self, "main.sh")
+                self.assertNotIn("source ./missing.sh", project.path("compiled.sh").read_text())
+
     def test_non_source_eval_and_bash_c_commands_match_bash(self):
         with ScriptProject() as project:
             project.write("main.sh", 'eval "echo from eval"\nbash -c "echo from child"\necho "main"\n')
@@ -2475,12 +2485,20 @@ class CompileRegressionTestCase(unittest.TestCase):
                 self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.retained-helper")
                 self.assertFalse(output.exists())
 
-    def test_retained_source_helper_rejects_top_level_return_in_supplemented_source(self):
+    def test_retained_source_helper_lowers_top_level_return_in_supplemented_source(self):
         with ScriptProject() as project:
-            project.write("guarded.sh", '[[ -n "$GUARDED_SH" ]] && return\nGUARDED_SH=1\n')
+            project.write("guarded.sh", textwrap.dedent("""\
+                [[ -n "$GUARDED_SH" ]] && return 5
+                GUARDED_SH=1
+                echo "guarded-loaded"
+                """))
             project.write("helpers.sh", textwrap.dedent("""\
                 source_safe() {
-                  source "$@"
+                  if ! source "$@"; then
+                    echo "failed:$?"
+                    return 7
+                  fi
+                  echo "helper-after:$?"
                 }
                 GUARDED_SH=1
                 """))
@@ -2492,13 +2510,106 @@ class CompileRegressionTestCase(unittest.TestCase):
                     ],
                 },
             }))
-            output = project.path("compiled.sh")
 
-            with self.assertRaisesRegex(NotImplementedError, "return behavior") as cm:
-                project.compile("helpers.sh", output=output, mode="executable", source_supplement=supplement)
+            compiled = project.compile("helpers.sh", mode="executable", source_supplement=supplement)
+            driver = textwrap.dedent(f"""\
+                source {shlex.quote(str(compiled))}
+                source_safe ./guarded.sh
+                echo "after:$?"
+                """)
+            result = subprocess.run(
+                ["bash", "-c", driver],
+                cwd=project.root,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
 
-            self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.retained-helper")
-            self.assertFalse(output.exists())
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertIn("failed:0", result.stdout)
+            self.assertIn("after:7", result.stdout)
+            self.assertNotIn("guarded-loaded", result.stdout)
+
+    def test_sourced_file_top_level_return_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", textwrap.dedent("""\
+                VALUE=before
+                echo "dep:$VALUE"
+                return 7
+                VALUE=after
+                echo "unreachable"
+                """))
+            project.write("main.sh", textwrap.dedent("""\
+                source ./dep.sh
+                echo "after:$VALUE:$?"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            compiled = project.path("compiled.sh")
+            generated_functions = sorted(set(
+                re.findall(r'(__modashc_source_[0-9a-f]+(?:_run)?)\(\)', compiled.read_text())
+            ))
+            self.assertGreaterEqual(len(generated_functions), 2)
+
+            leak_checks = "\n".join(
+                f"type {shlex.quote(function_name)} >/dev/null 2>&1 && "
+                f"echo leaked:{shlex.quote(function_name)}"
+                for function_name in generated_functions
+            )
+            result = subprocess.run(
+                ["bash", "-c", f"source {shlex.quote(str(compiled))}\n{leak_checks}\ntrue"],
+                cwd=project.root,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            self.assertNotIn("leaked:", result.stdout)
+
+    def test_sourced_file_return_disables_later_sources(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", textwrap.dedent("""\
+                echo "before-return"
+                return 0
+                source ./missing.sh
+                """))
+            project.write("main.sh", textwrap.dedent("""\
+                source ./dep.sh
+                echo "after:$?"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_sourced_file_guarded_return_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", textwrap.dedent("""\
+                FLAG=
+                [[ -n "$FLAG" ]] && return 9
+                VALUE=kept
+                echo "$VALUE"
+                """))
+            project.write("main.sh", textwrap.dedent("""\
+                source ./dep.sh
+                echo "after:$VALUE:$?"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_sourced_file_include_guard_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("lib.sh", textwrap.dedent("""\
+                [[ -n "$LIB_SH" ]] && return
+                LIB_SH=1
+                COUNT=${COUNT:-0}
+                COUNT=loaded
+                echo "loaded:$COUNT"
+                """))
+            project.write("main.sh", textwrap.dedent("""\
+                source ./lib.sh
+                source ./lib.sh
+                echo "after:$COUNT:$?"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
 
     def test_missing_source_supplement_values_emit_skeleton(self):
         with ScriptProject() as project:

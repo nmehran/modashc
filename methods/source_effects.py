@@ -101,7 +101,7 @@ class IRNode:
 
 @dataclass(frozen=True)
 class RawCommand(IRNode):
-    pass
+    separator: str = ""
 
 
 @dataclass(frozen=True)
