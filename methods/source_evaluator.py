@@ -2592,7 +2592,9 @@ class SourceEvaluator:
 
     def _case_subject_value(self, subject: str, state: EvaluationState):
         subject = subject.strip()
-        if '$(' in subject or '`' in subject:
+        if self._is_single_quoted_word(subject):
+            return subject[1:-1]
+        if self._contains_case_command_substitution(subject):
             raise UnsupportedSourceError(
                 f"unsupported dynamic case subject: {subject}",
                 code="unsupported.source.case-subject",
@@ -2609,8 +2611,50 @@ class SourceEvaluator:
         if value is not None:
             return value
 
+        if "'" in subject:
+            return None
+
         expanded = os.path.expandvars(strip_matching_quotes(subject))
         return None if "$" in expanded else expanded
+
+    @staticmethod
+    def _is_single_quoted_word(value: str):
+        return len(value) >= 2 and value[0] == value[-1] == "'" and value.count("'") == 2
+
+    @staticmethod
+    def _contains_case_command_substitution(text: str):
+        in_single_quote = False
+        in_double_quote = False
+        escaped = False
+        index = 0
+
+        while index < len(text):
+            char = text[index]
+            if escaped:
+                escaped = False
+                index += 1
+                continue
+
+            if char == "\\" and not in_single_quote:
+                escaped = True
+                index += 1
+                continue
+
+            if char == "'" and not in_double_quote:
+                in_single_quote = not in_single_quote
+                index += 1
+                continue
+
+            if char == '"' and not in_single_quote:
+                in_double_quote = not in_double_quote
+                index += 1
+                continue
+
+            if not in_single_quote and (text.startswith("$(", index) or char == "`"):
+                return True
+
+            index += 1
+        return False
 
     def _validate_case_patterns(self, node: CaseBlock, state: EvaluationState):
         for arm in node.arms:
@@ -2619,7 +2663,7 @@ class SourceEvaluator:
 
     def _validate_case_pattern(self, pattern: str, state: EvaluationState):
         stripped_pattern = pattern.strip()
-        if '$(' in stripped_pattern or '`' in stripped_pattern:
+        if self._contains_case_command_substitution(stripped_pattern):
             raise UnsupportedSourceError(
                 f"unsupported dynamic case pattern: {stripped_pattern}",
                 code="unsupported.source.case-pattern",

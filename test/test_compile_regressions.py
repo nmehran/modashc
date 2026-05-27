@@ -821,6 +821,47 @@ class CompileRegressionTestCase(unittest.TestCase):
                     """),
                 None,
             ),
+            "single quoted subject ignores process environment": (
+                textwrap.dedent("""\
+                    case '$ENV' in
+                      '$ENV') source ./prod.sh ;;
+                      prod) source ./dev.sh ;;
+                    esac
+                    echo "main"
+                    """),
+                {"ENV": "prod"},
+            ),
+            "mixed single quoted subject ignores process environment": (
+                textwrap.dedent("""\
+                    case x'$ENV' in
+                      'x$ENV') source ./prod.sh ;;
+                      xprod) source ./dev.sh ;;
+                    esac
+                    echo "main"
+                    """),
+                {"ENV": "prod"},
+            ),
+            "single quoted command substitution subject is literal": (
+                textwrap.dedent("""\
+                    case '$(echo prod)' in
+                      '$(echo prod)') source ./prod.sh ;;
+                      prod) source ./dev.sh ;;
+                    esac
+                    echo "main"
+                    """),
+                None,
+            ),
+            "single quoted command substitution pattern is literal": (
+                textwrap.dedent("""\
+                    ENV='$(echo prod)'
+                    case "$ENV" in
+                      '$(echo prod)') source ./prod.sh ;;
+                      prod) source ./dev.sh ;;
+                    esac
+                    echo "main"
+                    """),
+                None,
+            ),
             "no matching arm": (
                 textwrap.dedent("""\
                     ENV=qa
@@ -2450,6 +2491,14 @@ class CompileRegressionTestCase(unittest.TestCase):
             ),
             "case unresolved variable pattern": (
                 'ENV=prod\ncase "$ENV" in\n  "$PATTERN") source ./prod.sh ;;\nesac\n',
+                'case "$ENV" in',
+            ),
+            "case dynamic pattern": (
+                'ENV=prod\ncase "$ENV" in\n  "$(echo prod)") source ./prod.sh ;;\nesac\n',
+                'case "$ENV" in',
+            ),
+            "case dynamic pattern inside double quoted apostrophes": (
+                'ENV=prod\ncase "$ENV" in\n  "\'$(echo prod)\'") source ./prod.sh ;;\nesac\n',
                 'case "$ENV" in',
             ),
             "case divergent state": (
