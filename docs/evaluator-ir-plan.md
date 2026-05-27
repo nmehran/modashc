@@ -24,7 +24,9 @@ source sites. Bounded local function calls are implemented when the definition
 is known, arguments are exact, and source-relevant body effects are modeled. It
 remains fail-closed for broader glob semantics, source-bearing compound
 conditions, broader case pattern semantics, recursive functions,
-runtime-dynamic function dispatch, and child-shell runtime dispatch.
+runtime-dynamic function dispatch, and child-shell runtime dispatch. Compound
+source conditions are tracked in
+[Compound Source Condition Lowering](compound-source-condition-lowering.md).
 
 ## Problem
 

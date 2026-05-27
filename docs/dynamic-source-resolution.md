@@ -477,7 +477,10 @@ These still need separate specs before implementation:
 These are intentionally tracked as practical future work, not permanently
 unsupported forms:
 
-- Compound, multi-source, or pipeline conditional source predicates.
+- Compound source conditions are tracked in
+  [Compound Source Condition Lowering](compound-source-condition-lowering.md).
+  Multi-source and pipeline conditional source predicates remain deferred
+  beyond that narrow logical-list work.
 - Source-free control flow whose body effects exceed the current conservative
   state merge.
 - Static guard evaluation outside exact file/glob tests, exact `shopt -q`, and

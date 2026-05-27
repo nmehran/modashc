@@ -25,6 +25,9 @@ keep only in code comments or tests.
 - [Runtime-Guarded Static Source Lowering](runtime-guarded-source-lowering.md):
   static lowering for exact source sites guarded by runtime `if` and `case`
   control flow.
+- [Compound Source Condition Lowering](compound-source-condition-lowering.md):
+  planned lowering for exact source atoms inside `if` / `elif` logical
+  condition lists.
 - [Real-World Internal Test Suite](real-world-test-suite.md):
   opt-in corpus, supplement fixture, artifact, and runtime parity probes
   workflow.
@@ -46,8 +49,6 @@ user-facing support matrix and practical remaining work.
 The intended approach is captured in the
 [Next-Generation Evaluator And IR Plan](evaluator-ir-plan.md):
 
-- Runtime-guarded static source lowering for exact source sites inside unknown
-  `if` predicates and runtime `case` subjects
 - Remaining array/list iteration outside exact indexed, associative,
   command-substitution, and file-populated arrays
 - Remaining loop forms outside exact `for`, bounded C-style `for ((...))`,
@@ -57,7 +58,8 @@ The intended approach is captured in the
   requiring word splitting, full `GLOBIGNORE` edge behavior, and explicit
   source-argument frames that combine top-level `set --` with later nested
   source calls
-- Compound source conditions, broader source guard predicates, and case
-  pattern/fallthrough semantics
+- Compound source conditions, tracked in
+  [Compound Source Condition Lowering](compound-source-condition-lowering.md)
+- Broader source guard predicates and case pattern/fallthrough semantics
 - Runtime-dynamic source dispatch, recursive source-bearing functions,
   non-equivalent branch-defined functions, and branch-dependent function returns

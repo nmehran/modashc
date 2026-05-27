@@ -297,6 +297,8 @@ The remaining source-resolution surface is narrower than general Bash support:
 - Explicit source-argument frames that combine top-level `set --` with later
   nested source calls remain fail-closed; see
   [Source Argument Semantics Completion](source-argument-semantics.md).
+- Compound source conditions are tracked in
+  [Compound Source Condition Lowering](compound-source-condition-lowering.md).
 - `extglob` and full Bash edge semantics for `GLOBIGNORE`.
 - Broader `case` pattern and fallthrough semantics for source-bearing arms.
 - Recursive or runtime-dynamic source-bearing function dispatch. Exact

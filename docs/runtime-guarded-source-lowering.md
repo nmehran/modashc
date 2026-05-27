@@ -41,9 +41,10 @@ can become executable output where `some_runtime_probe` remains live Bash and
 - Branch-local source effects are lowered, but later source resolution still
   fails if it depends on branch-divergent variables, arrays, cwd, shell
   options, function definitions, or positional state.
-- Runtime loops, compound direct source conditions, parser-level compound
-  `if source ./dep.sh && ...` forms, recursive/runtime-dynamic dispatch, xtrace
-  discovery, `extglob`, and full `GLOBIGNORE` edge behavior remain later work.
+- Runtime loops, recursive/runtime-dynamic dispatch, xtrace discovery,
+  `extglob`, and full `GLOBIGNORE` edge behavior remain later work. Compound
+  direct source conditions such as `if source ./dep.sh && ...` are tracked in
+  [Compound Source Condition Lowering](compound-source-condition-lowering.md).
 
 ## Non-Goals
 
@@ -141,7 +142,7 @@ Runtime loops with exact source-invariant bodies should be a separate
 iteration. They need explicit repeated-occurrence and post-loop state semantics.
 
 Compound direct source conditions such as `if source ./dep.sh && test ...; then`
-also remain separate because they require frontend grammar work before lowering
-can be correct.
+are tracked in
+[Compound Source Condition Lowering](compound-source-condition-lowering.md).
 
 Runtime source discovery with xtrace remains a later 0.5-class feature.
