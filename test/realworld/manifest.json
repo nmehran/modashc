@@ -161,6 +161,22 @@
         {
           "source": "pacman/runtime-guarded-case-dev.sh",
           "path": ".modashc-fixtures/runtime-guarded-case-dev.sh"
+        },
+        {
+          "source": "pacman/compound-source-wrapper.sh",
+          "path": ".modashc-fixtures/compound-source-wrapper.sh"
+        },
+        {
+          "source": "pacman/compound-source-lib.sh",
+          "path": ".modashc-fixtures/compound-source-lib.sh"
+        },
+        {
+          "source": "pacman/compound-fallback-wrapper.sh",
+          "path": ".modashc-fixtures/compound-fallback-wrapper.sh"
+        },
+        {
+          "source": "pacman/compound-fallback-lib.sh",
+          "path": ".modashc-fixtures/compound-fallback-lib.sh"
         }
       ],
       "entrypoints": [
@@ -325,6 +341,36 @@
         },
         {
           "path": ".modashc-fixtures/runtime-guarded-case-wrapper.sh",
+          "modes": {
+            "context": {
+              "expected": "success"
+            },
+            "executable": {
+              "expected": "success"
+            }
+          },
+          "runtime": {
+            "expected": "match",
+            "cwd": ".modashc-fixtures"
+          }
+        },
+        {
+          "path": ".modashc-fixtures/compound-source-wrapper.sh",
+          "modes": {
+            "context": {
+              "expected": "success"
+            },
+            "executable": {
+              "expected": "success"
+            }
+          },
+          "runtime": {
+            "expected": "match",
+            "cwd": ".modashc-fixtures"
+          }
+        },
+        {
+          "path": ".modashc-fixtures/compound-fallback-wrapper.sh",
           "modes": {
             "context": {
               "expected": "success"

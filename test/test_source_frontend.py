@@ -410,6 +410,16 @@ class LineParserFrontendTestCase(unittest.TestCase):
         self.assertEqual([branch.condition for branch in block.branches], ['[[ "$MODE" == prod ]]', None])
         self.assertEqual([site.source_expression for site in ir.source_sites], ["./prod.sh", "./dev.sh"])
 
+    def test_preserves_shell_logical_operators_in_if_conditions(self):
+        ir = self.parse('if source ./dep.sh && true; then echo loaded; fi\n')
+
+        self.assertEqual(len(ir.nodes), 1)
+        block = ir.nodes[0]
+        self.assertIsInstance(block, IfBlock)
+        self.assertEqual(block.branches[0].condition, "source ./dep.sh && true")
+        self.assertEqual(block.branches[0].condition_location.line, 1)
+        self.assertEqual(block.branches[0].condition_location.column, 4)
+
     def test_parses_simple_multiline_case_block_node(self):
         ir = self.parse("""\
             case "$ENV" in

@@ -381,6 +381,17 @@ class SourceInvocation:
     source_arguments: tuple[str, ...] | None = None
 
 
+@dataclass(frozen=True)
+class ConditionAtom:
+    text: str
+    offset: int
+    separator: str = ""
+    negated: bool = False
+    source_command: str | None = None
+    source_expression: str | None = None
+    source_offset: int | None = None
+
+
 class SourceEvaluator:
     """Evaluate source effects for the supported IR subset without executing Bash."""
 
@@ -457,6 +468,7 @@ class SourceEvaluator:
 
         try:
             self._evaluate_nodes(ir.nodes, state, current_stack)
+            return bool(ir.nodes)
         finally:
             if previous_bash_source is None:
                 state.variables.pop('BASH_SOURCE', None)
@@ -2135,6 +2147,10 @@ class SourceEvaluator:
         )
 
     def _apply_if_block(self, node: IfBlock, state: EvaluationState, stack: tuple[Path, ...]):
+        if any(branch.condition and self._condition_text_may_source(branch.condition) for branch in node.branches):
+            self._apply_source_condition_if_block(node, state, stack)
+            return
+
         outer_occurrence_context = state.occurrence_context
         outer_condition_context = state.condition_context
         statuses = []
@@ -2143,7 +2159,13 @@ class SourceEvaluator:
                 statuses.append("else")
                 continue
             try:
-                statuses.append(self._evaluate_condition(branch.condition, state, node, stack, branch.keyword))
+                statuses.append(self._evaluate_condition(
+                    branch.condition,
+                    state,
+                    node,
+                    stack,
+                    branch,
+                ))
             except UnsupportedSourceError as exc:
                 if self.mode == "context" or not self._raw_command_may_source(branch.condition):
                     statuses.append("unknown")
@@ -2193,6 +2215,116 @@ class SourceEvaluator:
         finally:
             state.occurrence_context = outer_occurrence_context
             state.condition_context = outer_condition_context
+
+    def _apply_source_condition_if_block(self, node: IfBlock, state: EvaluationState, stack: tuple[Path, ...]):
+        outer_occurrence_context = state.occurrence_context
+        outer_condition_context = state.condition_context
+        occurrence_model = (
+            OccurrenceModel.MUTUALLY_EXCLUSIVE
+            if len(node.branches) > 1
+            else OccurrenceModel.CONDITIONAL
+        )
+
+        active_outcomes = [EvaluationOutcome(state.child_shell_copy())]
+        completed_outcomes = []
+
+        try:
+            for branch in node.branches:
+                branch_context = branch.condition or "else"
+                if not active_outcomes:
+                    self._disable_branch_condition_sources(branch, branch_context)
+                    self._disable_unreachable_sources(branch.body, branch_context)
+                    continue
+
+                if branch.condition is None:
+                    for outcome in active_outcomes:
+                        completed_outcomes.append(
+                            self._evaluate_if_branch_body(
+                                branch,
+                                outcome.state,
+                                stack,
+                                occurrence_model,
+                                branch_context,
+                            )
+                        )
+                    active_outcomes = []
+                    continue
+
+                next_active_outcomes = []
+                body_reachable = False
+                for outcome in active_outcomes:
+                    condition_state = outcome.state.child_shell_copy()
+                    condition_state.condition_context = branch.condition
+                    try:
+                        status = self._evaluate_condition(
+                            branch.condition,
+                            condition_state,
+                            node,
+                            stack,
+                            branch,
+                        )
+                    except UnsupportedSourceError as exc:
+                        if (
+                            self.mode == "context"
+                            or not self._condition_has_source_atom(branch.condition)
+                        ):
+                            status = "unknown"
+                        else:
+                            raise with_source_diagnostic(
+                                exc,
+                                str((branch.condition_location or node.location).path),
+                                (branch.condition_location or node.location).line - 1,
+                                branch.condition_text or node.text,
+                                branch.condition,
+                                "unsupported.source.if-condition",
+                            ) from exc
+
+                    if status in {"true", "unknown"}:
+                        body_reachable = True
+                        completed_outcomes.append(
+                            self._evaluate_if_branch_body(
+                                branch,
+                                condition_state,
+                                stack,
+                                occurrence_model,
+                                branch_context,
+                            )
+                        )
+                    if status in {"false", "unknown"}:
+                        next_active_outcomes.append(EvaluationOutcome(condition_state))
+
+                if not body_reachable:
+                    self._disable_unreachable_sources(branch.body, branch_context)
+                active_outcomes = next_active_outcomes
+
+            completed_outcomes.extend(active_outcomes)
+            if self.mode == "context":
+                selected = [outcome for outcome in completed_outcomes if outcome.return_signal is None]
+                selected = selected or completed_outcomes
+                self._merge_possible_states(state, [outcome.state for outcome in selected])
+                return
+            self._apply_possible_outcomes(node, state, completed_outcomes)
+        finally:
+            state.occurrence_context = outer_occurrence_context
+            state.condition_context = outer_condition_context
+
+    def _evaluate_if_branch_body(
+        self,
+        branch,
+        input_state: EvaluationState,
+        stack: tuple[Path, ...],
+        occurrence_model: OccurrenceModel,
+        condition_context: str,
+    ):
+        branch_state = input_state.child_shell_copy()
+        branch_state.occurrence_context = occurrence_model
+        branch_state.condition_context = condition_context
+        return_signal = None
+        try:
+            self._evaluate_nodes(branch.body, branch_state, stack)
+        except (FunctionReturnSignal, SourceReturnSignal) as signal:
+            return_signal = signal
+        return EvaluationOutcome(branch_state, return_signal)
 
     def _apply_context_if_block(
         self,
@@ -2863,13 +2995,19 @@ class SourceEvaluator:
         state: EvaluationState,
         node=None,
         stack: tuple[Path, ...] | None = None,
-        branch_keyword: str | None = None,
+        branch=None,
     ):
         condition = condition.strip()
         if not condition:
             raise UnsupportedSourceError(f"unsupported empty if condition: {condition}")
-        if node is not None and stack is not None:
-            source_status = self._evaluate_source_condition(condition, node, state, stack, branch_keyword)
+        if node is not None and stack is not None and self._condition_text_may_source(condition):
+            source_status = self._evaluate_source_logical_condition(
+                condition,
+                node,
+                state,
+                stack,
+                branch,
+            )
             if source_status is not None:
                 return source_status
         if '$(' in condition or '`' in condition:
@@ -2887,45 +3025,6 @@ class SourceEvaluator:
             raise UnsupportedSourceError(f"unsupported empty if condition: {condition}")
         return self._evaluate_condition_tokens(words, state, condition)
 
-    def _evaluate_source_condition(
-        self,
-        condition: str,
-        node,
-        state: EvaluationState,
-        stack: tuple[Path, ...],
-        branch_keyword: str | None,
-    ):
-        match = re.fullmatch(r'(!\s*)?((?:source)|\.)\s+(.+)', condition.strip(), re.S)
-        if not match:
-            return None
-
-        negated, command_name, source_expression = match.groups()
-        source_expression = source_expression.strip()
-        if not source_expression:
-            raise UnsupportedSourceError(f"unsupported empty source condition: {condition}")
-        if branch_keyword != "if":
-            raise UnsupportedSourceError(f"unsupported source condition branch: {condition}")
-        if has_unsupported_shell_operator(source_expression):
-            raise UnsupportedSourceError(f"unsupported source if condition: {condition}")
-
-        column = self._source_condition_column(node, command_name)
-        source_node = SourceSite(
-            location=SourceLocation(node.location.path, node.location.line, column),
-            text=f"{command_name} {source_expression}",
-            command_name=command_name,
-            source_expression=source_expression,
-            separator="",
-            is_control_flow=False,
-        )
-        self._apply_source_site(source_node, state, stack)
-        source_status = state.last_status
-        if source_status is None:
-            return "unknown"
-        source_succeeded = source_status == 0
-        if negated:
-            source_succeeded = not source_succeeded
-        return "true" if source_succeeded else "false"
-
     @staticmethod
     def _source_condition_column(node, command_name: str):
         match = re.search(rf'(?<!\S){re.escape(command_name)}(?=\s|$)', node.text)
@@ -2933,6 +3032,286 @@ class SourceEvaluator:
             return node.location.column + match.start()
         command_index = source_command_index(node.text)
         return node.location.column if command_index is None else node.location.column + command_index
+
+    def _evaluate_source_logical_condition(
+        self,
+        condition: str,
+        node,
+        state: EvaluationState,
+        stack: tuple[Path, ...],
+        branch=None,
+    ):
+        atoms = self._source_logical_condition_atoms(condition)
+        if not any(atom.source_command for atom in atoms):
+            if self._raw_command_may_source(condition):
+                raise UnsupportedSourceError(f"unsupported source if condition: {condition}")
+            return None
+
+        status = self._status_from_last_status(state.last_status)
+        for atom in atoms:
+            if atom.separator == "&&" and status == "false":
+                self._disable_condition_atom_source(node, condition, atom, branch, "&& previous command status")
+                state.last_status = 1
+                continue
+            if atom.separator == "||" and status == "true":
+                self._disable_condition_atom_source(node, condition, atom, branch, "|| previous command status")
+                state.last_status = 0
+                continue
+
+            if status == "unknown" and atom.separator in {"&&", "||"} and atom.source_command is None:
+                state.last_status = None
+                continue
+
+            if atom.source_command is not None:
+                source_node = self._condition_source_node(node, atom, branch)
+                self._apply_source_site(source_node, state, stack)
+                if atom.negated:
+                    state.last_status = self._negated_last_status(state.last_status)
+                status = self._status_from_last_status(state.last_status)
+                continue
+
+            status = self._evaluate_logical_condition_command_atom(atom, state, condition)
+            if atom.negated:
+                status = self._condition_not(status)
+            state.last_status = self._last_status_from_condition_status(status)
+
+        return status
+
+    def _source_logical_condition_atoms(self, condition: str):
+        if '$(' in condition or '`' in condition:
+            raise UnsupportedSourceError(f"unsupported dynamic if condition: {condition}")
+
+        segments = self._split_logical_condition_segments(condition)
+        atoms = []
+        for separator, text, offset in segments:
+            atom = self._parse_logical_condition_atom(text, offset, separator, condition)
+            atoms.append(atom)
+        return atoms
+
+    @staticmethod
+    def _split_logical_condition_segments(condition: str):
+        segments = []
+        start = 0
+        separator = ""
+        in_single_quote = False
+        in_double_quote = False
+        in_double_bracket = False
+        escaped = False
+        paren_depth = 0
+        index = 0
+
+        while index < len(condition):
+            char = condition[index]
+            if escaped:
+                escaped = False
+                index += 1
+                continue
+            if char == "\\" and not in_single_quote:
+                escaped = True
+                index += 1
+                continue
+            if char == "'" and not in_double_quote:
+                in_single_quote = not in_single_quote
+                index += 1
+                continue
+            if char == '"' and not in_single_quote:
+                in_double_quote = not in_double_quote
+                index += 1
+                continue
+            if not in_single_quote and not in_double_quote and condition.startswith("[[", index):
+                in_double_bracket = True
+                index += 2
+                continue
+            if in_double_bracket:
+                if not in_single_quote and not in_double_quote and condition.startswith("]]", index):
+                    in_double_bracket = False
+                    index += 2
+                    continue
+                index += 1
+                continue
+            if not in_single_quote and not in_double_quote:
+                if char == "(":
+                    paren_depth += 1
+                elif char == ")" and paren_depth:
+                    paren_depth -= 1
+                elif char == ";":
+                    raise UnsupportedSourceError(f"unsupported if condition list: {condition}")
+                elif paren_depth == 0 and condition.startswith(("&&", "||"), index):
+                    atom_text = condition[start:index]
+                    stripped_offset = start + len(atom_text) - len(atom_text.lstrip())
+                    stripped_text = atom_text.strip()
+                    if not stripped_text:
+                        raise UnsupportedSourceError(f"unsupported empty if condition: {condition}")
+                    segments.append((separator, stripped_text, stripped_offset))
+                    separator = condition[index:index + 2]
+                    index += 2
+                    start = index
+                    continue
+                elif char == "|":
+                    raise UnsupportedSourceError(f"unsupported if condition pipeline: {condition}")
+            index += 1
+
+        atom_text = condition[start:]
+        stripped_offset = start + len(atom_text) - len(atom_text.lstrip())
+        stripped_text = atom_text.strip()
+        if not stripped_text:
+            raise UnsupportedSourceError(f"unsupported empty if condition: {condition}")
+        segments.append((separator, stripped_text, stripped_offset))
+        return tuple(segments)
+
+    @staticmethod
+    def _parse_logical_condition_atom(text: str, offset: int, separator: str, condition: str):
+        negated = False
+        command_text = text
+        command_offset = offset
+        while command_text == "!" or command_text.startswith("! "):
+            negated = not negated
+            if command_text == "!":
+                raise UnsupportedSourceError(f"unsupported empty if condition: {condition}")
+            stripped = command_text[1:]
+            command_offset += 1 + len(stripped) - len(stripped.lstrip())
+            command_text = stripped.lstrip()
+
+        source_match = re.fullmatch(r'((?:source)|\.)\s+(.+)', command_text, re.S)
+        if source_match:
+            command_name, source_expression = source_match.groups()
+            source_expression = source_expression.strip()
+            if not source_expression:
+                raise UnsupportedSourceError(f"unsupported empty source condition: {condition}")
+            if has_unsupported_shell_operator(source_expression):
+                raise UnsupportedSourceError(f"unsupported source if condition: {condition}")
+            return ConditionAtom(
+                text=command_text,
+                offset=command_offset,
+                separator=separator,
+                negated=negated,
+                source_command=command_name,
+                source_expression=source_expression,
+                source_offset=command_offset + source_match.start(1),
+            )
+
+        if contains_source_command(command_text) or contains_nested_source_command(command_text):
+            raise UnsupportedSourceError(f"unsupported source if condition: {condition}")
+
+        return ConditionAtom(
+            text=command_text,
+            offset=command_offset,
+            separator=separator,
+            negated=negated,
+        )
+
+    def _evaluate_logical_condition_command_atom(
+        self,
+        atom: ConditionAtom,
+        state: EvaluationState,
+        condition: str,
+    ):
+        try:
+            return self._evaluate_condition(atom.text, state)
+        except UnsupportedSourceError:
+            if self._raw_command_may_source(atom.text):
+                raise
+            return "unknown"
+
+    @staticmethod
+    def _status_from_last_status(status: int | None):
+        if status is None:
+            return "unknown"
+        return "true" if status == 0 else "false"
+
+    @staticmethod
+    def _last_status_from_condition_status(status: str):
+        if status == "true":
+            return 0
+        if status == "false":
+            return 1
+        return None
+
+    @staticmethod
+    def _negated_last_status(status: int | None):
+        if status is None:
+            return None
+        return 1 if status == 0 else 0
+
+    def _condition_source_node(self, node, atom: ConditionAtom, branch=None):
+        location = self._condition_atom_location(node, atom, branch)
+        return SourceSite(
+            location=location,
+            text=f"{atom.source_command} {atom.source_expression}",
+            command_name=atom.source_command,
+            source_expression=atom.source_expression,
+            separator=atom.separator,
+            is_control_flow=False,
+        )
+
+    @staticmethod
+    def _condition_atom_location(node, atom: ConditionAtom, branch=None):
+        base_location = getattr(branch, "condition_location", None) or node.location
+        if atom.source_offset is None:
+            return base_location
+        return SourceLocation(
+            base_location.path,
+            base_location.line,
+            base_location.column + atom.source_offset,
+        )
+
+    def _disable_condition_atom_source(self, node, condition: str, atom: ConditionAtom, branch, reason: str):
+        if atom.source_command is None:
+            return
+        location = self._condition_atom_location(node, atom, branch)
+        source_site = f"{atom.source_command} {atom.source_expression}".strip()
+        self.disabled_sources.append(DisabledSourceSite(
+            location=location,
+            source_expression=atom.source_expression.strip(),
+            source_site=source_site,
+            replacement_kind="source",
+            condition=reason,
+        ))
+
+    def _disable_branch_condition_sources(self, branch, condition: str):
+        if not branch.condition:
+            return
+        location = branch.condition_location
+        if location is None:
+            return
+        try:
+            atoms = self._source_logical_condition_atoms(branch.condition)
+        except UnsupportedSourceError:
+            atoms = ()
+        disabled_direct_source = False
+        for atom in atoms:
+            if atom.source_command is None:
+                continue
+            disabled_direct_source = True
+            source_site = f"{atom.source_command} {atom.source_expression}".strip()
+            self.disabled_sources.append(DisabledSourceSite(
+                location=self._condition_atom_location(None, atom, branch),
+                source_expression=atom.source_expression.strip(),
+                source_site=source_site,
+                replacement_kind="source",
+                condition=condition,
+            ))
+        if not disabled_direct_source and self._raw_command_contains_literal_source(branch.condition):
+            self.disabled_sources.append(DisabledSourceSite(
+                location=location,
+                source_expression=branch.condition.strip(),
+                source_site=branch.condition.strip(),
+                replacement_kind="command",
+                condition=condition,
+            ))
+
+    @staticmethod
+    def _condition_text_may_source(condition: str):
+        return bool(
+            re.search(r'(^|[\s!(&|])(?:source|\.)\s+', condition)
+            or SourceEvaluator._raw_command_may_source(condition)
+        )
+
+    def _condition_has_source_atom(self, condition: str):
+        try:
+            return any(atom.source_command for atom in self._source_logical_condition_atoms(condition))
+        except UnsupportedSourceError:
+            return self._condition_text_may_source(condition)
 
     def _evaluate_condition_tokens(self, words: list[str], state: EvaluationState, condition: str):
         result, index = self._parse_condition_or(words, 0, state, condition)
@@ -4671,10 +5050,12 @@ class SourceEvaluator:
             source_positional_assignment_generation = state.positional_assignment_generation
         try:
             try:
-                self._evaluate_file(source_path, state, stack, as_source=True)
+                had_nodes = self._evaluate_file(source_path, state, stack, as_source=True)
             except SourceReturnSignal as signal:
                 return signal.status
-            return 0
+            if not had_nodes:
+                return 0
+            return state.last_status if state.last_status is not None else 0
         finally:
             if source_arguments is not None:
                 final_positional_arguments = state.positional_arguments

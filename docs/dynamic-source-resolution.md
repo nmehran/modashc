@@ -477,10 +477,10 @@ These still need separate specs before implementation:
 These are intentionally tracked as practical future work, not permanently
 unsupported forms:
 
-- Compound source conditions are tracked in
+- Source commands in conditional pipelines, subshells, command substitutions,
+  process substitutions, or unsupported shell grammar. Exact source atoms in
+  top-level `if` / `elif` logical lists are covered by
   [Compound Source Condition Lowering](compound-source-condition-lowering.md).
-  Multi-source and pipeline conditional source predicates remain deferred
-  beyond that narrow logical-list work.
 - Source-free control flow whose body effects exceed the current conservative
   state merge.
 - Static guard evaluation outside exact file/glob tests, exact `shopt -q`, and

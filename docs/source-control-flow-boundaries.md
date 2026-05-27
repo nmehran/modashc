@@ -24,10 +24,11 @@ Current high-value remaining gaps after this iteration:
 - Runtime-guarded static lowering for exact source sites inside unknown `if`
   predicates and runtime `case` subjects is implemented in
   [Runtime-Guarded Static Source Lowering](runtime-guarded-source-lowering.md).
-- Compound source-bearing conditions are tracked in
+- Exact source atoms in top-level `if` / `elif` logical lists are covered by
   [Compound Source Condition Lowering](compound-source-condition-lowering.md).
   Pipelines, command substitutions, and source conditions outside the modeled
-  direct-condition and guarded-branch subsets remain unsupported.
+  direct-condition, logical-list, and guarded-branch subsets remain
+  unsupported.
 - Source-free unsupported loops are passed through with conservative state
   merging, but broad loop/runtime semantics remain intentionally narrow.
 - Broader source guards beyond exact file/glob tests and exact shell-option

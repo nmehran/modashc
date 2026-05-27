@@ -60,6 +60,7 @@ DO_LINE_PATTERN = re.compile(r'^\s*do\s*$')
 INLINE_DONE_PATTERN = re.compile(r'^(.*?)(?:;\s*)?done(?:\s+(.*))?$')
 IF_COMMAND_PATTERN = re.compile(r'^\s*if\s+(.+?)\s*$')
 ELIF_COMMAND_PATTERN = re.compile(r'^\s*elif\s+(.+?)\s*$')
+IF_INLINE_THEN_PATTERN = re.compile(r'^\s*((?:if|elif)\s+.+?)\s*;\s*then(?:\s*(.*))?\s*$')
 THEN_COMMAND_PATTERN = re.compile(r'^\s*then(?:\s+(.+?))?\s*$')
 ELSE_COMMAND_PATTERN = re.compile(r'^\s*else(?:\s+(.+?))?\s*$')
 FI_COMMAND_PATTERN = re.compile(r'^\s*fi\s*$')
@@ -234,12 +235,14 @@ class LineParserFrontend:
         return RawCommand(location=location, text=command, separator=separator)
 
     def _parse_if_block(self, script_path: Path, line_number: int, code_line: str, lines: list[str], line_index: int):
-        commands = get_commands(code_line)
+        commands = self._if_block_commands(code_line)
         if not commands or not IF_COMMAND_PATTERN.match(commands[0]):
             return None, line_index + 1
 
         branches = []
         current_condition = None
+        current_condition_location = None
+        current_condition_text = ""
         current_keyword = None
         current_body = []
         saw_then = False
@@ -265,7 +268,7 @@ class LineParserFrontend:
                 index += 1
                 continue
 
-            for command in get_commands(code):
+            for command in self._if_block_commands(code):
                 stripped_command = command.strip()
 
                 if nested_depth:
@@ -283,15 +286,34 @@ class LineParserFrontend:
                         continue
                     current_keyword = "if"
                     current_condition = match.group(1).strip()
+                    current_condition_location = SourceLocation(
+                        script_path,
+                        index + 1,
+                        self._command_column(code, command) + match.start(1),
+                    )
+                    current_condition_text = current_condition
                     saw_then = False
                     continue
 
                 if match := ELIF_COMMAND_PATTERN.match(stripped_command):
                     if current_keyword is None:
                         return None, line_index + 1
-                    branches.append(self._if_branch(script_path, current_keyword, current_condition, current_body))
+                    branches.append(self._if_branch(
+                        script_path,
+                        current_keyword,
+                        current_condition,
+                        current_body,
+                        current_condition_location,
+                        current_condition_text,
+                    ))
                     current_keyword = "elif"
                     current_condition = match.group(1).strip()
+                    current_condition_location = SourceLocation(
+                        script_path,
+                        index + 1,
+                        self._command_column(code, command) + match.start(1),
+                    )
+                    current_condition_text = current_condition
                     current_body = []
                     saw_then = False
                     continue
@@ -307,9 +329,18 @@ class LineParserFrontend:
                 if match := ELSE_COMMAND_PATTERN.match(stripped_command):
                     if current_keyword is None:
                         return None, line_index + 1
-                    branches.append(self._if_branch(script_path, current_keyword, current_condition, current_body))
+                    branches.append(self._if_branch(
+                        script_path,
+                        current_keyword,
+                        current_condition,
+                        current_body,
+                        current_condition_location,
+                        current_condition_text,
+                    ))
                     current_keyword = "else"
                     current_condition = None
+                    current_condition_location = None
+                    current_condition_text = ""
                     current_body = []
                     saw_then = True
                     if match.group(1):
@@ -319,7 +350,14 @@ class LineParserFrontend:
                 if FI_COMMAND_PATTERN.match(stripped_command):
                     if current_keyword is None or (current_keyword in {"if", "elif"} and not saw_then):
                         return None, line_index + 1
-                    branches.append(self._if_branch(script_path, current_keyword, current_condition, current_body))
+                    branches.append(self._if_branch(
+                        script_path,
+                        current_keyword,
+                        current_condition,
+                        current_body,
+                        current_condition_location,
+                        current_condition_text,
+                    ))
                     column = self._command_column(code_line, "if")
                     return IfBlock(
                         location=SourceLocation(script_path, line_number, column),
@@ -335,11 +373,40 @@ class LineParserFrontend:
 
         return None, line_index + 1
 
-    def _if_branch(self, script_path: Path, keyword: str, condition: str | None, body_lines):
+    @staticmethod
+    def _if_block_commands(code: str):
+        stripped = code.strip()
+        if not re.match(r'^(?:if|elif)\s+', stripped):
+            return get_commands(code)
+
+        if match := IF_INLINE_THEN_PATTERN.match(stripped):
+            header, tail = match.groups()
+            commands = [header.strip()]
+            tail_commands = get_commands(tail or "")
+            if tail_commands:
+                commands.append(f"then {tail_commands[0]}")
+                commands.extend(tail_commands[1:])
+            else:
+                commands.append("then")
+            return commands
+
+        return [stripped]
+
+    def _if_branch(
+        self,
+        script_path: Path,
+        keyword: str,
+        condition: str | None,
+        body_lines,
+        condition_location: SourceLocation | None,
+        condition_text: str,
+    ):
         return IfBranch(
             condition=condition,
             body=self._parse_loop_body(script_path, body_lines),
             keyword=keyword,
+            condition_location=condition_location,
+            condition_text=condition_text,
         )
 
     @staticmethod

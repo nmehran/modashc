@@ -26,8 +26,8 @@ keep only in code comments or tests.
   static lowering for exact source sites guarded by runtime `if` and `case`
   control flow.
 - [Compound Source Condition Lowering](compound-source-condition-lowering.md):
-  planned lowering for exact source atoms inside `if` / `elif` logical
-  condition lists.
+  static lowering for exact source atoms inside `if` / `elif` logical condition
+  lists.
 - [Real-World Internal Test Suite](real-world-test-suite.md):
   opt-in corpus, supplement fixture, artifact, and runtime parity probes
   workflow.
@@ -58,8 +58,6 @@ The intended approach is captured in the
   requiring word splitting, full `GLOBIGNORE` edge behavior, and explicit
   source-argument frames that combine top-level `set --` with later nested
   source calls
-- Compound source conditions, tracked in
-  [Compound Source Condition Lowering](compound-source-condition-lowering.md)
 - Broader source guard predicates and case pattern/fallthrough semantics
 - Runtime-dynamic source dispatch, recursive source-bearing functions,
   non-equivalent branch-defined functions, and branch-dependent function returns

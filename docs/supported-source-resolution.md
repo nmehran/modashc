@@ -228,6 +228,25 @@ else
 fi
 ```
 
+Exact source atoms are also supported inside top-level `if` / `elif` logical
+condition lists. The compiler lowers only the source atom and leaves the
+runtime guard shape intact:
+
+```bash
+if source ./dep.sh && runtime_probe; then
+  echo loaded
+fi
+
+if runtime_probe || source ./fallback.sh; then
+  echo ready
+fi
+```
+
+Source effects that depend on a runtime condition are treated as conditional.
+Later source sites fail closed if they need variables, arrays, cwd, shell
+options, functions, or positional state that diverged across possible
+condition paths.
+
 Supported `case` blocks use modeled arm patterns: literal patterns, alternate
 patterns, default arms, quoted literals, and ordinary glob patterns without
 mixed quoting, backslash escapes, POSIX character classes, or fallthrough
@@ -283,12 +302,14 @@ bash -c "source ./dep.sh"            # child-shell semantics
 
 Other fail-closed families include unmatched or quoted globs, `extglob`
 patterns, `set -f` / `noglob`, `failglob` unmatched globs, `GLOBIGNORE`
-patterns that remove every source match, source-bearing compound conditions,
-unsupported dynamic `case` subjects or arm patterns, unsupported process
-substitution outside modeled read-loop input, unknown runtime-dynamic or
-recursive function dispatch, non-equivalent branch-defined functions,
+patterns that remove every source match, source commands in pipelines,
+subshells, command substitutions, process substitutions, or unsupported shell
+grammar, unsupported dynamic `case` subjects or arm patterns, unsupported
+process substitution outside modeled read-loop input, unknown runtime-dynamic
+or recursive function dispatch, non-equivalent branch-defined functions,
 branch-dependent function returns, nested dynamic substitutions, and
-multi-result command-substitution output where a single source path is required.
+multi-result command-substitution output where a single source path is
+required.
 
 ## Practical Remaining Work
 
@@ -297,8 +318,6 @@ The remaining source-resolution surface is narrower than general Bash support:
 - Explicit source-argument frames that combine top-level `set --` with later
   nested source calls remain fail-closed; see
   [Source Argument Semantics Completion](source-argument-semantics.md).
-- Compound source conditions are tracked in
-  [Compound Source Condition Lowering](compound-source-condition-lowering.md).
 - `extglob` and full Bash edge semantics for `GLOBIGNORE`.
 - Broader `case` pattern and fallthrough semantics for source-bearing arms.
 - Recursive or runtime-dynamic source-bearing function dispatch. Exact

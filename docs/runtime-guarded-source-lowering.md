@@ -43,7 +43,7 @@ can become executable output where `some_runtime_probe` remains live Bash and
   options, function definitions, or positional state.
 - Runtime loops, recursive/runtime-dynamic dispatch, xtrace discovery,
   `extglob`, and full `GLOBIGNORE` edge behavior remain later work. Compound
-  direct source conditions such as `if source ./dep.sh && ...` are tracked in
+  direct source conditions such as `if source ./dep.sh && ...` are covered by
   [Compound Source Condition Lowering](compound-source-condition-lowering.md).
 
 ## Non-Goals
@@ -54,7 +54,8 @@ can become executable output where `some_runtime_probe` remains live Bash and
 - Do not leave live unresolved `source` or `.` commands in executable output.
 - Do not model runtime loops in this iteration.
 - Do not broaden recursive or runtime-dynamic function dispatch.
-- Do not support compound direct source conditions as a parser side effect.
+- Do not support compound direct source conditions as a parser side effect of
+  this runtime-guarded lowering iteration.
 
 ## Tranche 1: Unknown If Predicate Source Lowering
 
@@ -142,7 +143,7 @@ Runtime loops with exact source-invariant bodies should be a separate
 iteration. They need explicit repeated-occurrence and post-loop state semantics.
 
 Compound direct source conditions such as `if source ./dep.sh && test ...; then`
-are tracked in
+are covered by
 [Compound Source Condition Lowering](compound-source-condition-lowering.md).
 
 Runtime source discovery with xtrace remains a later 0.5-class feature.

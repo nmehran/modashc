@@ -22,10 +22,10 @@ Exact `case` blocks are implemented for known subjects and the modeled pattern
 subset; unknown scalar subjects preserve the runtime `case` and lower exact arm
 source sites. Bounded local function calls are implemented when the definition
 is known, arguments are exact, and source-relevant body effects are modeled. It
-remains fail-closed for broader glob semantics, source-bearing compound
-conditions, broader case pattern semantics, recursive functions,
-runtime-dynamic function dispatch, and child-shell runtime dispatch. Compound
-source conditions are tracked in
+remains fail-closed for broader glob semantics, source-bearing pipelines and
+unsupported compound grammar, broader case pattern semantics, recursive
+functions, runtime-dynamic function dispatch, and child-shell runtime dispatch.
+Exact source atoms in top-level logical condition lists are covered by
 [Compound Source Condition Lowering](compound-source-condition-lowering.md).
 
 ## Problem

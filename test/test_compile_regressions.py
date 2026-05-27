@@ -3300,7 +3300,7 @@ class CompileRegressionTestCase(unittest.TestCase):
 
             project.assert_compiled_matches(self, "main.sh")
 
-    def test_compound_source_if_condition_remains_unsupported(self):
+    def test_compound_source_if_condition_matches_bash(self):
         with ScriptProject() as project:
             project.write("dep.sh", 'echo "dep"\n')
             project.write("main.sh", textwrap.dedent("""\
@@ -3308,12 +3308,148 @@ class CompileRegressionTestCase(unittest.TestCase):
                   echo "loaded"
                 fi
                 """))
+
+            compiled = project.compile("main.sh", mode="executable")
+            compiled_text = compiled.read_text()
+
+            self.assertNotIn("source ./dep.sh", compiled_text)
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_compound_source_if_condition_preserves_source_status(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "dep"\nfalse\n')
+            project.write("then.sh", 'NEXT=real.sh\n')
+            project.write("real.sh", 'echo "real"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                source ./dep.sh && source ./then.sh
+                source "$NEXT"
+                echo done
+                """))
             output = project.path("compiled.sh")
 
-            with self.assertRaisesRegex(NotImplementedError, "source") as cm:
+            with self.assertRaisesRegex(NotImplementedError, "branch-dependent|unresolved") as cm:
                 project.compile("main.sh", output=output, mode="executable")
 
             self.assertTrue(cm.exception.diagnostic.code.startswith("unsupported.source."))
+            self.assertFalse(output.exists())
+
+    def test_compound_source_if_condition_fallback_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("primary.sh", textwrap.dedent("""\
+                echo primary
+                return 7
+                """))
+            project.write("fallback.sh", textwrap.dedent("""\
+                echo fallback
+                FALLBACK_STATE=loaded
+                """))
+            project.write("main.sh", textwrap.dedent("""\
+                if source ./primary.sh || source ./fallback.sh; then
+                  echo "state=$FALLBACK_STATE"
+                fi
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_negated_compound_source_if_condition_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", textwrap.dedent("""\
+                echo dep
+                return 4
+                """))
+            project.write("fallback.sh", 'echo fallback\n')
+            project.write("main.sh", textwrap.dedent("""\
+                if ! source ./dep.sh || source ./fallback.sh; then
+                  echo loaded
+                fi
+                """))
+
+            compiled = project.compile("main.sh", mode="executable")
+            compiled_text = compiled.read_text()
+
+            self.assertIn("if ! {", compiled_text)
+            self.assertNotIn("source ./dep.sh", compiled_text)
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_runtime_guarded_compound_source_if_condition_matches_bash(self):
+        for enabled in ("1", "0"):
+            with self.subTest(enabled=enabled), ScriptProject() as project:
+                project.write("dep.sh", 'echo dep\nSTATE=loaded\n')
+                project.write("main.sh", textwrap.dedent("""\
+                    if awk 'BEGIN { exit ENVIRON["LOAD_DEP"] == "1" ? 0 : 1 }' && source ./dep.sh; then
+                      echo "then=$STATE"
+                    else
+                      echo "else=${STATE-unset}"
+                    fi
+                    """))
+
+                project.assert_compiled_matches(self, "main.sh", env={"LOAD_DEP": enabled})
+
+    def test_compound_source_if_condition_rejects_branch_dependent_state(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'NEXT=next.sh\n')
+            project.write("next.sh", 'echo next\n')
+            project.write("main.sh", textwrap.dedent("""\
+                if awk 'BEGIN { exit ENVIRON["LOAD_DEP"] == "1" ? 0 : 1 }' && source ./dep.sh; then
+                  echo loaded
+                fi
+                source "$NEXT"
+                """))
+            output = project.path("compiled.sh")
+
+            with self.assertRaisesRegex(NotImplementedError, "branch-dependent") as cm:
+                project.compile("main.sh", output=output, mode="executable")
+
+            self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.branch-state")
+            self.assertFalse(output.exists())
+
+    def test_runtime_guarded_compound_source_if_condition_rejects_dynamic_path(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo dep\n')
+            project.write("main.sh", textwrap.dedent("""\
+                if awk 'BEGIN { exit 0 }' && source "$DEP"; then
+                  echo loaded
+                fi
+                """))
+            output = project.path("compiled.sh")
+
+            with self.assertRaisesRegex(NotImplementedError, "unresolved source") as cm:
+                project.compile("main.sh", output=output, mode="executable")
+
+            self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.unresolved")
+            self.assertFalse(output.exists())
+
+    def test_unreachable_elif_source_condition_is_removed(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo dep\n')
+            project.write("main.sh", textwrap.dedent("""\
+                if true; then
+                  echo first
+                elif source ./dep.sh; then
+                  echo second
+                fi
+                """))
+
+            compiled = project.compile("main.sh", mode="executable")
+            compiled_text = compiled.read_text()
+
+            self.assertNotIn("source ./dep.sh", compiled_text)
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_compound_source_if_condition_rejects_pipeline(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo dep\n')
+            project.write("main.sh", textwrap.dedent("""\
+                if source ./dep.sh | cat; then
+                  echo loaded
+                fi
+                """))
+            output = project.path("compiled.sh")
+
+            with self.assertRaisesRegex(NotImplementedError, "pipeline") as cm:
+                project.compile("main.sh", output=output, mode="executable")
+
+            self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.if-condition")
             self.assertFalse(output.exists())
 
     def test_cli_prints_source_supplement_skeleton(self):

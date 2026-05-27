@@ -172,6 +172,8 @@ class IfBranch:
     condition: str | None
     body: tuple[IRNode, ...]
     keyword: str
+    condition_location: SourceLocation | None = None
+    condition_text: str = ""
 
 
 @dataclass(frozen=True)

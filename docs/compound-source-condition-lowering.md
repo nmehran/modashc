@@ -2,10 +2,9 @@
 
 ## Status
 
-Planned next product iteration on the
-`iteration/compound-source-condition-lowering` development branch. It builds on
-exact direct source conditions, source-relevant control-flow boundaries, and
-runtime-guarded static source lowering.
+Implemented on the `iteration/compound-source-condition-lowering` development
+branch. It builds on exact direct source conditions, source-relevant
+control-flow boundaries, and runtime-guarded static source lowering.
 
 This iteration remains static. It does not run Bash, use xtrace, infer runtime
 dependencies, or broaden arbitrary shell validation.
@@ -21,7 +20,7 @@ fi
 ```
 
 It also preserves unknown runtime guards and lowers exact branch-local source
-sites. The next narrow gap is source commands used as atoms inside compound
+sites. This iteration adds source commands used as atoms inside compound
 condition lists:
 
 ```bash
@@ -30,23 +29,26 @@ if source ./dep.sh && [[ "$FEATURE" == enabled ]]; then
 fi
 ```
 
-When the source path and source arguments are exact, modashc should lower that
-source atom in place, preserve Bash short-circuit behavior, and model
-source-visible state conservatively. It should fail only when dependency paths,
-source arguments, source execution ordering, or later source-relevant state
-cannot be proven safe.
+When the source path and source arguments are exact, modashc lowers that source
+atom in place, preserves Bash short-circuit behavior, and models source-visible
+state conservatively. It fails only when dependency paths, source arguments,
+source execution ordering, or later source-relevant state cannot be proven safe.
 
-## What Remains
+## Implemented Behavior
 
-High-value remaining gaps before this iteration:
+This iteration covers the high-value static subset:
 
-- `if source ./dep.sh && true; then` remains unsupported even though the
-  dependency path is exact.
-- `if runtime_probe && source ./dep.sh; then` can be rendered safely only if
-  source side effects are marked conditional and later dependent sources fail
-  closed when state diverges.
-- Multiple exact source atoms in `&&` / `||` lists need ordered occurrence and
-  short-circuit state semantics.
+- `if source ./dep.sh && true; then` lowers the exact source atom and preserves
+  the remaining guard.
+- `if runtime_probe && source ./dep.sh; then` lowers the source atom under the
+  original runtime guard and marks source effects conditional.
+- `if source ./dep.sh || source ./fallback.sh; then` lowers multiple exact
+  source atoms in Bash order and preserves short-circuit behavior.
+- `if ! source ./dep.sh || source ./fallback.sh; then` preserves negated
+  source-command status.
+- Reachable `elif` source conditions are evaluated in order; unreachable
+  source-bearing `elif` conditions are replaced with no-op condition atoms so
+  executable output contains no live source commands.
 - Pipelines, subshells, command substitutions, process substitutions, and
   source atoms buried inside unsupported grammar remain later work.
 
