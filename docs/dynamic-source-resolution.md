@@ -463,7 +463,8 @@ These still need separate specs before implementation:
 - Broader glob semantics beyond ordinary deterministic file globs.
 - Static evaluation of conditional predicates outside the modeled
   side-effect-free subset.
-- Broader case pattern and fallthrough semantics.
+- Broader case pattern and fallthrough semantics, planned in
+  [Case Source Semantics Expansion](case-source-semantics.md).
 - Complex array/list-based source paths outside exact indexed, associative,
   append, command-substitution, and file-populated arrays.
 - Broader user-defined function semantics, including runtime-dynamic dispatch,

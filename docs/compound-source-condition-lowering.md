@@ -148,6 +148,7 @@ Bash condition grammar remain separate iterations.
 The explicit source-argument frame edge where a sourced file runs top-level
 `set --` before a later nested source remains separate source-argument work.
 
-Broader case pattern/fallthrough semantics, `extglob`, full `GLOBIGNORE`,
-recursive/runtime-dynamic source-bearing dispatch, and runtime source discovery
-with xtrace remain deferred.
+Broader case pattern/fallthrough semantics are planned in
+[Case Source Semantics Expansion](case-source-semantics.md). `extglob`, full
+`GLOBIGNORE`, recursive/runtime-dynamic source-bearing dispatch, and runtime
+source discovery with xtrace remain deferred.

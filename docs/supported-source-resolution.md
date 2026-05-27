@@ -319,7 +319,8 @@ The remaining source-resolution surface is narrower than general Bash support:
   nested source calls remain fail-closed; see
   [Source Argument Semantics Completion](source-argument-semantics.md).
 - `extglob` and full Bash edge semantics for `GLOBIGNORE`.
-- Broader `case` pattern and fallthrough semantics for source-bearing arms.
+- Broader `case` pattern and fallthrough semantics for source-bearing arms; see
+  [Case Source Semantics Expansion](case-source-semantics.md).
 - Recursive or runtime-dynamic source-bearing function dispatch. Exact
   makepkg-style helper calls using quoted `$@` / `$*` are covered by
   [Source Supplements And Exact Helper Sources](source-supplements.md).

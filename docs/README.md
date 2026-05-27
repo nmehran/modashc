@@ -28,6 +28,9 @@ keep only in code comments or tests.
 - [Compound Source Condition Lowering](compound-source-condition-lowering.md):
   static lowering for exact source atoms inside `if` / `elif` logical condition
   lists.
+- [Case Source Semantics Expansion](case-source-semantics.md):
+  planned static expansion for source-bearing `case` pattern normalization,
+  fallthrough terminators, and real-world/runtime promotion.
 - [Real-World Internal Test Suite](real-world-test-suite.md):
   opt-in corpus, supplement fixture, artifact, and runtime parity probes
   workflow.
@@ -58,6 +61,8 @@ The intended approach is captured in the
   requiring word splitting, full `GLOBIGNORE` edge behavior, and explicit
   source-argument frames that combine top-level `set --` with later nested
   source calls
-- Broader source guard predicates and case pattern/fallthrough semantics
+- Broader source guard predicates and case pattern/fallthrough semantics; the
+  next planned case tranche is
+  [Case Source Semantics Expansion](case-source-semantics.md)
 - Runtime-dynamic source dispatch, recursive source-bearing functions,
   non-equivalent branch-defined functions, and branch-dependent function returns
