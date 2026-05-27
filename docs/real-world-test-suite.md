@@ -5,7 +5,8 @@
 Internal suite iteration. The opt-in unittest harness, local installed smoke
 fixtures, normalized JSON result output, pinned corpus fetch/cache path, pinned
 expected-outcome enforcement, retained output artifacts, supplement fixtures,
-and a first runtime parity probe path are implemented. The pinned corpus
+expanded safe runtime parity probes, and concise opt-in reports are
+implemented. The pinned corpus
 includes `bash-completion` and `pacman`/`makepkg` library fixtures.
 
 This suite is intended to live on an internal development branch until the
@@ -74,11 +75,13 @@ Additional environment switches:
 MODASHC_REALWORLD_TIMEOUT=3
 MODASHC_REALWORLD_FETCH=1
 MODASHC_REALWORLD_RUNTIME=1
+MODASHC_REALWORLD_REPORT=1
 MODASHC_REALWORLD_UPDATE_SNAPSHOTS=1
 ```
 
-Timeout control, fetching, runtime parity checks, and snapshot updates are
-separate operations so a normal internal corpus run stays deterministic.
+Timeout control, fetching, runtime parity checks, human-readable report output,
+and snapshot updates are separate operations so a normal internal corpus run
+stays deterministic.
 
 ## Test Tiers
 
@@ -147,10 +150,10 @@ archive. The second is `pacman` 7.1.0 from the upstream Arch Linux release
 archive, using makepkg library entrypoints with a real sourced shell library
 graph. Supplement-backed `libmakepkg` library entrypoints are pinned as context
 and executable success where retained `source_safe` definitions can be lowered
-through a reviewed finite supplement fixture. A harness-owned pacman wrapper
-fixture loads the real helper and calls it with one exact source path; that
-wrapper is pinned as success in both context and executable modes and has a
-runtime parity probe.
+through a reviewed finite supplement fixture. Harness-owned pacman wrapper
+fixtures exercise the real helper and focused Bash semantics; those wrappers
+are pinned as success in both context and executable modes and have runtime
+parity probes.
 
 Pinned manifest entries enforce expected outcomes for both `context` and
 `executable` modes. Supported expected statuses are:
@@ -214,8 +217,9 @@ Promoted findings so far:
   The fixture-backed `source_safe` wrapper succeeds, and supplement-backed raw
   makepkg library entrypoints now compile successfully in executable mode.
 - makepkg include guards exposed top-level source `return` requirements. The
-  compiler now lowers sourced files containing top-level `return` through a
-  generated same-shell function wrapper.
+  compiler now lowers sourced files containing top-level `return` through
+  generated same-shell helper functions that are cleaned up after the source
+  site runs.
 
 ### Runtime Parity Probes
 
@@ -232,9 +236,16 @@ Runtime parity compares:
 - stdout and stderr, normalized only where the manifest declares an accepted
   normalization
 
-The initial runtime probe compares the pacman `source_safe` wrapper fixture
-against the compiled executable output. Most real distro scripts should remain
-compile/classification fixtures, not runtime fixtures.
+The runtime probe set starts with controlled pacman fixtures:
+
+- real `source_safe` helper dispatch
+- sourced variable, export, and function availability
+- cwd-sensitive nested source behavior
+- top-level sourced-file return status and state
+- skipped dynamic source payloads behind known `&&` / `||` status
+
+Most real distro scripts should remain compile/classification fixtures, not
+runtime fixtures.
 
 ### Supplement Fixtures
 
@@ -275,6 +286,9 @@ be compared without reading test logs.
 Each suite result includes a `summary` object with record counts, status counts,
 total measured record duration, and pinned expectation counts when applicable.
 Each mode record includes `duration_seconds`.
+When `MODASHC_REALWORLD_REPORT=1` is set, the harness also prints concise
+summary lines and unmatched expectations to stderr while still writing the JSON
+result files.
 
 Example:
 
@@ -381,8 +395,8 @@ and reviewable.
 
 The manifest also includes smaller `bash-completion` entrypoints that exercise
 `success` and `unsupported` expectations, plus `pacman` makepkg library and
-fixture entrypoints that prove the harness is not overfit to one upstream
-project.
+runtime fixture entrypoints that prove the harness is not overfit to one
+upstream project.
 
 ## Safety Rules
 
@@ -421,5 +435,6 @@ gate for specific behavior.
 Items 1 through 6 are implemented for the initial local smoke,
 `bash-completion`, and `pacman` corpus paths. Pinned expected-outcome
 enforcement, retained artifacts for successful pinned runs, supplement-backed
-pacman success expectations, and one safe runtime parity probe are also
-implemented. Broader runtime discovery and dynamic tracing remain deferred.
+pacman success expectations, multiple safe runtime parity probes, and opt-in
+human-readable reports are also implemented. Broader runtime discovery and
+dynamic tracing remain deferred.

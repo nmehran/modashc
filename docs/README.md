@@ -17,7 +17,7 @@ keep only in code comments or tests.
   supplement-backed source helper definitions that remain callable in merged
   executable output.
 - [Real-World Internal Test Suite](real-world-test-suite.md):
-  opt-in corpus, supplement fixture, artifact, and runtime parity probe
+  opt-in corpus, supplement fixture, artifact, and runtime parity probes
   workflow.
 - [Next-Generation Evaluator And IR Plan](evaluator-ir-plan.md): Architecture
   notes and implementation history for the source-effect IR and evaluator.

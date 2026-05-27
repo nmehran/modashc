@@ -56,6 +56,10 @@ def runtime_enabled():
     return os.environ.get("MODASHC_REALWORLD_RUNTIME") == "1"
 
 
+def report_enabled():
+    return os.environ.get("MODASHC_REALWORLD_REPORT") == "1"
+
+
 def mode_timeout_seconds():
     raw_value = os.environ.get("MODASHC_REALWORLD_TIMEOUT")
     if not raw_value:
@@ -164,6 +168,11 @@ def validate_runtime_probe(project, entrypoint):
         raise ValueError(f"real-world project {project['name']} runtime probe must be an object")
     if runtime.get("expected") not in RUNTIME_EXPECTED_STATUSES:
         raise ValueError(f"real-world project {project['name']} runtime probe has invalid expected status")
+    executable_expectation = entrypoint.get("modes", {}).get("executable", {})
+    if executable_expectation.get("expected") != "success":
+        raise ValueError(
+            f"real-world project {project['name']} runtime probe requires executable success expectation"
+        )
     cwd = runtime.get("cwd", ".")
     if not isinstance(cwd, str) or not cwd:
         raise ValueError(f"real-world project {project['name']} runtime cwd must be a string")
@@ -471,7 +480,22 @@ def write_result_file(name, payload):
     with target.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2, sort_keys=True)
         handle.write("\n")
+    emit_report(name, payload, target)
     return target
+
+
+def emit_report(name, payload, path):
+    if not report_enabled():
+        return
+    summary = payload.get("summary", {})
+    print(f"[realworld] {name}: {summary}", file=sys.stderr)
+    print(f"[realworld] results: {path.relative_to(REPO_ROOT)}", file=sys.stderr)
+    unmatched = [
+        record for record in payload.get("records", [])
+        if record.get("matched_expectation") is False
+    ]
+    for record in unmatched:
+        print(f"[realworld] unmatched: {record_summary(record)}", file=sys.stderr)
 
 
 def result_summary(records):
@@ -826,6 +850,7 @@ def expectation_matches(record, expectation):
 
 
 def expectation_failure_message(record):
+    details = record_details(record)
     if record["expected_status"] == "unsupported":
         expected_diagnostic = record.get("expected_diagnostic", {})
         actual_diagnostic = (record.get("diagnostics") or [{}])[0]
@@ -834,12 +859,35 @@ def expectation_failure_message(record):
             f"expected unsupported {expected_diagnostic.get('code')} "
             f"{expected_diagnostic.get('fragment')!r}, got "
             f"{record['status']} {actual_diagnostic.get('code')} "
-            f"{actual_diagnostic.get('fragment')!r}"
+            f"{actual_diagnostic.get('fragment')!r}{details}"
         )
     return (
         f"{record['project']} {record['entrypoint']} {record['mode']}: "
-        f"expected {record['expected_status']}, got {record['status']}"
+        f"expected {record['expected_status']}, got {record['status']}{details}"
     )
+
+
+def record_summary(record):
+    mode = record.get("mode", "setup")
+    return f"{record.get('project')} {record.get('entrypoint')} {mode}: {record.get('status')}"
+
+
+def record_details(record):
+    details = []
+    if output_path := record.get("output_path"):
+        details.append(f"output={output_path}")
+    if source_supplement := record.get("source_supplement"):
+        details.append(f"supplement={source_supplement}")
+    if diagnostics := record.get("diagnostics"):
+        diagnostic = diagnostics[0]
+        details.append(
+            "diagnostic="
+            f"{diagnostic.get('code')} line={diagnostic.get('line')} "
+            f"fragment={diagnostic.get('fragment')!r}"
+        )
+    if not details:
+        return ""
+    return " (" + "; ".join(details) + ")"
 
 
 def output_artifact_path(project, entrypoint_path, mode):
@@ -938,7 +986,29 @@ def runtime_failure_message(record):
         f"{record['project']} {record['entrypoint']} runtime: "
         f"expected match, got {record['status']} "
         f"original rc={original.get('returncode')} compiled rc={compiled.get('returncode')}"
+        f"{runtime_output_details(original, compiled)}"
     )
+
+
+def runtime_output_details(original, compiled):
+    details = []
+    for key in ("stdout", "stderr"):
+        original_value = original.get(key, "")
+        compiled_value = compiled.get(key, "")
+        if original_value != compiled_value:
+            details.append(
+                f"{key} original={short_text(original_value)!r} compiled={short_text(compiled_value)!r}"
+            )
+    if not details:
+        return ""
+    return " (" + "; ".join(details) + ")"
+
+
+def short_text(value, limit=160):
+    value = completed_output_text(value)
+    if len(value) <= limit:
+        return value
+    return value[:limit - 3] + "..."
 
 
 @unittest.skipUnless(
