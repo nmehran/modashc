@@ -324,6 +324,10 @@ required.
 
 The remaining source-resolution surface is narrower than general Bash support:
 
+- Source-bearing child-shell contexts: subshells, pipelines, command
+  substitutions, process substitutions, and `bash -c`. The planned static
+  iteration is scoped in
+  [Source-Bearing Child-Shell Contexts](source-child-shell-contexts.md).
 - `extglob` and full Bash edge semantics for `GLOBIGNORE`.
 - Remaining case edge semantics such as `extglob` patterns, collating symbols,
   equivalence classes, and broader locale-dependent pattern behavior.

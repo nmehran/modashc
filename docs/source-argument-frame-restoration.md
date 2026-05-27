@@ -17,7 +17,8 @@ After the case semantics work, the main remaining source-resolution gaps were:
 - explicit source-argument frames that run top-level `set --` before a later
   nested source call
 - source-bearing child-shell contexts: subshells, pipelines, command
-  substitutions, process substitutions, and `bash -c`
+  substitutions, process substitutions, and `bash -c`; see
+  [Source-Bearing Child-Shell Contexts](source-child-shell-contexts.md)
 - `extglob`, full `GLOBIGNORE` edge behavior, and remaining locale-dependent
   case pattern semantics
 - recursive or runtime-dynamic source-bearing dispatch beyond finite modeled
@@ -165,7 +166,8 @@ Acceptance:
 ## Deferred After This Iteration
 
 - source-bearing child-shell contexts: subshells, pipelines, command
-  substitutions, process substitutions, and `bash -c`
+  substitutions, process substitutions, and `bash -c`; see
+  [Source-Bearing Child-Shell Contexts](source-child-shell-contexts.md)
 - `extglob`, full `GLOBIGNORE`, collating symbols, equivalence classes, and
   broader locale-dependent pattern behavior
 - recursive or runtime-dynamic source-bearing function dispatch
