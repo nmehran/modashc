@@ -175,9 +175,11 @@ calls them at the source site, and cleans them up before returning. This makes
 `return` legal, stops only the sourced body, and preserves the source command
 status for guard shapes such as `if ! source "$@"; then`. The supported
 contract is normal sourced-library behavior; source files that intentionally
-inspect top-level `FUNCNAME` identity, invalid top-level `local` behavior, or
-caller positional mutation through top-level `set --` / `shift` are still
-outside V1.
+inspect top-level `FUNCNAME` identity or invalid top-level `local` behavior are
+still outside V1. Caller positional mutation through top-level `set --` /
+`shift` follows the source-argument semantics contract: supported when the
+lowering can preserve Bash behavior exactly, and fail-closed for the documented
+explicit source-argument plus later nested-source edge.
 
 ## Context Mode
 

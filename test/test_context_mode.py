@@ -334,6 +334,20 @@ class ContextModeTestCase(unittest.TestCase):
             content,
         )
 
+    def test_context_output_preserves_dynamic_positional_assignment(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "dep body"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                set -- "$UNKNOWN"
+                source ./dep.sh
+                """))
+
+            output = project.compile("main.sh")
+            content = output.read_text()
+
+        self.assertIn('set -- "$UNKNOWN"', content)
+        self.assertIn("# modashc: source ./dep.sh -> dep.sh", content)
+
     def test_context_output_does_not_resolve_heredoc_source_text(self):
         with ScriptProject() as project:
             project.write("dep.sh", 'echo "dep body"\n')

@@ -2177,6 +2177,37 @@ class CompileRegressionTestCase(unittest.TestCase):
 
             project.assert_compiled_matches(self, "main.sh")
 
+    def test_dynamic_positional_assignment_before_static_source_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'printf "dep:%s:%s\\n" "$1" "$#"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                set -- "$UNKNOWN"
+                source ./dep.sh
+                printf 'after:%s:%s\\n' "$1" "$#"
+                """))
+            compiled = project.compile("main.sh", mode="executable")
+
+            expected = project.run("main.sh", env={"UNKNOWN": "runtime value"})
+            actual = project.run(compiled, env={"UNKNOWN": "runtime value"})
+
+            self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
+            self.assertEqual(actual.stdout, expected.stdout)
+
+    def test_dynamic_positional_assignment_rejects_positional_source_resolution(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                set -- "$UNKNOWN"
+                source "$1"
+                """))
+            output = project.path("compiled.sh")
+
+            with self.assertRaisesRegex(NotImplementedError, "source") as cm:
+                project.compile("main.sh", output=output, mode="executable")
+
+            self.assertTrue(cm.exception.diagnostic.code.startswith("unsupported.source."))
+            self.assertFalse(output.exists())
+
     def test_source_arguments_must_resolve_to_exact_values(self):
         with ScriptProject() as project:
             project.write("dep.sh", 'echo "dep:$1"\n')
