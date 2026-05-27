@@ -556,6 +556,8 @@ scope:
   helpers.
 - Top-level `return` in supported sourced files is lowered with a generated
   same-shell wrapper so include guards and source status are preserved.
+- Wrapped sourced files that mutate caller positionals with top-level `set --`
+  or `shift` fail closed until direct positional-mutation lowering is modeled.
 - Executable mode fails before output when unsupported source forms would leave
   live runtime `source` commands.
 

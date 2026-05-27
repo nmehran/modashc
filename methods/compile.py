@@ -13,6 +13,7 @@ from methods.source_effects import (
     FunctionDef,
     IfBlock,
     RawCommand,
+    SetCommand,
     WhileLoop,
 )
 from methods.source_frontend import LineParserFrontend
@@ -143,6 +144,30 @@ def raw_command_is_return(node: RawCommand):
     return bool(re.match(r'^return(?:\s|$)', node.text.strip()))
 
 
+def raw_command_is_shift(node: RawCommand):
+    return bool(re.match(r'^shift(?:\s|$)', node.text.strip()))
+
+
+def set_command_assigns_positionals(node: SetCommand):
+    arguments = node.arguments
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--":
+            return True
+        if not argument.startswith(("-", "+")):
+            return True
+        if argument in {'-o', '+o'}:
+            if index + 1 >= len(arguments):
+                return False
+            index += 2
+            continue
+        if argument in {'-', '+'}:
+            return False
+        index += 1
+    return False
+
+
 def nodes_have_top_level_return(nodes):
     for node in nodes:
         if isinstance(node, RawCommand) and raw_command_is_return(node):
@@ -161,11 +186,36 @@ def nodes_have_top_level_return(nodes):
     return False
 
 
-def file_has_top_level_return(filepath: str, content: str):
-    if "return" not in content:
-        return False
+def nodes_have_top_level_positional_mutation(nodes):
+    for node in nodes:
+        if isinstance(node, RawCommand) and raw_command_is_shift(node):
+            return True
+        if isinstance(node, SetCommand) and set_command_assigns_positionals(node):
+            return True
+        if isinstance(node, FunctionDef):
+            continue
+        if isinstance(node, (ForLoop, CStyleForLoop, WhileLoop)):
+            if nodes_have_top_level_positional_mutation(node.body):
+                return True
+        elif isinstance(node, IfBlock):
+            if any(nodes_have_top_level_positional_mutation(branch.body) for branch in node.branches):
+                return True
+        elif isinstance(node, CaseBlock):
+            if any(nodes_have_top_level_positional_mutation(arm.body) for arm in node.arms):
+                return True
+    return False
+
+
+def file_top_level_source_traits(filepath: str, content: str):
+    has_return_text = "return" in content
+    has_positional_mutation_text = bool(re.search(r'\b(?:set|shift)\b', content))
+    if not has_return_text and not has_positional_mutation_text:
+        return False, False
     ir = LineParserFrontend().parse(os.path.abspath(filepath), content)
-    return nodes_have_top_level_return(ir.nodes)
+    return (
+        nodes_have_top_level_return(ir.nodes) if has_return_text else False,
+        nodes_have_top_level_positional_mutation(ir.nodes) if has_positional_mutation_text else False,
+    )
 
 
 def render_source_call_wrapper(filepath: str, content: str, source_arguments=None):
@@ -585,7 +635,7 @@ def line_contains_unresolved_source(line: str):
 
 def render_executable_script(entry_point: str, context: dict):
     file_contents = {}
-    top_level_return_cache = {}
+    top_level_trait_cache = {}
     render_stack = []
 
     def get_content(filepath):
@@ -594,10 +644,13 @@ def render_executable_script(entry_point: str, context: dict):
             file_contents[filepath] = content
         return file_contents[filepath]
 
-    def has_top_level_return(filepath, content):
-        if filepath not in top_level_return_cache:
-            top_level_return_cache[filepath] = file_has_top_level_return(filepath, content)
-        return top_level_return_cache[filepath]
+    def top_level_traits(filepath, content):
+        if filepath not in top_level_trait_cache:
+            top_level_trait_cache[filepath] = file_top_level_source_traits(filepath, content)
+        return top_level_trait_cache[filepath]
+
+    def has_top_level_positional_mutation(filepath, content):
+        return top_level_traits(filepath, content)[1]
 
     def render_file(filepath, *, as_source=False, source_arguments=None):
         filepath = os.path.abspath(filepath)
@@ -655,10 +708,21 @@ def render_executable_script(entry_point: str, context: dict):
                 output.append(line)
 
             rendered = '\n'.join(output)
-            if as_source and (
-                source_arguments is not None
-                or has_top_level_return(filepath, content)
+            wraps_top_level_return = as_source and top_level_traits(filepath, content)[0]
+            if (
+                as_source
+                and (source_arguments is not None or wraps_top_level_return)
+                and has_top_level_positional_mutation(filepath, content)
             ):
+                raise UnsupportedSourceError(
+                    f"unsupported top-level positional mutation in wrapped sourced file: {filepath}",
+                    code="unsupported.source.positionals",
+                    hint=(
+                        "Sourced files that need generated wrappers cannot mutate caller positional parameters "
+                        "without changing Bash semantics."
+                    ),
+                )
+            if as_source and (source_arguments is not None or wraps_top_level_return):
                 return render_source_call_wrapper(filepath, rendered, source_arguments)
             return rendered
         finally:

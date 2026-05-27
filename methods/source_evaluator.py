@@ -3345,6 +3345,9 @@ class SourceEvaluator:
         return tuple(arguments)
 
     def _resolve_source_argument_word(self, word: str, node: SourceSite, state: EvaluationState):
+        if self._raw_word_is_single_quoted(word):
+            return strip_shell_word_quotes(word)
+
         if '$(' in word or '`' in word:
             raise self._unsupported_source_argument(
                 node,
@@ -3894,6 +3897,9 @@ class SourceEvaluator:
     @staticmethod
     def _resolve_function_exact_word(word: str, node: RawCommand, state: EvaluationState, code: str,
                                      dynamic_message: str, unresolved_message: str, hint: str):
+        if SourceEvaluator._raw_word_is_single_quoted(word):
+            return strip_shell_word_quotes(word)
+
         if '$(' in word or '`' in word:
             raise unsupported_source_error(
                 str(node.location.path),

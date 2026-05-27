@@ -1929,6 +1929,13 @@ class CompileRegressionTestCase(unittest.TestCase):
 
             project.assert_compiled_matches(self, "main.sh")
 
+    def test_direct_source_single_quoted_argument_remains_literal(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", "printf 'dep:%s\\n' \"$1\"\n")
+            project.write("main.sh", "source ./dep.sh '$1'\n")
+
+            project.assert_compiled_matches(self, "main.sh")
+
     def test_nested_source_inherits_source_positionals_with_quoted_at(self):
         with ScriptProject() as project:
             project.write("nested.sh", textwrap.dedent("""\
@@ -1981,6 +1988,45 @@ class CompileRegressionTestCase(unittest.TestCase):
 
             project.assert_compiled_matches(self, "main.sh")
 
+    def test_sourced_file_with_arguments_rejects_top_level_positional_mutation(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", textwrap.dedent("""\
+                set -- changed
+                printf 'dep:%s:%s\\n' "$1" "$#"
+                return 0
+                """))
+            project.write("main.sh", textwrap.dedent("""\
+                set -- outer
+                source ./dep.sh arg
+                printf 'after:%s:%s\\n' "$1" "$#"
+                """))
+            output = project.path("compiled.sh")
+
+            with self.assertRaisesRegex(NotImplementedError, "positional mutation") as cm:
+                project.compile("main.sh", output=output, mode="executable")
+
+            self.assertEqual(cm.exception.code, "unsupported.source.positionals")
+            self.assertFalse(output.exists())
+
+    def test_sourced_file_with_arguments_rejects_top_level_shift(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", textwrap.dedent("""\
+                shift
+                printf 'dep:%s:%s\\n' "$1" "$#"
+                """))
+            project.write("main.sh", textwrap.dedent("""\
+                set -- outer
+                source ./dep.sh arg
+                printf 'after:%s:%s\\n' "$1" "$#"
+                """))
+            output = project.path("compiled.sh")
+
+            with self.assertRaisesRegex(NotImplementedError, "positional mutation") as cm:
+                project.compile("main.sh", output=output, mode="executable")
+
+            self.assertEqual(cm.exception.code, "unsupported.source.positionals")
+            self.assertFalse(output.exists())
+
     def test_sourced_file_return_without_arguments_preserves_caller_positionals(self):
         with ScriptProject() as project:
             project.write("dep.sh", textwrap.dedent("""\
@@ -1995,6 +2041,25 @@ class CompileRegressionTestCase(unittest.TestCase):
                 """))
 
             project.assert_compiled_matches(self, "main.sh")
+
+    def test_sourced_file_return_without_arguments_rejects_caller_positional_mutation(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", textwrap.dedent("""\
+                set -- changed
+                return 0
+                """))
+            project.write("main.sh", textwrap.dedent("""\
+                set -- outer
+                source ./dep.sh
+                printf 'after:%s:%s\\n' "$1" "$#"
+                """))
+            output = project.path("compiled.sh")
+
+            with self.assertRaisesRegex(NotImplementedError, "positional mutation") as cm:
+                project.compile("main.sh", output=output, mode="executable")
+
+            self.assertEqual(cm.exception.code, "unsupported.source.positionals")
+            self.assertFalse(output.exists())
 
     def test_source_arguments_must_resolve_to_exact_values(self):
         with ScriptProject() as project:
@@ -2864,6 +2929,19 @@ class CompileRegressionTestCase(unittest.TestCase):
                   source "$@"
                 }
                 source_safe ./dep.sh alpha beta
+                """))
+            project.write("main.sh", "source ./helpers.sh\n")
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_positional_helper_source_preserves_single_quoted_arguments(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", "printf 'dep:%s\\n' \"$1\"\n")
+            project.write("helpers.sh", textwrap.dedent("""\
+                source_safe() {
+                  source "$@"
+                }
+                source_safe ./dep.sh '$1'
                 """))
             project.write("main.sh", "source ./helpers.sh\n")
 

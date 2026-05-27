@@ -111,7 +111,8 @@ A retained helper can be lowered when all of these are true:
 - The renderer can preserve source status, local scope, cwd, shell option, and
   variable effects for the lowered source content.
 - The supplemented source graph uses supported top-level sourced-file `return`
-  semantics.
+  semantics and does not require top-level positional mutation with `set --` or
+  `shift`.
 
 V1 should reject the helper instead of guessing when any of these are false.
 
@@ -174,8 +175,9 @@ calls them at the source site, and cleans them up before returning. This makes
 `return` legal, stops only the sourced body, and preserves the source command
 status for guard shapes such as `if ! source "$@"; then`. The supported
 contract is normal sourced-library behavior; source files that intentionally
-inspect top-level `FUNCNAME` identity or invalid top-level `local` behavior are
-still outside V1.
+inspect top-level `FUNCNAME` identity, invalid top-level `local` behavior, or
+caller positional mutation through top-level `set --` / `shift` are still
+outside V1.
 
 ## Context Mode
 
@@ -222,7 +224,8 @@ Synthetic tests should land before real-world promotion:
   non-zero.
 - Missing supplement fails before output and emits a valid skeleton.
 - Zero-argument, invalid `source "$1"` multi-argument, unquoted `$@` / `$*`,
-  recursive helper, and dynamic dispatch cases fail with explicit diagnostics.
+  recursive helper, dynamic dispatch, and wrapped-source top-level positional
+  mutation cases fail with explicit diagnostics.
 - Source files containing top-level `return` are rendered with Bash-equivalent
   source status for supported direct and retained helper source sites.
 - Context mode remains readable and does not overstate exactness.

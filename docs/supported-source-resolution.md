@@ -165,6 +165,11 @@ Source arguments must resolve to exact strings. Unresolved variables, command
 substitution, unquoted `$@` / `$*`, and unquoted variable expansions that would
 require word-splitting support remain fail-closed.
 
+Sourced files entered with exact positional arguments must not mutate caller
+positional parameters with top-level `set --` or `shift`. Bash lets those
+mutations escape the temporary source-argument frame, so executable mode rejects
+that shape until direct positional-mutation lowering is modeled.
+
 ## Sourced-File Return
 
 Supported sourced files may contain top-level `return` statements. Executable
@@ -172,7 +177,8 @@ mode lowers those sourced bodies through generated same-shell helper functions
 that are cleaned up after the source site runs. The lowered return stops the
 sourced body, preserves source status, and does not exit the caller. This is
 intended for normal sourced libraries and include guards; files that depend on
-top-level `FUNCNAME` identity or invalid top-level `local` behavior remain
+top-level `FUNCNAME` identity, invalid top-level `local` behavior, or mutating
+the caller's positional parameters with top-level `set --` or `shift` remain
 outside the supported contract.
 
 ```bash
