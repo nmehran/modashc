@@ -408,6 +408,12 @@ class ConditionAtom:
     source_offset: int | None = None
 
 
+@dataclass(frozen=True)
+class ConditionWords:
+    words: tuple[str, ...]
+    kind: str
+
+
 class SourceEvaluator:
     """Evaluate source effects for the supported IR subset without executing Bash."""
 
@@ -3290,13 +3296,13 @@ class SourceEvaluator:
             return self._evaluate_arithmetic_condition(condition[2:-2].strip(), state, condition)
 
         try:
-            words = self._condition_words(condition)
+            condition_words = self._condition_words(condition)
         except UnsupportedSourceError:
             return self._evaluate_command_condition(condition, state)
 
-        if not words:
+        if not condition_words.words:
             raise UnsupportedSourceError(f"unsupported empty if condition: {condition}")
-        return self._evaluate_condition_tokens(words, state, condition)
+        return self._evaluate_condition_tokens(condition_words, state, condition)
 
     @staticmethod
     def _source_condition_column(node, command_name: str):
@@ -3586,47 +3592,57 @@ class SourceEvaluator:
         except UnsupportedSourceError:
             return self._condition_text_may_source(condition)
 
-    def _evaluate_condition_tokens(self, words: list[str], state: EvaluationState, condition: str):
-        result, index = self._parse_condition_or(words, 0, state, condition)
-        if index != len(words):
+    def _evaluate_condition_tokens(self, condition_words: ConditionWords, state: EvaluationState, condition: str):
+        result, index = self._parse_condition_or(condition_words, 0, state, condition)
+        if index != len(condition_words.words):
             raise UnsupportedSourceError(f"unsupported if condition: {condition}")
         return result
 
-    def _parse_condition_or(self, words: list[str], index: int, state: EvaluationState, condition: str):
-        left, index = self._parse_condition_and(words, index, state, condition)
+    def _parse_condition_or(self, condition_words: ConditionWords, index: int, state: EvaluationState, condition: str):
+        words = condition_words.words
+        left, index = self._parse_condition_and(condition_words, index, state, condition)
         while index < len(words) and words[index] == "||":
-            right, index = self._parse_condition_and(words, index + 1, state, condition)
+            right, index = self._parse_condition_and(condition_words, index + 1, state, condition)
             left = self._condition_or(left, right)
         return left, index
 
-    def _parse_condition_and(self, words: list[str], index: int, state: EvaluationState, condition: str):
-        left, index = self._parse_condition_not(words, index, state, condition)
+    def _parse_condition_and(self, condition_words: ConditionWords, index: int, state: EvaluationState, condition: str):
+        words = condition_words.words
+        left, index = self._parse_condition_not(condition_words, index, state, condition)
         while index < len(words) and words[index] == "&&":
-            right, index = self._parse_condition_not(words, index + 1, state, condition)
+            right, index = self._parse_condition_not(condition_words, index + 1, state, condition)
             left = self._condition_and(left, right)
         return left, index
 
-    def _parse_condition_not(self, words: list[str], index: int, state: EvaluationState, condition: str):
+    def _parse_condition_not(self, condition_words: ConditionWords, index: int, state: EvaluationState, condition: str):
+        words = condition_words.words
         if index >= len(words):
             raise UnsupportedSourceError(f"unsupported if condition: {condition}")
         if words[index] == "!":
-            result, next_index = self._parse_condition_not(words, index + 1, state, condition)
+            result, next_index = self._parse_condition_not(condition_words, index + 1, state, condition)
             return self._condition_not(result), next_index
         if words[index] == "(":
-            result, next_index = self._parse_condition_or(words, index + 1, state, condition)
+            result, next_index = self._parse_condition_or(condition_words, index + 1, state, condition)
             if next_index >= len(words) or words[next_index] != ")":
                 raise UnsupportedSourceError(f"unsupported if condition grouping: {condition}")
             return result, next_index + 1
-        return self._parse_condition_atom(words, index, state, condition)
+        return self._parse_condition_atom(condition_words, index, state, condition)
 
-    def _parse_condition_atom(self, words: list[str], index: int, state: EvaluationState, condition: str):
+    def _parse_condition_atom(self, condition_words: ConditionWords, index: int, state: EvaluationState, condition: str):
+        words = condition_words.words
         if index >= len(words) or words[index] in {")", "&&", "||"}:
             raise UnsupportedSourceError(f"unsupported if condition: {condition}")
 
         if words[index] in CONDITION_UNARY_FILE_OPERATORS | CONDITION_UNARY_STRING_OPERATORS:
             if index + 1 >= len(words):
                 raise UnsupportedSourceError(f"unsupported if condition: {condition}")
-            return self._evaluate_condition_unary(words[index], words[index + 1], state, condition), index + 2
+            return self._evaluate_condition_unary(
+                words[index],
+                words[index + 1],
+                state,
+                condition,
+                condition_words.kind,
+            ), index + 2
 
         if index + 1 < len(words) and words[index + 1] in CONDITION_BINARY_OPERATORS:
             if index + 2 >= len(words):
@@ -3637,6 +3653,7 @@ class SourceEvaluator:
                 words[index + 2],
                 state,
                 condition,
+                condition_words.kind,
             ), index + 3
 
         value = self._condition_value(words[index], state)
@@ -3644,9 +3661,16 @@ class SourceEvaluator:
             return "unknown", index + 1
         return ("true" if bool(value) else "false"), index + 1
 
-    def _evaluate_condition_unary(self, operator: str, operand: str, state: EvaluationState, condition: str):
+    def _evaluate_condition_unary(
+        self,
+        operator: str,
+        operand: str,
+        state: EvaluationState,
+        condition: str,
+        condition_kind: str,
+    ):
         if operator in CONDITION_UNARY_FILE_OPERATORS:
-            if has_unquoted_glob(operand):
+            if condition_kind != "double-bracket" and has_unquoted_glob(operand):
                 return self._evaluate_condition_glob_unary(operator, operand, state, condition)
             path = self._condition_path(operand, state, condition)
             if path is None:
@@ -3699,10 +3723,17 @@ class SourceEvaluator:
         result = path.is_file() if operator == "-f" else os.access(path, os.R_OK)
         return "true" if result else "false"
 
-    def _evaluate_condition_binary(self, left_token: str, operator: str, right_token: str,
-                                   state: EvaluationState, condition: str):
+    def _evaluate_condition_binary(
+        self,
+        left_token: str,
+        operator: str,
+        right_token: str,
+        state: EvaluationState,
+        condition: str,
+        condition_kind: str,
+    ):
         if operator in CONDITION_STRING_OPERATORS:
-            is_double_bracket = condition.strip().startswith("[[")
+            is_double_bracket = condition_kind == "double-bracket"
             if not is_double_bracket and (has_unquoted_glob(left_token) or has_unquoted_glob(right_token)):
                 raise UnsupportedSourceError(f"unsupported glob if condition: {condition}")
             left = self._condition_value(left_token, state)
@@ -3999,13 +4030,16 @@ class SourceEvaluator:
         stripped = condition.strip()
         if stripped.startswith("[[") and stripped.endswith("]]"):
             stripped = stripped[2:-2].strip()
+            kind = "double-bracket"
         elif stripped.startswith("[") and stripped.endswith("]"):
             stripped = stripped[1:-1].strip()
+            kind = "single-bracket"
         elif stripped.startswith("test "):
             stripped = stripped[5:].strip()
+            kind = "test"
         else:
             raise UnsupportedSourceError(f"unsupported if condition syntax: {condition}")
-        return parse_shell_words_preserving_quotes(stripped)
+        return ConditionWords(tuple(parse_shell_words_preserving_quotes(stripped)), kind)
 
     @staticmethod
     def _condition_value(value: str, state: EvaluationState):

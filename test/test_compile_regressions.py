@@ -2998,6 +2998,47 @@ class CompileRegressionTestCase(unittest.TestCase):
 
         with ScriptProject() as project:
             project.write("plugins/only.sh", 'echo "plugin marker"\n')
+            project.write("then.sh", 'echo "wrong double bracket glob"\n')
+            project.write("else.sh", 'echo "literal double bracket glob"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                if [[ -f ./plugins/*.sh ]]; then
+                  source ./then.sh
+                else
+                  source ./else.sh
+                fi
+                """))
+
+            output = project.compile("main.sh", mode="executable")
+            expected = project.run("main.sh")
+            actual = project.run(output)
+            compiled_content = output.read_text()
+
+        self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
+        self.assertEqual(actual.stdout, expected.stdout)
+        self.assertNotIn("wrong double bracket glob", compiled_content)
+
+        with ScriptProject() as project:
+            project.write("then.sh", 'echo "wrong missing glob"\n')
+            project.write("else.sh", 'echo "missing single bracket glob"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                if [ -f ./missing/*.sh ]; then
+                  source ./then.sh
+                else
+                  source ./else.sh
+                fi
+                """))
+
+            output = project.compile("main.sh", mode="executable")
+            expected = project.run("main.sh")
+            actual = project.run(output)
+            compiled_content = output.read_text()
+
+        self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
+        self.assertEqual(actual.stdout, expected.stdout)
+        self.assertNotIn("wrong missing glob", compiled_content)
+
+        with ScriptProject() as project:
+            project.write("plugins/only.sh", 'echo "plugin marker"\n')
             project.write("dep.sh", 'echo "dep"\n')
             project.write("main.sh", textwrap.dedent("""\
                 if test -f ./plugins/*.sh; then
