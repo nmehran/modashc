@@ -1,7 +1,5 @@
+from functools import lru_cache
 import re
-
-
-EXTGLOB_PREFIXES = ("@(", "?(", "*(", "+(", "!(")
 
 
 class UnsupportedPatternError(ValueError):
@@ -17,11 +15,17 @@ def extglob_operator_at(text: str, index: int):
 
 
 def shell_pattern_matches(pattern: str, value: str, *, extglob: bool = False, nocase: bool = False):
-    flags = re.S | (re.I if nocase else 0)
-    regex = re.compile(rf"\A{shell_pattern_regex_source(pattern, extglob=extglob)}\Z", flags)
+    regex = _compiled_shell_pattern(pattern, extglob, nocase)
     return bool(regex.fullmatch(value))
 
 
+@lru_cache(maxsize=4096)
+def _compiled_shell_pattern(pattern: str, extglob: bool, nocase: bool):
+    flags = re.S | (re.I if nocase else 0)
+    return re.compile(rf"\A{shell_pattern_regex_source(pattern, extglob=extglob)}\Z", flags)
+
+
+@lru_cache(maxsize=4096)
 def shell_pattern_regex_source(pattern: str, *, extglob: bool = False):
     return _translate_pattern(pattern, extglob=extglob)
 

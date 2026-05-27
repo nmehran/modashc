@@ -468,6 +468,7 @@ class LineParserFrontendTestCase(unittest.TestCase):
             case "$ENV" in
               @(prod|stage)) source ./prod.sh ;;
               !(prod|stage)) source ./default.sh ;;
+              (@(blue|green)) source ./color.sh ;;
             esac
             """)
 
@@ -477,8 +478,13 @@ class LineParserFrontendTestCase(unittest.TestCase):
         self.assertEqual([arm.patterns for arm in block.arms], [
             ("@(prod|stage)",),
             ("!(prod|stage)",),
+            ("@(blue|green)",),
         ])
-        self.assertEqual([site.source_expression for site in ir.source_sites], ["./prod.sh", "./default.sh"])
+        self.assertEqual([site.source_expression for site in ir.source_sites], [
+            "./prod.sh",
+            "./default.sh",
+            "./color.sh",
+        ])
 
     def test_parses_case_subject_containing_in_inside_quotes(self):
         ir = self.parse("""\
