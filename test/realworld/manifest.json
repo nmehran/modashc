@@ -79,6 +79,14 @@
           "path": ".modashc-fixtures/source-safe-target.sh"
         },
         {
+          "source": "pacman/source-safe-args-wrapper.sh",
+          "path": ".modashc-fixtures/source-safe-args-wrapper.sh"
+        },
+        {
+          "source": "pacman/source-safe-args-target.sh",
+          "path": ".modashc-fixtures/source-safe-args-target.sh"
+        },
+        {
           "source": "pacman/PKGBUILD",
           "path": ".modashc-fixtures/PKGBUILD"
         },
@@ -142,6 +150,21 @@
         },
         {
           "path": ".modashc-fixtures/source-safe-wrapper.sh",
+          "modes": {
+            "context": {
+              "expected": "success"
+            },
+            "executable": {
+              "expected": "success"
+            }
+          },
+          "runtime": {
+            "expected": "match",
+            "cwd": ".modashc-fixtures"
+          }
+        },
+        {
+          "path": ".modashc-fixtures/source-safe-args-wrapper.sh",
           "modes": {
             "context": {
               "expected": "success"

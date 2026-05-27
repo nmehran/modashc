@@ -239,6 +239,7 @@ Runtime parity compares:
 The runtime probe set starts with controlled pacman fixtures:
 
 - real `source_safe` helper dispatch
+- real `source_safe` helper dispatch with exact source arguments
 - sourced variable, export, and function availability
 - cwd-sensitive nested source behavior
 - top-level sourced-file return status and state
