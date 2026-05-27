@@ -14,7 +14,9 @@ indexed, associative, appended, command-substitution, and file-populated arrays
 are modeled, as are bounded `while` / `until`, C-style `for ((...))`, and
 `while read` file enumeration from exact files, safe producer pipelines, and
 safe process substitutions.
-Direct source globs are accepted only when they resolve to exactly one file.
+Direct source globs are accepted when they resolve to one or more regular files;
+multi-match direct globs pass the remaining expanded words as source positional
+arguments.
 Modeled `if` / `elif` / `else` blocks can lower source sites inside branches
 when branch predicates are side-effect-free and branch state is exact enough for
 later source resolution. Executable mode neutralizes source sites in statically
@@ -279,15 +281,13 @@ Accept loop globs only when:
 - Modeled shell state is limited to `nullglob`, `dotglob`, `globstar`,
   `nocaseglob`, `failglob`, and practical `GLOBIGNORE` filtering.
 
-Accept direct source globs only when the glob resolves to exactly one regular
-file. Multiple direct-source matches are rejected because Bash would source the
-first expanded word and pass the remaining words as positional arguments to that
-sourced file, which is not equivalent to sourcing every match.
+Accept direct source globs when the glob resolves to at least one regular file.
+For multiple direct-source matches, source the first expanded word and pass the
+remaining expanded words as positional arguments to that sourced file.
 
 Reject examples:
 
 ```bash
-source ./plugins/*.sh          # multiple matches
 for dep in "./plugins/*.sh"; do source "$dep"; done
 set -f
 for dep in ./plugins/*.sh; do source "$dep"; done
@@ -297,9 +297,8 @@ GLOBIGNORE=./plugins/a.sh:./plugins/b.sh
 for dep in ./plugins/*.sh; do source "$dep"; done
 ```
 
-Currently rejected glob-affecting state includes `set -f`, `extglob`, direct
-source globs with multiple matches, and cases where `GLOBIGNORE` removes every
-matched source path.
+Currently rejected glob-affecting state includes `set -f`, `extglob`, and cases
+where `GLOBIGNORE` removes every matched source path.
 
 ### Command-Substitution Word Lists
 
@@ -462,7 +461,6 @@ and validate explicit user-provided values on the second pass.
 These still need separate specs before implementation:
 
 - Broader glob semantics beyond ordinary deterministic file globs.
-- Direct source glob multi-match argument semantics.
 - Conditional predicates outside the modeled side-effect-free subset.
 - Broader case pattern and fallthrough semantics.
 - Complex array/list-based source paths outside exact indexed, associative,
@@ -535,7 +533,7 @@ scope:
 - Deterministic file-glob loop lowering is implemented, including `nullglob`,
   `dotglob`, `globstar`, `nocaseglob`, deterministic brace expansion, and
   practical `GLOBIGNORE` filtering. Direct source globs are implemented for
-  one-match cases only.
+  one-match and multi-match source-argument cases.
 - Exact custom-IFS scalar and command-substitution loop word splitting is
   implemented.
 - Safe producer word lists are implemented for `cat`, `find`, `printf`, `sort`,
@@ -556,10 +554,10 @@ scope:
   helpers.
 - Top-level `return` in supported sourced files is lowered with a generated
   same-shell wrapper so include guards and source status are preserved.
-- Wrapped sourced files that mutate caller positionals with top-level `set --`
-  or `shift` fail closed until direct positional-mutation lowering is modeled.
-- The next planned static source-argument iteration is formalized in
-  [Source Argument Semantics Completion](source-argument-semantics.md).
+- Wrapped sourced files can synchronize modeled top-level positional mutation
+  back to the caller when Bash semantics are exact.
+- Explicit source-argument frames that run top-level `set --` before a later
+  nested source command remain fail-closed.
 - Executable mode fails before output when unsupported source forms would leave
   live runtime `source` commands.
 
@@ -568,8 +566,7 @@ Current diagnostics are raised as explicit `UnsupportedSourceError` instances
 with stable codes, source locations, rejected fragments, messages, and hints.
 
 Future resolver increments should stay small, tested, and fail-closed. Case,
-complex array, broader conditional, `extglob`, direct source glob argument
-semantics, broader supplement-backed source resolution, recursive functions,
-non-equivalent branch-defined functions, branch-dependent function returns, and
-runtime-dispatch support should not be added as one-off resolver patches; those
-belong in the evaluator/IR design.
+complex array, broader conditional, `extglob`, broader supplement-backed source
+resolution, recursive functions, non-equivalent branch-defined functions,
+branch-dependent function returns, and runtime-dispatch support should not be
+added as one-off resolver patches; those belong in the evaluator/IR design.

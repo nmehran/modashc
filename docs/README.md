@@ -17,8 +17,8 @@ keep only in code comments or tests.
   supplement-backed source helper definitions that remain callable in merged
   executable output.
 - [Source Argument Semantics Completion](source-argument-semantics.md):
-  planned static iteration for direct multi-match source globs, wrapped
-  positional mutation lowering, and real-world/runtime promotion.
+  static iteration for direct multi-match source globs, wrapped positional
+  mutation lowering, and real-world/runtime promotion.
 - [Real-World Internal Test Suite](real-world-test-suite.md):
   opt-in corpus, supplement fixture, artifact, and runtime parity probes
   workflow.
@@ -46,9 +46,10 @@ The intended approach is captured in the
 - Remaining loop forms outside exact `for`, bounded C-style `for ((...))`,
   bounded `while` / `until`, and modeled `while read` file enumeration from
   exact files and safe producers
-- Remaining glob/source-argument semantics: `extglob`, direct source glob
-  arguments, source arguments requiring word splitting, and full `GLOBIGNORE`
-  edge behavior
+- Remaining glob/source-argument semantics: `extglob`, source arguments
+  requiring word splitting, full `GLOBIGNORE` edge behavior, and explicit
+  source-argument frames that combine top-level `set --` with later nested
+  source calls
 - Broader case pattern and fallthrough semantics for source-bearing arms
 - Runtime-dynamic source dispatch, recursive source-bearing functions,
   non-equivalent branch-defined functions, and branch-dependent function returns

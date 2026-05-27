@@ -318,6 +318,22 @@ class ContextModeTestCase(unittest.TestCase):
         self.assertIn('# modashc: source "$1" -> a.sh', content)
         self.assertIn('# modashc: source "$1" -> b.sh', content)
 
+    def test_context_output_marks_source_arguments(self):
+        with ScriptProject() as project:
+            project.write("plugins/00-loader.sh", 'echo "loader body"\n')
+            project.write("plugins/10-arg.sh", 'echo "arg body"\n')
+            project.write("main.sh", "source ./plugins/*.sh explicit\n")
+
+            output = project.compile("main.sh")
+            content = output.read_text()
+
+        self.assertIn("echo \"loader body\"", content)
+        self.assertIn(
+            "# modashc: source ./plugins/*.sh explicit -> plugins/00-loader.sh "
+            "(args: './plugins/10-arg.sh' 'explicit')",
+            content,
+        )
+
     def test_context_output_does_not_resolve_heredoc_source_text(self):
         with ScriptProject() as project:
             project.write("dep.sh", 'echo "dep body"\n')

@@ -49,6 +49,7 @@ class ResolvedSource:
     source_column: int | None = None
     occurrence_model: str | None = None
     condition: str | None = None
+    positional_assignment_generation: int | None = None
 
 
 @dataclass(frozen=True)
@@ -1110,8 +1111,9 @@ class SourceResolver:
                 raise UnsupportedSourceError(f"unsupported source glob arguments: {source_site.strip()}")
 
             matches = expand_glob_word(words[0], context, source_site, raw_pattern=source_expression)
-            if len(matches) != 1:
-                raise UnsupportedSourceError(f"unsupported ambiguous source glob output: {source_site.strip()}")
+            if not matches:
+                raise UnsupportedSourceError(f"unsupported empty source glob output: {source_site.strip()}")
+            source_arguments = tuple(match.word for match in matches[1:]) or None
 
             return ResolvedSource(
                 path=matches[0].path,
@@ -1120,6 +1122,7 @@ class SourceResolver:
                 execution_model=execution_model,
                 replacement_kind=replacement_kind,
                 source_value=matches[0].word,
+                source_arguments=source_arguments,
             )
 
         if resolved_path := self.resolve_path(source_expression, context):

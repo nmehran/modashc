@@ -211,6 +211,7 @@ class EvaluationState:
     ambiguous_glob_options: bool = False
     function_call_stack: tuple[str, ...] = ()
     positional_arguments: tuple[str, ...] = ()
+    positional_assignment_generation: int = 0
     local_scopes: list[dict[str, tuple[bool, str | None, bool, str | None, bool]]] = field(default_factory=list)
     last_status: int | None = 0
     loop_depth: int = 0
@@ -243,6 +244,7 @@ class EvaluationState:
             shell_options=frozenset(self.shell_options),
             glob_options=frozenset(self.glob_options),
             bash_source_stack=self.bash_source_stack,
+            positional_assignment_generation=self.positional_assignment_generation,
         )
 
     def child_shell_copy(self):
@@ -267,6 +269,7 @@ class EvaluationState:
             ambiguous_glob_options=self.ambiguous_glob_options,
             function_call_stack=self.function_call_stack,
             positional_arguments=self.positional_arguments,
+            positional_assignment_generation=self.positional_assignment_generation,
             local_scopes=copy.deepcopy(self.local_scopes),
             last_status=self.last_status,
             loop_depth=self.loop_depth,
@@ -300,6 +303,7 @@ class EvaluationState:
         self.ambiguous_glob_options = other.ambiguous_glob_options
         self.function_call_stack = other.function_call_stack
         self.positional_arguments = other.positional_arguments
+        self.positional_assignment_generation = other.positional_assignment_generation
         self.local_scopes = copy.deepcopy(other.local_scopes)
         self.last_status = other.last_status
         self.loop_depth = other.loop_depth
@@ -1022,8 +1026,7 @@ class SourceEvaluator:
         state.ambiguous_cwd = False
         state.last_status = 0
 
-    @staticmethod
-    def _apply_set(node: SetCommand, state: EvaluationState):
+    def _apply_set(self, node: SetCommand, state: EvaluationState):
         status = 0
         index = 0
         while index < len(node.arguments):
@@ -1060,7 +1063,100 @@ class SourceEvaluator:
                     else:
                         state.shell_options.discard(option)
             index += 1
+        if status == 0:
+            positional_arguments = self._set_command_positional_arguments(node, state)
+            if positional_arguments is not None:
+                self._set_positionals(positional_arguments, state, source_argument_escape=True)
         state.last_status = status
+
+    def _set_command_positional_arguments(self, node: SetCommand, state: EvaluationState):
+        try:
+            words = parse_shell_words_preserving_quotes(node.text.strip())
+        except UnsupportedSourceError as exc:
+            raise self._unsupported_positional_mutation(node, "unsupported set syntax") from exc
+
+        if not words or strip_shell_word_quotes(words[0]) != "set":
+            return None
+
+        index = 1
+        while index < len(words):
+            argument = strip_shell_word_quotes(words[index])
+            if argument == "--":
+                return self._resolve_positional_assignment_words(words[index + 1:], node, state)
+            if not argument.startswith(("-", "+")):
+                return self._resolve_positional_assignment_words(words[index:], node, state)
+            if argument in {'-o', '+o'}:
+                index += 2
+                continue
+            if argument in {'-', '+'}:
+                return None
+            index += 1
+        return None
+
+    def _resolve_positional_assignment_words(self, words: list[str], node, state: EvaluationState):
+        arguments = []
+        for word in words:
+            stripped = word.strip()
+            if stripped in {'"$@"', '"${@}"'}:
+                arguments.extend(state.positional_arguments)
+                continue
+            if stripped in {'"$*"', '"${*}"'}:
+                arguments.append(self._joined_positionals(state))
+                continue
+            if re.search(r'(?<!\\)\$(?:\{?[@*]\}?)', stripped):
+                raise self._unsupported_positional_mutation(
+                    node,
+                    "unsupported positional assignment expansion",
+                )
+            arguments.append(self._resolve_function_exact_word(
+                word,
+                node,
+                state,
+                "unsupported.source.positionals",
+                "unsupported dynamic positional assignment",
+                "unsupported unresolved positional assignment",
+                "Positional assignments must resolve exactly for source-aware lowering.",
+            ))
+        return tuple(arguments)
+
+    @staticmethod
+    def _set_positionals(
+        arguments: tuple[str, ...],
+        state: EvaluationState,
+        *,
+        source_argument_escape: bool = False,
+    ):
+        previous_names = {
+            name
+            for mapping in (state.variables, state.runtime_variables)
+            for name in mapping
+            if name.isdigit() and int(name) > 0
+        }
+        current_names = {str(index) for index in range(1, len(arguments) + 1)}
+        for index, argument in enumerate(arguments, start=1):
+            name = str(index)
+            state.variables[name] = argument
+            state.runtime_variables[name] = argument
+            state.ambiguous_variables.discard(name)
+        for name in previous_names - current_names:
+            state.variables.pop(name, None)
+            state.runtime_variables.pop(name, None)
+            state.ambiguous_variables.discard(name)
+        state.positional_arguments = tuple(arguments)
+        if source_argument_escape:
+            state.positional_assignment_generation += 1
+
+    @staticmethod
+    def _unsupported_positional_mutation(node, message: str):
+        return unsupported_source_error(
+            str(node.location.path),
+            node.location.line - 1,
+            node.text,
+            node.text,
+            "unsupported.source.positionals",
+            message,
+            "Positional mutation must be exact for source-aware lowering.",
+        )
 
     def _apply_for_loop(self, node: ForLoop, state: EvaluationState, stack: tuple[Path, ...]):
         try:
@@ -2521,6 +2617,16 @@ class SourceEvaluator:
             if all(state.last_status == first_last_status for state in possible_states)
             else None
         )
+        first_positionals = first.positional_arguments
+        target.positional_arguments = (
+            first_positionals
+            if all(state.positional_arguments == first_positionals for state in possible_states)
+            else ()
+        )
+        target.positional_assignment_generation = max(
+            state.positional_assignment_generation
+            for state in possible_states
+        )
 
     @staticmethod
     def _merge_state_mapping(target: dict, state_mappings: list[dict], ambiguous: set[str],
@@ -3300,7 +3406,16 @@ class SourceEvaluator:
                 "unsupported.source.resolution",
             ) from exc
 
-        return SourceInvocation(resolved_source, source_arguments=source_arguments)
+        if not resolved_source:
+            return SourceInvocation(resolved_source, source_arguments=source_arguments)
+
+        return SourceInvocation(
+            resolved_source,
+            source_arguments=self._merge_source_arguments(
+                resolved_source.source_arguments,
+                source_arguments,
+            ),
+        )
 
     def _split_source_expression_arguments(
         self,
@@ -3343,6 +3458,17 @@ class SourceEvaluator:
                 )
             arguments.append(self._resolve_source_argument_word(word, node, state))
         return tuple(arguments)
+
+    @staticmethod
+    def _merge_source_arguments(
+        resolver_arguments: tuple[str, ...] | None,
+        explicit_arguments: tuple[str, ...] | None,
+    ):
+        if resolver_arguments is None:
+            return explicit_arguments
+        if explicit_arguments is None:
+            return resolver_arguments
+        return (*resolver_arguments, *explicit_arguments)
 
     def _resolve_source_argument_word(self, word: str, node: SourceSite, state: EvaluationState):
         if self._raw_word_is_single_quoted(word):
@@ -3538,7 +3664,7 @@ class SourceEvaluator:
             if state.source_depth > 0:
                 raise SourceReturnSignal(self._function_return_status(node, state), node)
 
-        if state.function_call_stack and self._raw_function_shift_command(node):
+        if self._raw_function_shift_command(node):
             self._apply_function_shift(node, state)
             return
 
@@ -3745,6 +3871,7 @@ class SourceEvaluator:
         prefix_scope = {}
         self._apply_function_assignment_prefixes(prefix_words, prefix_scope, call_node, state)
         previous_positional_arguments = state.positional_arguments
+        previous_positional_assignment_generation = state.positional_assignment_generation
         previous_positionals = self._push_function_positionals(arguments, state)
         previous_call_stack = state.function_call_stack
         previous_function_body_depth = state.function_body_depth
@@ -3763,6 +3890,7 @@ class SourceEvaluator:
             self._restore_local_scope(local_scope, state)
             self._restore_function_positionals(previous_positionals, len(arguments), state)
             state.positional_arguments = previous_positional_arguments
+            state.positional_assignment_generation = previous_positional_assignment_generation
             self._restore_local_scope(prefix_scope, state)
             state.function_call_stack = previous_call_stack
             state.function_body_depth = previous_function_body_depth
@@ -4094,12 +4222,7 @@ class SourceEvaluator:
                 raise self._unsupported_function_control(node, "unsupported non-integer function shift count")
             count = int(count_text)
 
-        positional_indexes = sorted(
-            int(name)
-            for name in set(state.variables) | set(state.runtime_variables)
-            if name.isdigit() and int(name) > 0
-        )
-        argument_count = positional_indexes[-1] if positional_indexes else 0
+        argument_count = len(state.positional_arguments)
         if count == 0:
             state.last_status = 0
             return
@@ -4107,27 +4230,7 @@ class SourceEvaluator:
             state.last_status = 1
             return
 
-        for index in range(1, argument_count + 1):
-            target = str(index)
-            source = str(index + count)
-            if index + count <= argument_count:
-                if source in state.variables:
-                    state.variables[target] = state.variables[source]
-                else:
-                    state.variables.pop(target, None)
-                if source in state.runtime_variables:
-                    state.runtime_variables[target] = state.runtime_variables[source]
-                else:
-                    state.runtime_variables.pop(target, None)
-            else:
-                state.variables.pop(target, None)
-                state.runtime_variables.pop(target, None)
-            state.ambiguous_variables.discard(target)
-        state.positional_arguments = tuple(
-            state.runtime_variables[str(index)]
-            for index in range(1, argument_count - count + 1)
-            if str(index) in state.runtime_variables
-        )
+        self._set_positionals(state.positional_arguments[count:], state)
         state.last_status = 0
 
     def _resolve_function_control_word(self, word: str, node: RawCommand, state: EvaluationState, command: str):
@@ -4392,10 +4495,12 @@ class SourceEvaluator:
     ):
         previous_positional_arguments = None
         previous_positionals = None
+        source_positional_assignment_generation = None
         if source_arguments is not None:
             previous_positional_arguments = state.positional_arguments
             previous_positionals = self._push_function_positionals(source_arguments, state)
             state.positional_arguments = source_arguments
+            source_positional_assignment_generation = state.positional_assignment_generation
         try:
             try:
                 self._evaluate_file(source_path, state, stack, as_source=True)
@@ -4404,8 +4509,12 @@ class SourceEvaluator:
             return 0
         finally:
             if source_arguments is not None:
+                final_positional_arguments = state.positional_arguments
+                positional_mutated = state.positional_assignment_generation != source_positional_assignment_generation
                 self._restore_function_positionals(previous_positionals, len(source_arguments), state)
                 state.positional_arguments = previous_positional_arguments
+                if positional_mutated:
+                    self._set_positionals(final_positional_arguments, state, source_argument_escape=True)
 
     def _record_event(self, source_path: Path, node, source_expression: str, source_site: str,
                       execution_model: ExecutionModel, replacement_kind: str, state: EvaluationState,

@@ -2,15 +2,15 @@
 
 ## Status
 
-Planned next product iteration. This work stays on a development branch until
-the synthetic suite, real-world corpus, runtime probes, and generated artifact
-review are all green.
+Implemented on the source-argument semantics development branch. This branch
+should stay separate until the review pass, full verification, and generated
+artifact inspection are complete.
 
 ## Summary
 
-The current compiler supports exact direct source arguments and makepkg-style
-helper source arguments. The next useful product gap is to finish the remaining
-Bash source-argument semantics that are now reachable without runtime tracing:
+The compiler supports exact direct source arguments and makepkg-style helper
+source arguments. This iteration finishes the remaining Bash source-argument
+semantics that are reachable without runtime tracing:
 
 - direct source globs that expand to more than one file
 - wrapped sourced files that mutate caller positional parameters with top-level
@@ -21,7 +21,7 @@ Bash source-argument semantics that are now reachable without runtime tracing:
 This iteration is still static. It does not add xtrace, runtime source
 discovery, or environment-dependent compilation.
 
-## Current Baseline
+## Implemented Scope
 
 Implemented behavior:
 
@@ -32,16 +32,19 @@ Implemented behavior:
   vectors.
 - Source bodies containing top-level `return` are lowered through generated
   helper functions.
-- Wrapped sourced files currently fail closed if they contain top-level
-  positional mutation with `set --` or `shift`.
+- Direct source globs that expand to multiple regular files source the first
+  match and pass the remaining expanded words as source arguments.
+- Wrapped sourced files synchronize modeled top-level positional mutation back
+  to the caller when Bash behavior is exact.
+- The real-world suite has controlled pacman fixtures for direct glob source
+  arguments and wrapped positional mutation.
 
-Known remaining source-argument gaps:
+Known remaining source-argument edge:
 
-- `source ./deps/*.sh` remains unsupported when the glob expands to multiple
-  files, even though Bash treats the first match as the source path and the
-  remaining matches as source positional arguments.
-- Generated wrappers cannot yet propagate top-level positional mutations from
-  the sourced body back to the caller.
+- A sourced file entered with explicit source arguments that runs top-level
+  `set --` before a later nested `source` remains fail-closed. Bash restores the
+  explicit source-argument frame differently after the nested source returns,
+  so the compiler rejects that shape until a narrower model is justified.
 
 ## Non-Goals
 
@@ -92,7 +95,8 @@ Acceptance:
 - Sourced files with exact source arguments and top-level `set -- ...` match
   Bash output, status, and caller positional state after the source returns.
 - Sourced files with exact source arguments and top-level `shift` match Bash
-  output, status, and caller positional state after the source returns.
+  output, status, and caller positional state; Bash restores the explicit
+  source-argument frame after `shift`.
 - Sourced files without explicit source arguments but with top-level `return`
   and top-level positional mutation also match Bash.
 - Positional mutation inside function definitions remains function-local and
@@ -114,6 +118,8 @@ Implementation notes:
 - Function bodies inside sourced files must be skipped by the top-level scan.
 - If status preservation or source-site scope cannot be proven, keep the
   current fail-closed diagnostic.
+- For explicit source-argument frames, reject top-level `set --` before a later
+  nested source command.
 
 ## Tranche 3: Real-World And Runtime Promotion
 

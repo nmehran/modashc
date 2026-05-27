@@ -12,6 +12,7 @@ from methods.source_effects import (
     ForLoop,
     FunctionDef,
     IfBlock,
+    LineReplacement,
     RawCommand,
     SetCommand,
     WhileLoop,
@@ -113,6 +114,9 @@ def construct_context_source_comment(source_declaration, entry_point: str):
         source_label = source_declaration.source_site.strip()
         suffix = f" ({source_declaration.execution_model})"
 
+    if source_declaration.source_arguments:
+        suffix = f"{suffix} (args: {shell_quote_words(source_declaration.source_arguments)})"
+
     if source_declaration.occurrence_model in {"conditional", "mutually-exclusive"}:
         condition = f": {source_declaration.condition}" if source_declaration.condition else ""
         suffix = f"{suffix} ({source_declaration.occurrence_model}{condition})"
@@ -130,8 +134,21 @@ def write_output(filename, content):
         file.write(content)
 
 
-def render_source_block(filepath: str, render_source, indent: str, source_arguments=None):
-    rendered_source = indent_block(render_source(filepath, source_arguments=source_arguments), indent)
+def render_source_block(
+    filepath: str,
+    render_source,
+    indent: str,
+    source_arguments=None,
+    source_state_generation=None,
+):
+    rendered_source = indent_block(
+        render_source(
+            filepath,
+            source_arguments=source_arguments,
+            source_state_generation=source_state_generation,
+        ),
+        indent,
+    )
     return f"{{\n{rendered_source}\n{indent}}}"
 
 
@@ -146,6 +163,10 @@ def raw_command_is_return(node: RawCommand):
 
 def raw_command_is_shift(node: RawCommand):
     return bool(re.match(r'^shift(?:\s|$)', node.text.strip()))
+
+
+def raw_command_is_simple_shift(node: RawCommand):
+    return bool(re.fullmatch(r'shift(?:\s+\d+)?', node.text.strip()))
 
 
 def set_command_assigns_positionals(node: SetCommand):
@@ -166,6 +187,10 @@ def set_command_assigns_positionals(node: SetCommand):
             return False
         index += 1
     return False
+
+
+def set_command_is_simple_positional_assignment(node: SetCommand):
+    return bool(node.arguments) and node.arguments[0] == "--"
 
 
 def nodes_have_top_level_return(nodes):
@@ -218,7 +243,116 @@ def file_top_level_source_traits(filepath: str, content: str):
     )
 
 
-def render_source_call_wrapper(filepath: str, content: str, source_arguments=None):
+def source_positional_capture_names(filepath: str):
+    prefix = generated_source_function_name(filepath)
+    return {
+        "positionals": f"{prefix}_positionals",
+        "positionals_set": f"{prefix}_positionals_set",
+        "source_status": f"{prefix}_source_status",
+        "finish": f"{prefix}_finish",
+        "shift_status": f"{prefix}_shift_status",
+    }
+
+
+def render_set_positional_capture(command: str, names: dict[str, str]):
+    return (
+        f"{{ {command}; "
+        f"{names['positionals']}=(\"$@\"); "
+        f"{names['positionals_set']}=1; "
+        f"}}"
+    )
+
+
+def render_shift_positional_capture(command: str, names: dict[str, str]):
+    return (
+        f"{{ {command}; "
+        f"local {names['shift_status']}=$?; "
+        f"if (( {names['shift_status']} == 0 )); then "
+        f"{names['positionals']}=(\"$@\"); "
+        f"{names['positionals_set']}=1; "
+        f"fi; "
+        f"( exit \"${names['shift_status']}\" ); "
+        f"}}"
+    )
+
+
+def _collect_positional_sync_replacements(
+    nodes,
+    names: dict[str, str],
+    replacements: dict[int, list],
+    *,
+    capture_shift: bool,
+):
+    for node in nodes:
+        if isinstance(node, FunctionDef):
+            continue
+        if isinstance(node, SetCommand) and set_command_assigns_positionals(node):
+            if not set_command_is_simple_positional_assignment(node):
+                raise UnsupportedSourceError(
+                    f"unsupported positional set syntax in wrapped sourced file: {node.text.strip()}",
+                    code="unsupported.source.positionals",
+                    hint="Only top-level set -- positional mutation is supported in wrapped sourced files.",
+                )
+            replacements.setdefault(node.location.line - 1, []).append(LineReplacement(
+                node.location,
+                node.text,
+                render_set_positional_capture(node.text, names),
+            ))
+            continue
+        if isinstance(node, RawCommand) and raw_command_is_shift(node):
+            if not capture_shift:
+                continue
+            if not raw_command_is_simple_shift(node):
+                raise UnsupportedSourceError(
+                    f"unsupported shift syntax in wrapped sourced file: {node.text.strip()}",
+                    code="unsupported.source.positionals",
+                    hint="Only top-level shift with an optional exact non-negative integer count is supported.",
+                )
+            replacements.setdefault(node.location.line - 1, []).append(LineReplacement(
+                node.location,
+                node.text,
+                render_shift_positional_capture(node.text, names),
+            ))
+            continue
+        if isinstance(node, (ForLoop, CStyleForLoop, WhileLoop)):
+            _collect_positional_sync_replacements(
+                node.body,
+                names,
+                replacements,
+                capture_shift=capture_shift,
+            )
+        elif isinstance(node, IfBlock):
+            for branch in node.branches:
+                _collect_positional_sync_replacements(
+                    branch.body,
+                    names,
+                    replacements,
+                    capture_shift=capture_shift,
+                )
+        elif isinstance(node, CaseBlock):
+            for arm in node.arms:
+                _collect_positional_sync_replacements(
+                    arm.body,
+                    names,
+                    replacements,
+                    capture_shift=capture_shift,
+                )
+
+
+def source_positional_sync_replacements(filepath: str, content: str, *, capture_shift: bool):
+    names = source_positional_capture_names(filepath)
+    ir = LineParserFrontend().parse(os.path.abspath(filepath), content)
+    replacements = {}
+    _collect_positional_sync_replacements(
+        ir.nodes,
+        names,
+        replacements,
+        capture_shift=capture_shift,
+    )
+    return replacements
+
+
+def render_source_call_wrapper(filepath: str, content: str, source_arguments=None, sync_positionals=False):
     body_function = generated_source_function_name(filepath)
     wrapper_function = f"{body_function}_run"
     status_variable = f"{body_function}_status"
@@ -228,7 +362,7 @@ def render_source_call_wrapper(filepath: str, content: str, source_arguments=Non
         call_arguments = " " + shell_quote_words(source_arguments)
     else:
         call_arguments = ""
-    return (
+    definitions = (
         f"{body_function}() {{\n{content}\n}}\n"
         f"{wrapper_function}() {{\n"
         f"{body_function} \"$@\"\n"
@@ -236,7 +370,30 @@ def render_source_call_wrapper(filepath: str, content: str, source_arguments=Non
         f"unset -f {wrapper_function} {body_function}\n"
         f"return ${status_variable}\n"
         f"}}\n"
-        f"{wrapper_function}{call_arguments}"
+    )
+    call = f"{wrapper_function}{call_arguments}"
+    if not sync_positionals:
+        return f"{definitions}{call}"
+
+    names = source_positional_capture_names(filepath)
+    return (
+        f"{definitions}"
+        "{\n"
+        f"{names['positionals_set']}=0\n"
+        f"{names['positionals']}=()\n"
+        f"{call}\n"
+        f"{names['source_status']}=$?\n"
+        f"if (( {names['positionals_set']} )); then\n"
+        f"  set -- \"${{{names['positionals']}[@]}}\"\n"
+        "fi\n"
+        f"{names['finish']}() {{\n"
+        f"  local {names['finish']}_status=$1\n"
+        f"  unset {names['positionals_set']} {names['positionals']} {names['source_status']}\n"
+        f"  unset -f {names['finish']}\n"
+        f"  return \"${names['finish']}_status\"\n"
+        "}\n"
+        f"{names['finish']} \"${names['source_status']}\"\n"
+        "}"
     )
 
 
@@ -274,6 +431,7 @@ def render_source_dispatch(source_expression: str, source_declarations, render_s
                 render_source(
                     source_declaration.path,
                     source_arguments=source_declaration.source_arguments,
+                    source_state_generation=source_declaration.positional_assignment_generation,
                 ),
                 f"{indent}    ",
             )
@@ -312,6 +470,7 @@ def render_retained_source_dispatch(source_declarations, render_source, indent: 
             render_source(
                 source_declaration.path,
                 source_arguments=source_declaration.source_arguments,
+                source_state_generation=source_declaration.positional_assignment_generation,
             ),
             f"{indent}      ",
         )
@@ -387,7 +546,13 @@ def replace_command_source_sites(line: str, source_declarations, render_source):
         if source_declaration.replacement_kind == "noop-command":
             replacement = ":"
         else:
-            replacement = render_source_block(source_declaration.path, render_source, indent)
+            replacement = render_source_block(
+                source_declaration.path,
+                render_source,
+                indent,
+                source_arguments=source_declaration.source_arguments,
+                source_state_generation=source_declaration.positional_assignment_generation,
+            )
         line = line[:source_index] + replacement + line[source_index + len(source_site):]
         search_start = source_index + len(replacement)
 
@@ -454,6 +619,7 @@ def render_source_site_replacement(separator: str, declarations, render_source, 
         render_source(
             declaration.path,
             source_arguments=declaration.source_arguments,
+            source_state_generation=declaration.positional_assignment_generation,
         ),
         indent,
     )
@@ -649,10 +815,13 @@ def render_executable_script(entry_point: str, context: dict):
             top_level_trait_cache[filepath] = file_top_level_source_traits(filepath, content)
         return top_level_trait_cache[filepath]
 
-    def has_top_level_positional_mutation(filepath, content):
-        return top_level_traits(filepath, content)[1]
-
-    def render_file(filepath, *, as_source=False, source_arguments=None):
+    def render_file(
+        filepath,
+        *,
+        as_source=False,
+        source_arguments=None,
+        source_state_generation=None,
+    ):
         filepath = os.path.abspath(filepath)
         if filepath in render_stack:
             chain = " -> ".join([*render_stack, filepath])
@@ -663,22 +832,71 @@ def render_executable_script(entry_point: str, context: dict):
             source_context = context.get('source_declarations', {}).get(filepath, {})
             output = []
 
-            def render_source_file(source_filepath, source_arguments=None):
+            def render_source_file(
+                source_filepath,
+                source_arguments=None,
+                source_state_generation=None,
+            ):
                 return render_file(
                     source_filepath,
                     as_source=True,
                     source_arguments=source_arguments,
+                    source_state_generation=source_state_generation,
                 )
 
             content = get_content(filepath)
+            has_top_level_return, has_top_level_positional_mutation = top_level_traits(filepath, content)
+            wraps_top_level_return = as_source and has_top_level_return
+            positional_sync_replacements = (
+                source_positional_sync_replacements(
+                    filepath,
+                    content,
+                    capture_shift=source_arguments is None,
+                )
+                if (
+                    as_source
+                    and (source_arguments is not None or wraps_top_level_return)
+                    and has_top_level_positional_mutation
+                )
+                else {}
+            )
+            if source_arguments is not None and positional_sync_replacements:
+                nested_source_after_mutation = (
+                    any(
+                        source_declaration.positional_assignment_generation is not None
+                        and source_state_generation is not None
+                        and source_declaration.positional_assignment_generation > source_state_generation
+                        for source_declarations in source_context.values()
+                        for source_declaration in source_declarations
+                    )
+                    if source_state_generation is not None
+                    else None
+                )
+                if nested_source_after_mutation is None:
+                    first_mutation_line = min(positional_sync_replacements)
+                    nested_source_after_mutation = any(line >= first_mutation_line for line in source_context)
+                if nested_source_after_mutation:
+                    raise UnsupportedSourceError(
+                        f"unsupported positional mutation before nested source in sourced file: {filepath}",
+                        code="unsupported.source.positionals",
+                        hint=(
+                            "Bash restores explicit source-argument frames differently after nested source calls; "
+                            "keep positional mutation after nested sources or avoid source arguments."
+                        ),
+                    )
+            sync_positionals = bool(positional_sync_replacements)
             for num, line in enumerate(content.splitlines()):
                 stripped_line = line.strip()
                 if not stripped_line or stripped_line.startswith("#"):
                     continue
 
+                line_replacements = [
+                    *context.get('line_replacements', {}).get(filepath, {}).get(num, []),
+                    *positional_sync_replacements.get(num, []),
+                ]
                 line = replace_exact_line_fragments(
                     line,
-                    context.get('line_replacements', {}).get(filepath, {}).get(num, []),
+                    line_replacements,
                 )
                 source_declarations = source_context.get(num, [])
                 unsupported_sources = [
@@ -708,22 +926,13 @@ def render_executable_script(entry_point: str, context: dict):
                 output.append(line)
 
             rendered = '\n'.join(output)
-            wraps_top_level_return = as_source and top_level_traits(filepath, content)[0]
-            if (
-                as_source
-                and (source_arguments is not None or wraps_top_level_return)
-                and has_top_level_positional_mutation(filepath, content)
-            ):
-                raise UnsupportedSourceError(
-                    f"unsupported top-level positional mutation in wrapped sourced file: {filepath}",
-                    code="unsupported.source.positionals",
-                    hint=(
-                        "Sourced files that need generated wrappers cannot mutate caller positional parameters "
-                        "without changing Bash semantics."
-                    ),
-                )
             if as_source and (source_arguments is not None or wraps_top_level_return):
-                return render_source_call_wrapper(filepath, rendered, source_arguments)
+                return render_source_call_wrapper(
+                    filepath,
+                    rendered,
+                    source_arguments,
+                    sync_positionals=sync_positionals,
+                )
             return rendered
         finally:
             render_stack.pop()
@@ -780,6 +989,11 @@ def context_from_source_events(events, disabled_sources=(), line_replacements=()
             source_column=event.location.column,
             occurrence_model=event.occurrence_model.value,
             condition=event.condition,
+            positional_assignment_generation=(
+                event.state_before.positional_assignment_generation
+                if event.state_before
+                else None
+            ),
         ))
 
     for disabled_source in disabled_sources:

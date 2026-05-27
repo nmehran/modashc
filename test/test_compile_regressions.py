@@ -1936,6 +1936,34 @@ class CompileRegressionTestCase(unittest.TestCase):
 
             project.assert_compiled_matches(self, "main.sh")
 
+    def test_direct_source_glob_multiple_matches_passes_remaining_matches_as_arguments(self):
+        with ScriptProject() as project:
+            project.write("plugins/00-loader.sh", textwrap.dedent("""\
+                printf 'loader:%s:%s:%s\\n' "$1" "$2" "$#"
+                VALUE="$1:$2"
+                """))
+            project.write("plugins/10-first-arg.sh", "echo wrong-first\n")
+            project.write("plugins/20-second-arg.sh", "echo wrong-second\n")
+            project.write("main.sh", textwrap.dedent("""\
+                set -- outer
+                source ./plugins/*.sh
+                printf 'after:%s:%s\\n' "$1" "$VALUE"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+            compiled = project.path("compiled.sh").read_text()
+            self.assertNotIn("source ./plugins/*.sh", compiled)
+
+    def test_direct_source_glob_arguments_precede_explicit_source_arguments(self):
+        with ScriptProject() as project:
+            project.write("plugins/00-loader.sh", textwrap.dedent("""\
+                printf 'loader:%s:%s:%s\\n' "$1" "$2" "$#"
+                """))
+            project.write("plugins/10-glob-arg.sh", "echo wrong\n")
+            project.write("main.sh", 'source ./plugins/*.sh explicit\n')
+
+            project.assert_compiled_matches(self, "main.sh")
+
     def test_nested_source_inherits_source_positionals_with_quoted_at(self):
         with ScriptProject() as project:
             project.write("nested.sh", textwrap.dedent("""\
@@ -1988,10 +2016,126 @@ class CompileRegressionTestCase(unittest.TestCase):
 
             project.assert_compiled_matches(self, "main.sh")
 
-    def test_sourced_file_with_arguments_rejects_top_level_positional_mutation(self):
+    def test_sourced_file_with_arguments_syncs_top_level_positional_mutation(self):
         with ScriptProject() as project:
             project.write("dep.sh", textwrap.dedent("""\
-                set -- changed
+                set -- changed one
+                printf 'dep:%s:%s\\n' "$1" "$#"
+                return 7
+                """))
+            project.write("main.sh", textwrap.dedent("""\
+                set -- outer
+                source ./dep.sh arg
+                status=$?
+                printf 'after:%s:%s:%s:%s\\n' "$1" "$2" "$#" "$status"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_sourced_file_with_arguments_preserves_caller_after_top_level_shift(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", textwrap.dedent("""\
+                shift
+                printf 'dep:%s:%s\\n' "$1" "$#"
+                """))
+            project.write("main.sh", textwrap.dedent("""\
+                set -- outer
+                source ./dep.sh arg keep
+                printf 'after:%s:%s\\n' "$1" "$#"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_sourced_file_with_arguments_rejects_positional_mutation_before_nested_source(self):
+        with ScriptProject() as project:
+            project.write("nested.sh", "printf 'nested:%s:%s:%s\\n' \"$1\" \"$2\" \"$#\"\n")
+            project.write("dep.sh", textwrap.dedent("""\
+                set -- changed one
+                source ./nested.sh "$@"
+                return 0
+                """))
+            project.write("main.sh", textwrap.dedent("""\
+                set -- outer
+                source ./dep.sh arg
+                printf 'after:%s:%s:%s\\n' "$1" "$2" "$#"
+                """))
+            output = project.path("compiled.sh")
+
+            with self.assertRaisesRegex(NotImplementedError, "positional mutation before nested source") as cm:
+                project.compile("main.sh", output=output, mode="executable")
+
+            self.assertEqual(cm.exception.code, "unsupported.source.positionals")
+            self.assertFalse(output.exists())
+
+    def test_sourced_file_with_arguments_rejects_positional_mutation_before_helper_source(self):
+        with ScriptProject() as project:
+            project.write("nested.sh", "printf 'nested:%s:%s\\n' \"$1\" \"$#\"\n")
+            project.write("dep.sh", textwrap.dedent("""\
+                helper() {
+                  source ./nested.sh "$@"
+                }
+                set -- changed one
+                helper
+                """))
+            project.write("main.sh", textwrap.dedent("""\
+                set -- outer
+                source ./dep.sh arg
+                printf 'after:%s:%s\\n' "$1" "$#"
+                """))
+            output = project.path("compiled.sh")
+
+            with self.assertRaisesRegex(NotImplementedError, "positional mutation before nested source") as cm:
+                project.compile("main.sh", output=output, mode="executable")
+
+            self.assertEqual(cm.exception.code, "unsupported.source.positionals")
+            self.assertFalse(output.exists())
+
+    def test_sourced_file_with_arguments_syncs_positional_mutation_after_nested_source(self):
+        with ScriptProject() as project:
+            project.write("nested.sh", "printf 'nested:%s:%s:%s\\n' \"$1\" \"$2\" \"$#\"\n")
+            project.write("dep.sh", textwrap.dedent("""\
+                source ./nested.sh
+                set -- changed one
+                return 0
+                """))
+            project.write("main.sh", textwrap.dedent("""\
+                set -- outer
+                source ./dep.sh arg
+                printf 'after:%s:%s:%s\\n' "$1" "$2" "$#"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_wrapped_positional_mutation_rejects_unsupported_syntax(self):
+        cases = {
+            "set option with positionals": (
+                "set -m -- changed\nreturn 0\n",
+                "source ./dep.sh arg\n",
+            ),
+            "dynamic shift": (
+                'shift "$COUNT"\nreturn 0\n',
+                "COUNT=1\nset -- one two\nsource ./dep.sh\n",
+            ),
+        }
+        for name, (dep, main) in cases.items():
+            with self.subTest(name=name), ScriptProject() as project:
+                project.write("dep.sh", dep)
+                project.write("main.sh", main)
+                output = project.path("compiled.sh")
+
+                with self.assertRaisesRegex(NotImplementedError, "positional|shift") as cm:
+                    project.compile("main.sh", output=output, mode="executable")
+
+                self.assertEqual(cm.exception.code, "unsupported.source.positionals")
+                self.assertFalse(output.exists())
+
+    def test_sourced_file_function_local_positional_mutation_stays_local(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", textwrap.dedent("""\
+                helper() {
+                  set -- local
+                }
+                helper
                 printf 'dep:%s:%s\\n' "$1" "$#"
                 return 0
                 """))
@@ -2000,32 +2144,8 @@ class CompileRegressionTestCase(unittest.TestCase):
                 source ./dep.sh arg
                 printf 'after:%s:%s\\n' "$1" "$#"
                 """))
-            output = project.path("compiled.sh")
 
-            with self.assertRaisesRegex(NotImplementedError, "positional mutation") as cm:
-                project.compile("main.sh", output=output, mode="executable")
-
-            self.assertEqual(cm.exception.code, "unsupported.source.positionals")
-            self.assertFalse(output.exists())
-
-    def test_sourced_file_with_arguments_rejects_top_level_shift(self):
-        with ScriptProject() as project:
-            project.write("dep.sh", textwrap.dedent("""\
-                shift
-                printf 'dep:%s:%s\\n' "$1" "$#"
-                """))
-            project.write("main.sh", textwrap.dedent("""\
-                set -- outer
-                source ./dep.sh arg
-                printf 'after:%s:%s\\n' "$1" "$#"
-                """))
-            output = project.path("compiled.sh")
-
-            with self.assertRaisesRegex(NotImplementedError, "positional mutation") as cm:
-                project.compile("main.sh", output=output, mode="executable")
-
-            self.assertEqual(cm.exception.code, "unsupported.source.positionals")
-            self.assertFalse(output.exists())
+            project.assert_compiled_matches(self, "main.sh")
 
     def test_sourced_file_return_without_arguments_preserves_caller_positionals(self):
         with ScriptProject() as project:
@@ -2042,24 +2162,20 @@ class CompileRegressionTestCase(unittest.TestCase):
 
             project.assert_compiled_matches(self, "main.sh")
 
-    def test_sourced_file_return_without_arguments_rejects_caller_positional_mutation(self):
+    def test_sourced_file_return_without_arguments_syncs_caller_positional_mutation(self):
         with ScriptProject() as project:
             project.write("dep.sh", textwrap.dedent("""\
                 set -- changed
-                return 0
+                return 5
                 """))
             project.write("main.sh", textwrap.dedent("""\
                 set -- outer
                 source ./dep.sh
-                printf 'after:%s:%s\\n' "$1" "$#"
+                status=$?
+                printf 'after:%s:%s:%s\\n' "$1" "$#" "$status"
                 """))
-            output = project.path("compiled.sh")
 
-            with self.assertRaisesRegex(NotImplementedError, "positional mutation") as cm:
-                project.compile("main.sh", output=output, mode="executable")
-
-            self.assertEqual(cm.exception.code, "unsupported.source.positionals")
-            self.assertFalse(output.exists())
+            project.assert_compiled_matches(self, "main.sh")
 
     def test_source_arguments_must_resolve_to_exact_values(self):
         with ScriptProject() as project:
@@ -2120,9 +2236,9 @@ class CompileRegressionTestCase(unittest.TestCase):
                 'GLOBIGNORE=./plugins/a.sh:./plugins/b.sh\nfor file in ./plugins/*.sh; do source "$file"; done\n',
                 'for file in ./plugins/*.sh; do source "$file"; done',
             ),
-            "direct source glob multiple matches": (
-                'source ./plugins/*.sh\n',
-                'source ./plugins/*.sh',
+            "direct source nullglob removes filename": (
+                'shopt -s nullglob\nsource ./missing/*.sh\n',
+                'source ./missing/*.sh',
             ),
             "unsupported if predicate": (
                 "if awk 'BEGIN { exit 0 }'; then\n  source ./dep.sh\nfi\n",

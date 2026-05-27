@@ -87,6 +87,22 @@
           "path": ".modashc-fixtures/source-safe-args-target.sh"
         },
         {
+          "source": "pacman/glob-args-wrapper.sh",
+          "path": ".modashc-fixtures/glob-args-wrapper.sh"
+        },
+        {
+          "source": "pacman/glob-args/00-loader.sh",
+          "path": ".modashc-fixtures/glob-args/00-loader.sh"
+        },
+        {
+          "source": "pacman/glob-args/10-first-arg.sh",
+          "path": ".modashc-fixtures/glob-args/10-first-arg.sh"
+        },
+        {
+          "source": "pacman/glob-args/20-second-arg.sh",
+          "path": ".modashc-fixtures/glob-args/20-second-arg.sh"
+        },
+        {
           "source": "pacman/PKGBUILD",
           "path": ".modashc-fixtures/PKGBUILD"
         },
@@ -121,6 +137,14 @@
         {
           "source": "pacman/runtime-short-circuit-wrapper.sh",
           "path": ".modashc-fixtures/runtime-short-circuit-wrapper.sh"
+        },
+        {
+          "source": "pacman/runtime-positionals-wrapper.sh",
+          "path": ".modashc-fixtures/runtime-positionals-wrapper.sh"
+        },
+        {
+          "source": "pacman/runtime-positionals-lib.sh",
+          "path": ".modashc-fixtures/runtime-positionals-lib.sh"
         }
       ],
       "entrypoints": [
@@ -165,6 +189,21 @@
         },
         {
           "path": ".modashc-fixtures/source-safe-args-wrapper.sh",
+          "modes": {
+            "context": {
+              "expected": "success"
+            },
+            "executable": {
+              "expected": "success"
+            }
+          },
+          "runtime": {
+            "expected": "match",
+            "cwd": ".modashc-fixtures"
+          }
+        },
+        {
+          "path": ".modashc-fixtures/glob-args-wrapper.sh",
           "modes": {
             "context": {
               "expected": "success"
@@ -225,6 +264,21 @@
         },
         {
           "path": ".modashc-fixtures/runtime-short-circuit-wrapper.sh",
+          "modes": {
+            "context": {
+              "expected": "success"
+            },
+            "executable": {
+              "expected": "success"
+            }
+          },
+          "runtime": {
+            "expected": "match",
+            "cwd": ".modashc-fixtures"
+          }
+        },
+        {
+          "path": ".modashc-fixtures/runtime-positionals-wrapper.sh",
           "modes": {
             "context": {
               "expected": "success"

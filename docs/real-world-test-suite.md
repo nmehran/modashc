@@ -240,9 +240,11 @@ The runtime probe set starts with controlled pacman fixtures:
 
 - real `source_safe` helper dispatch
 - real `source_safe` helper dispatch with exact source arguments
+- direct multi-match source glob arguments
 - sourced variable, export, and function availability
 - cwd-sensitive nested source behavior
 - top-level sourced-file return status and state
+- wrapped sourced-file positional mutation
 - skipped dynamic source payloads behind known `&&` / `||` status
 
 Most real distro scripts should remain compile/classification fixtures, not
@@ -436,9 +438,7 @@ gate for specific behavior.
 Items 1 through 6 are implemented for the initial local smoke,
 `bash-completion`, and `pacman` corpus paths. Pinned expected-outcome
 enforcement, retained artifacts for successful pinned runs, supplement-backed
-pacman success expectations, multiple safe runtime parity probes, and opt-in
-human-readable reports are also implemented. Broader runtime discovery and
-dynamic tracing remain deferred. The next planned real-world expansion is part
-of [Source Argument Semantics Completion](source-argument-semantics.md): direct
-multi-match source glob arguments and wrapped-source positional mutation
-fixtures.
+pacman success expectations, direct glob source-argument fixtures,
+wrapped-source positional mutation fixtures, multiple safe runtime parity
+probes, and opt-in human-readable reports are also implemented. Broader runtime
+discovery and dynamic tracing remain deferred.

@@ -136,15 +136,23 @@ sequences.
 
 ## Direct Source Globs
 
-Supported only when the direct source glob resolves to exactly one file:
+Supported when the direct source glob resolves to one or more regular files:
 
 ```bash
 source ./single-plugin/*.sh
 ```
 
-Direct source globs with multiple matches remain unsupported because Bash treats
-the first match as the source file and passes the remaining matches as
-positional arguments to that sourced file.
+When a direct source glob resolves to multiple matches, Bash treats the first
+expanded word as the source file and passes the remaining expanded words as
+positional arguments to that sourced file. Executable mode preserves that shape:
+
+```bash
+source ./plugins/*.sh extra
+```
+
+If `./plugins/*.sh` expands to `./plugins/00-loader.sh
+./plugins/10-config.sh`, `00-loader.sh` is sourced with
+`./plugins/10-config.sh` and `extra` as its `$1` and `$2`.
 
 ## Direct Source Arguments
 
@@ -165,10 +173,18 @@ Source arguments must resolve to exact strings. Unresolved variables, command
 substitution, unquoted `$@` / `$*`, and unquoted variable expansions that would
 require word-splitting support remain fail-closed.
 
-Sourced files entered with exact positional arguments must not mutate caller
-positional parameters with top-level `set --` or `shift`. Bash lets those
-mutations escape the temporary source-argument frame, so executable mode rejects
-that shape until direct positional-mutation lowering is modeled.
+Executable mode models top-level positional mutation in wrapped sourced files
+when Bash behavior is exact. Top-level `set -- ...` can update caller
+positionals after a source site returns, while top-level `shift` inside an
+explicit source-argument frame remains temporary as Bash restores that frame.
+Sourced files without explicit source arguments can also mutate caller
+positionals through top-level `set --` or `shift` when a generated return
+wrapper is needed.
+
+One Bash edge remains fail-closed: a sourced file entered with explicit source
+arguments that runs top-level `set --` before a later nested `source` command.
+Bash restores that explicit source-argument frame differently after the nested
+source returns, so executable mode rejects the shape rather than guessing.
 
 ## Sourced-File Return
 
@@ -177,8 +193,7 @@ mode lowers those sourced bodies through generated same-shell helper functions
 that are cleaned up after the source site runs. The lowered return stops the
 sourced body, preserves source status, and does not exit the caller. This is
 intended for normal sourced libraries and include guards; files that depend on
-top-level `FUNCNAME` identity, invalid top-level `local` behavior, or mutating
-the caller's positional parameters with top-level `set --` or `shift` remain
+top-level `FUNCNAME` identity or invalid top-level `local` behavior remain
 outside the supported contract.
 
 ```bash
@@ -276,9 +291,8 @@ multi-result command-substitution output where a single source path is required.
 
 The remaining source-resolution surface is narrower than general Bash support:
 
-- Direct source glob multi-match argument semantics and wrapped-source
-  positional mutation lowering are the next planned static source-argument
-  iteration; see
+- Explicit source-argument frames that combine top-level `set --` with later
+  nested source calls remain fail-closed; see
   [Source Argument Semantics Completion](source-argument-semantics.md).
 - Broader source guards, including more command predicates and glob-bearing
   file tests.

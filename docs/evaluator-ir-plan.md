@@ -403,14 +403,12 @@ source-relevant behavior cannot be modeled.
 ### Globs
 
 Ordinary file-glob expansion is implemented for finite loop word lists and for
-direct source expressions with exactly one match. Option-aware loop glob
+direct source expressions with one or more matches. Option-aware loop glob
 expansion is implemented for `nullglob`, `dotglob`, `globstar`, `nocaseglob`,
 deterministic brace expansion, and practical `GLOBIGNORE` filtering. Broader
 glob expansion should remain deterministic and cwd-aware:
 
 - sort matches lexically
-- support direct source glob multi-match semantics only when Bash source
-  argument behavior is modeled
 - reject `extglob`, `set -f`, and all-ignored `GLOBIGNORE` matches unless their
   semantics are fully modeled
 - reject ambiguous directory state
@@ -551,16 +549,14 @@ explicitly.
 Implemented for ordinary and option-aware file globs in finite loop word lists,
 including `nullglob`, `dotglob`, `globstar`, `nocaseglob`, deterministic brace
 expansion, and practical `GLOBIGNORE` filtering. Direct source globs are
-supported only when the glob resolves to exactly one regular file. Multiple
-direct source matches reject because Bash would source the first match and pass
-the rest as positional arguments, which is not equivalent to sourcing every
-match.
+supported when the glob resolves to one or more regular files. Multiple direct
+source matches source the first match and pass the rest as positional arguments
+to that sourced file.
 
 Remaining glob work:
 
 - explicit iteration limits
 - `extglob`
-- direct source glob multi-match argument semantics
 - full `GLOBIGNORE` edge semantics beyond practical path filtering
 
 ### Phase 7: Branch-Aware Conditionals

@@ -52,6 +52,7 @@ class StateSnapshot:
     shell_options: frozenset[str] = field(default_factory=frozenset)
     glob_options: frozenset[str] = field(default_factory=frozenset)
     bash_source_stack: tuple[Path, ...] = field(default_factory=tuple)
+    positional_assignment_generation: int = 0
 
 
 @dataclass(frozen=True)
