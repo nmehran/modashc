@@ -444,5 +444,5 @@ pacman success expectations, direct glob source-argument fixtures,
 wrapped-source positional mutation fixtures, multiple safe runtime parity
 probes, opt-in human-readable reports, and source-relevant control-flow
 boundary promotion are also implemented. Runtime-guarded static source
-fixtures are the next planned corpus increment; broader runtime discovery and
-dynamic tracing remain deferred.
+fixtures are implemented for guarded `if` and `case` source lowering; broader
+runtime discovery and dynamic tracing remain deferred.

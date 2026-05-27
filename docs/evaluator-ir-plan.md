@@ -16,13 +16,15 @@ implemented, including exact file input, safe producer pipelines, and safe
 process substitutions. Branch-aware `if` / `elif` / `else`
 lowering is implemented for the current side-effect-free predicate subset,
 including compound logical predicates, arithmetic predicates, regex and pattern
-matching, and safe `grep -q` file checks. Exact `case` blocks are implemented
-for known subjects and the modeled pattern subset. Bounded local function calls
-are implemented when the definition is known, arguments are exact, and
-source-relevant body effects are modeled. It remains fail-closed for broader
-glob semantics,
-unsupported command predicates, broader case pattern semantics, recursive
-functions, runtime-dynamic function dispatch, and child-shell runtime dispatch.
+matching, and safe `grep -q` file checks. Runtime-guarded lowering also
+preserves unknown `if` predicates when branch-local source sites are exact.
+Exact `case` blocks are implemented for known subjects and the modeled pattern
+subset; unknown scalar subjects preserve the runtime `case` and lower exact arm
+source sites. Bounded local function calls are implemented when the definition
+is known, arguments are exact, and source-relevant body effects are modeled. It
+remains fail-closed for broader glob semantics, source-bearing compound
+conditions, broader case pattern semantics, recursive functions,
+runtime-dynamic function dispatch, and child-shell runtime dispatch.
 
 ## Problem
 
@@ -562,11 +564,14 @@ Remaining glob work:
 ### Phase 7: Branch-Aware Conditionals
 
 Implemented for `if` / `elif` / `else` blocks with the current side-effect-free
-predicate subset. Executable mode preserves the original branch structure and
-replaces modeled source sites inside reachable branches. Source sites in
-statically unreachable branches are replaced with no-ops so executable output
-does not retain live unresolved source commands. Context mode annotates
-conditional and mutually exclusive provenance for readable source relationships.
+predicate subset, plus runtime-guarded unknown predicates when the predicate
+does not itself contain a source-bearing command and branch-local source sites
+are exact. Executable mode preserves the original branch structure and replaces
+modeled source sites inside reachable or runtime-possible branches. Source
+sites in statically unreachable branches are replaced with no-ops so executable
+output does not retain live unresolved source commands. Context mode annotates
+conditional and mutually exclusive provenance for readable source
+relationships.
 
 Branch state merges only when exact. Divergent branch cwd, variables, arrays, or
 shell options are allowed until a later source-relevant operation depends on
@@ -574,9 +579,11 @@ that divergent state; then executable mode fails before output.
 
 ### Phase 8: Case Statements
 
-Implemented for exact subjects and mutually exclusive source arms. The
-evaluator reuses the branch-state merge model from `if` blocks. Source sites in
-non-matching arms are replaced with no-ops in executable output.
+Implemented for exact subjects and mutually exclusive source arms. Runtime
+subjects in the modeled pattern subset preserve the original `case` and lower
+exact arm-local source sites. The evaluator reuses the branch-state merge model
+from `if` blocks. Source sites in statically non-matching arms are replaced
+with no-ops in executable output.
 
 ### Phase 9: Modeled Functions
 

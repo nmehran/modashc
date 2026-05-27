@@ -141,6 +141,26 @@
         {
           "source": "pacman/runtime-positionals-lib.sh",
           "path": ".modashc-fixtures/runtime-positionals-lib.sh"
+        },
+        {
+          "source": "pacman/runtime-guarded-if-wrapper.sh",
+          "path": ".modashc-fixtures/runtime-guarded-if-wrapper.sh"
+        },
+        {
+          "source": "pacman/runtime-guarded-if-lib.sh",
+          "path": ".modashc-fixtures/runtime-guarded-if-lib.sh"
+        },
+        {
+          "source": "pacman/runtime-guarded-case-wrapper.sh",
+          "path": ".modashc-fixtures/runtime-guarded-case-wrapper.sh"
+        },
+        {
+          "source": "pacman/runtime-guarded-case-prod.sh",
+          "path": ".modashc-fixtures/runtime-guarded-case-prod.sh"
+        },
+        {
+          "source": "pacman/runtime-guarded-case-dev.sh",
+          "path": ".modashc-fixtures/runtime-guarded-case-dev.sh"
         }
       ],
       "entrypoints": [
@@ -275,6 +295,36 @@
         },
         {
           "path": ".modashc-fixtures/runtime-positionals-wrapper.sh",
+          "modes": {
+            "context": {
+              "expected": "success"
+            },
+            "executable": {
+              "expected": "success"
+            }
+          },
+          "runtime": {
+            "expected": "match",
+            "cwd": ".modashc-fixtures"
+          }
+        },
+        {
+          "path": ".modashc-fixtures/runtime-guarded-if-wrapper.sh",
+          "modes": {
+            "context": {
+              "expected": "success"
+            },
+            "executable": {
+              "expected": "success"
+            }
+          },
+          "runtime": {
+            "expected": "match",
+            "cwd": ".modashc-fixtures"
+          }
+        },
+        {
+          "path": ".modashc-fixtures/runtime-guarded-case-wrapper.sh",
           "modes": {
             "context": {
               "expected": "success"

@@ -2271,34 +2271,6 @@ class CompileRegressionTestCase(unittest.TestCase):
                 'shopt -s nullglob\nsource ./missing/*.sh\n',
                 'source ./missing/*.sh',
             ),
-            "unsupported if predicate": (
-                "if awk 'BEGIN { exit 0 }'; then\n  source ./dep.sh\nfi\n",
-                "awk 'BEGIN { exit 0 }'",
-            ),
-            "unsupported multi-match if glob predicate": (
-                'if [ -f ./plugins/*.sh ]; then\n  source ./dep.sh\nfi\n',
-                '[ -f ./plugins/*.sh ]',
-            ),
-            "unsupported bracket string glob predicate": (
-                'MODE=prod\nif [ "$MODE" = prod* ]; then\n  source ./dep.sh\nfi\n',
-                '[ "$MODE" = prod* ]',
-            ),
-            "unsupported grep basic regex predicate": (
-                'if grep -q "enabled.*" config; then\n  source ./dep.sh\nfi\n',
-                'grep -q "enabled.*" config',
-            ),
-            "unsupported POSIX regex predicate": (
-                'MODE=5\nif [[ "$MODE" =~ [[:digit:]] ]]; then\n  source ./dep.sh\nfi\n',
-                '[[ "$MODE" =~ [[:digit:]] ]]',
-            ),
-            "unsupported Python regex predicate": (
-                'MODE=5\nif [[ "$MODE" =~ \\d+ ]]; then\n  source ./dep.sh\nfi\n',
-                '[[ "$MODE" =~ \\d+ ]]',
-            ),
-            "unsupported grep Python regex predicate": (
-                'if grep -Eq "\\d+" config; then\n  source ./dep.sh\nfi\n',
-                'grep -Eq "\\d+" config',
-            ),
             "divergent if branch state": (
                 'if [[ -n "$USE_A" ]]; then\n  DEP=./a.sh\nelse\n  DEP=./b.sh\nfi\nsource "$DEP"\n',
                 'source "$DEP"',
@@ -2306,10 +2278,6 @@ class CompileRegressionTestCase(unittest.TestCase):
             "unknown status guarded source state": (
                 'grep -q yes config || source ./setdep.sh\nsource "$DEP"\n',
                 'source "$DEP"',
-            ),
-            "case block": (
-                'case "$ENV" in\n  prod) source ./prod.sh ;;\nesac\n',
-                'case "$ENV" in',
             ),
             "case fallthrough": (
                 'ENV=prod\ncase "$ENV" in\n  prod) source ./prod.sh ;&\n  *) source ./dev.sh ;;\nesac\n',
@@ -2329,7 +2297,7 @@ class CompileRegressionTestCase(unittest.TestCase):
             ),
             "case hidden eval source": (
                 'case "$ENV" in\n  prod) COMMAND="source ./prod.sh"; eval "$COMMAND" ;;\nesac\n',
-                'case "$ENV" in',
+                'eval "$COMMAND"',
             ),
             "case escaped pattern": (
                 'ENV="prod*"\ncase "$ENV" in\n  prod\\*) source ./prod.sh ;;\n  *) source ./b.sh ;;\nesac\n',
@@ -2470,6 +2438,105 @@ class CompileRegressionTestCase(unittest.TestCase):
 
             self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.branch-state")
             self.assertEqual(output.read_text(), "existing output\n")
+
+    def test_runtime_guarded_if_source_lowering_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("enabled.sh", 'echo "enabled"; FEATURE_STATE=enabled\n')
+            project.write("disabled.sh", 'echo "disabled"; FEATURE_STATE=disabled\n')
+            project.write("main.sh", textwrap.dedent("""\
+                if awk 'BEGIN { exit ENVIRON["LOAD_FEATURE"] == "1" ? 0 : 1 }'; then
+                  source ./enabled.sh
+                else
+                  source ./disabled.sh
+                fi
+                echo "state=$FEATURE_STATE"
+                """))
+
+            compiled = project.compile("main.sh", mode="executable")
+            compiled_text = compiled.read_text()
+
+            self.assertIn('if awk \'BEGIN { exit ENVIRON["LOAD_FEATURE"] == "1" ? 0 : 1 }\'; then', compiled_text)
+            self.assertNotIn("source ./enabled.sh", compiled_text)
+            self.assertNotIn("source ./disabled.sh", compiled_text)
+            for env in ({"LOAD_FEATURE": "1"}, {"LOAD_FEATURE": "0"}):
+                with self.subTest(env=env):
+                    expected = project.run("main.sh", env=env)
+                    actual = project.run(compiled, env=env)
+                    self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
+                    self.assertEqual(actual.stdout, expected.stdout)
+
+    def test_runtime_guarded_if_unsupported_predicates_preserve_bash_behavior(self):
+        def normalize_shell_error_locations(output: str):
+            return re.sub(r'/tmp/[^:\n]+/(?:main|compiled)\.sh: line \d+', '<script>: line N', output)
+
+        cases = {
+            "multi-match file glob": 'if [ -f ./plugins/*.sh ]; then\n  source ./dep.sh\nfi\n',
+            "bracket string glob": 'MODE=prod\nif [ "$MODE" = prod* ]; then\n  source ./dep.sh\nfi\n',
+            "grep basic regex": 'if grep -q "enabled.*" config; then\n  source ./dep.sh\nfi\n',
+            "posix regex": 'MODE=5\nif [[ "$MODE" =~ [[:digit:]] ]]; then\n  source ./dep.sh\nfi\n',
+            "python regex": 'MODE=5\nif [[ "$MODE" =~ \\d+ ]]; then\n  source ./dep.sh\nfi\n',
+            "grep python regex": 'if grep -Eq "\\d+" config; then\n  source ./dep.sh\nfi\n',
+        }
+
+        for name, content in cases.items():
+            with self.subTest(name=name), ScriptProject() as project:
+                project.write("dep.sh", 'echo "dep"\n')
+                project.write("config", "enabled=true\n")
+                project.write("plugins/a.sh", 'echo "plugin"\n')
+                project.write("plugins/b.sh", 'echo "plugin b"\n')
+                project.write("main.sh", content)
+
+                compiled = project.compile("main.sh", mode="executable")
+                expected = project.run("main.sh")
+                actual = project.run(compiled)
+
+                self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
+                self.assertEqual(
+                    normalize_shell_error_locations(actual.stdout),
+                    normalize_shell_error_locations(expected.stdout),
+                )
+
+    def test_runtime_guarded_if_dynamic_source_path_fails_before_output(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                if awk 'BEGIN { exit 0 }'; then
+                  source "$DEP"
+                fi
+                """))
+            output = project.write("compiled.sh", "existing output\n")
+
+            with self.assertRaisesRegex(NotImplementedError, "unresolved source") as cm:
+                project.compile("main.sh", output=output, mode="executable")
+
+            self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.unresolved")
+            self.assertEqual(output.read_text(), "existing output\n")
+
+    def test_runtime_guarded_case_source_lowering_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("prod.sh", 'echo "prod"; CASE_STATE=prod\n')
+            project.write("dev.sh", 'echo "dev"; CASE_STATE=dev\n')
+            project.write("main.sh", textwrap.dedent("""\
+                case "$MODE" in
+                  prod) source ./prod.sh ;;
+                  dev) source ./dev.sh ;;
+                  *) echo "fallback"; CASE_STATE=fallback ;;
+                esac
+                echo "case=$CASE_STATE"
+                """))
+
+            compiled = project.compile("main.sh", mode="executable")
+            compiled_text = compiled.read_text()
+
+            self.assertIn('case "$MODE" in', compiled_text)
+            self.assertNotIn("source ./prod.sh", compiled_text)
+            self.assertNotIn("source ./dev.sh", compiled_text)
+            for env in ({"MODE": "prod"}, {"MODE": "dev"}, {"MODE": "qa"}):
+                with self.subTest(env=env):
+                    expected = project.run("main.sh", env=env)
+                    actual = project.run(compiled, env=env)
+                    self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
+                    self.assertEqual(actual.stdout, expected.stdout)
 
     def test_shopt_query_source_guard_matches_bash(self):
         with ScriptProject() as project:

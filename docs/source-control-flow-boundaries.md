@@ -22,7 +22,7 @@ unsafe.
 Current high-value remaining gaps after this iteration:
 
 - Runtime-guarded static lowering for exact source sites inside unknown `if`
-  predicates and runtime `case` subjects is tracked in
+  predicates and runtime `case` subjects is implemented in
   [Runtime-Guarded Static Source Lowering](runtime-guarded-source-lowering.md).
 - Compound source-bearing conditions, pipelines, command substitutions, and
   source conditions outside the initial `if` branch remain unsupported.

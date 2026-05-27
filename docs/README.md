@@ -23,8 +23,8 @@ keep only in code comments or tests.
   source-free control-flow pass-through, exact source
   conditions, and practical source guard predicates.
 - [Runtime-Guarded Static Source Lowering](runtime-guarded-source-lowering.md):
-  planned static lowering for exact source sites guarded by runtime `if` and
-  `case` control flow.
+  static lowering for exact source sites guarded by runtime `if` and `case`
+  control flow.
 - [Real-World Internal Test Suite](real-world-test-suite.md):
   opt-in corpus, supplement fixture, artifact, and runtime parity probes
   workflow.

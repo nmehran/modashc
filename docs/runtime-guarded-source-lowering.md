@@ -2,7 +2,7 @@
 
 ## Status
 
-Planned next product iteration on the
+Implemented on the
 `iteration/runtime-guarded-source-lowering` development branch. It builds on
 source argument completion and source-relevant control-flow boundaries.
 
@@ -11,9 +11,9 @@ source discovery, or sandboxed tracing.
 
 ## Summary
 
-The compiler can now lower exact source sites inside modeled control flow and
-can pass through source-free unsupported runtime logic. The next practical gap
-is source-bearing runtime control flow whose source paths are already exact but
+The compiler can lower exact source sites inside modeled control flow and can
+pass through source-free unsupported runtime logic. This iteration handles
+source-bearing runtime control flow whose source paths are already exact but
 whose predicates or subjects are not statically known.
 
 For those cases, modashc should preserve the original runtime guard and lower
@@ -32,16 +32,14 @@ fi
 can become executable output where `some_runtime_probe` remains live Bash and
 `./feature.sh` is inlined inside the same branch.
 
-## What Remains
+## Implemented Behavior
 
-High-value remaining gaps before this iteration:
-
-- Unknown `if` / `elif` predicates still block executable output when a branch
-  contains otherwise exact source sites.
-- Unknown `case` subjects still block source-bearing executable output even
-  when every arm source path is exact and the original case can be preserved.
-- Branch-local source effects can be lowered, but later source resolution must
-  still fail if it depends on branch-divergent variables, arrays, cwd, shell
+- Unknown `if` / `elif` predicates no longer block executable output when a
+  branch contains otherwise exact source sites.
+- Unknown `case` subjects no longer block executable output when every arm
+  source path is exact and the original case can be preserved.
+- Branch-local source effects are lowered, but later source resolution still
+  fails if it depends on branch-divergent variables, arrays, cwd, shell
   options, function definitions, or positional state.
 - Runtime loops, compound direct source conditions, parser-level compound
   `if source ./dep.sh && ...` forms, recursive/runtime-dynamic dispatch, xtrace
@@ -129,7 +127,7 @@ Acceptance:
 
 ## Review Checklist
 
-Required checks before committing implementation work:
+Required checks before merging implementation work:
 
 - `python -m unittest -v`
 - `MODASHC_REALWORLD=1` pinned corpus

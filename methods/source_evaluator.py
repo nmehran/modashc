@@ -2145,7 +2145,7 @@ class SourceEvaluator:
             try:
                 statuses.append(self._evaluate_condition(branch.condition, state, node, stack, branch.keyword))
             except UnsupportedSourceError as exc:
-                if self.mode == "context" or not self._if_block_may_source(node):
+                if self.mode == "context" or not self._raw_command_may_source(branch.condition):
                     statuses.append("unknown")
                     continue
                 raise with_source_diagnostic(
@@ -2352,17 +2352,10 @@ class SourceEvaluator:
             return
 
         if subject_value is None:
-            if not self._nodes_may_source(node.arms):
-                self._apply_source_free_unknown_case_block(node, state, stack)
-                state.occurrence_context = outer_occurrence_context
-                state.condition_context = outer_condition_context
-                return
-            raise self._unsupported_case(
-                node,
-                "unsupported.source.case-subject",
-                "unsupported case subject",
-                "Use a literal, known scalar variable, or environment-provided subject.",
-            )
+            self._apply_unknown_case_block(node, state, stack)
+            state.occurrence_context = outer_occurrence_context
+            state.condition_context = outer_condition_context
+            return
 
         base_state = state.child_shell_copy()
         arm_outcomes = []
@@ -2445,12 +2438,17 @@ class SourceEvaluator:
         ] or [outcome.state for outcome in possible_outcomes]
         self._merge_possible_states(state, selected_states)
 
-    def _apply_source_free_unknown_case_block(self, node: CaseBlock, state: EvaluationState, stack: tuple[Path, ...]):
+    def _apply_unknown_case_block(self, node: CaseBlock, state: EvaluationState, stack: tuple[Path, ...]):
         arm_outcomes = []
+        occurrence_model = (
+            OccurrenceModel.MUTUALLY_EXCLUSIVE
+            if len(node.arms) > 1
+            else OccurrenceModel.CONDITIONAL
+        )
 
         for arm in node.arms:
             arm_state = state.child_shell_copy()
-            arm_state.occurrence_context = OccurrenceModel.MUTUALLY_EXCLUSIVE
+            arm_state.occurrence_context = occurrence_model
             arm_state.condition_context = self._case_arm_condition(node, arm)
             return_signal = None
             try:

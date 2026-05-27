@@ -576,20 +576,20 @@ class SourceEvaluatorTestCase(unittest.TestCase):
             [arithmetic, numeric, regex, pattern, grep_dep, grep_regex],
         )
 
-    def test_if_block_unsupported_condition_raises_structured_diagnostic(self):
+    def test_if_block_unsupported_condition_lowers_exact_branch_source(self):
         with ScriptProject() as project:
-            project.write("dep.sh", 'echo "dep"\n')
+            dep = project.write("dep.sh", 'echo "dep"\n')
             entry = project.write("main.sh", textwrap.dedent("""\
                 if awk 'BEGIN { exit 0 }'; then
                   source ./dep.sh
                 fi
                 """))
 
-            with self.assertRaisesRegex(NotImplementedError, "if condition") as cm:
-                SourceEvaluator().evaluate(entry)
+            result = SourceEvaluator().evaluate(entry)
 
-        self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.if-condition")
-        self.assertEqual(cm.exception.diagnostic.location.line, 1)
+        self.assertEqual([event.path for event in result.events], [dep])
+        self.assertEqual(result.events[0].occurrence_model, OccurrenceModel.CONDITIONAL)
+        self.assertEqual(result.events[0].condition, "awk 'BEGIN { exit 0 }'")
 
     def test_case_block_exact_subject_selects_matching_arm(self):
         with ScriptProject() as project:
@@ -643,20 +643,23 @@ class SourceEvaluatorTestCase(unittest.TestCase):
         self.assertEqual([event.path for event in result.events], [dep])
         self.assertIsNone(result.events[0].condition)
 
-    def test_case_block_unknown_subject_raises_structured_diagnostic(self):
+    def test_case_block_unknown_subject_lowers_exact_arm_sources(self):
         with ScriptProject() as project:
-            project.write("prod.sh", 'echo "prod"\n')
+            prod = project.write("prod.sh", 'echo "prod"\n')
+            dev = project.write("dev.sh", 'echo "dev"\n')
             entry = project.write("main.sh", textwrap.dedent("""\
                 case "$ENV" in
                   prod) source ./prod.sh ;;
+                  dev) source ./dev.sh ;;
                 esac
                 """))
 
-            with self.assertRaisesRegex(NotImplementedError, "case subject") as cm:
-                SourceEvaluator().evaluate(entry)
+            result = SourceEvaluator().evaluate(entry)
 
-        self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.case-subject")
-        self.assertEqual(cm.exception.diagnostic.location.line, 1)
+        self.assertEqual([event.path for event in result.events], [prod, dev])
+        self.assertEqual(result.events[0].occurrence_model, OccurrenceModel.MUTUALLY_EXCLUSIVE)
+        self.assertEqual(result.events[0].condition, 'case "$ENV" in prod')
+        self.assertEqual(result.events[1].condition, 'case "$ENV" in dev')
 
     def test_case_block_unknown_subject_rejects_state_expanded_eval_source(self):
         with ScriptProject() as project:
@@ -667,11 +670,11 @@ class SourceEvaluatorTestCase(unittest.TestCase):
                 esac
                 """))
 
-            with self.assertRaisesRegex(NotImplementedError, "case subject") as cm:
+            with self.assertRaisesRegex(NotImplementedError, "unresolved source command") as cm:
                 SourceEvaluator().evaluate(entry)
 
-        self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.case-subject")
-        self.assertEqual(cm.exception.diagnostic.location.line, 1)
+        self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.command-unresolved")
+        self.assertEqual(cm.exception.diagnostic.location.line, 2)
 
     def test_case_block_unknown_subject_rejects_positional_eval_payload(self):
         with ScriptProject() as project:
@@ -681,11 +684,11 @@ class SourceEvaluatorTestCase(unittest.TestCase):
                 esac
                 """))
 
-            with self.assertRaisesRegex(NotImplementedError, "case subject") as cm:
+            with self.assertRaisesRegex(NotImplementedError, "unresolved source command") as cm:
                 SourceEvaluator().evaluate(entry)
 
-        self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.case-subject")
-        self.assertEqual(cm.exception.diagnostic.location.line, 1)
+        self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.command-unresolved")
+        self.assertEqual(cm.exception.diagnostic.location.line, 2)
 
     def test_case_block_fallthrough_terminator_raises_structured_diagnostic(self):
         with ScriptProject() as project:

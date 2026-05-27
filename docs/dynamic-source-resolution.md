@@ -461,10 +461,8 @@ and validate explicit user-provided values on the second pass.
 These still need separate specs before implementation:
 
 - Broader glob semantics beyond ordinary deterministic file globs.
-- Runtime-guarded static lowering for exact source sites inside unknown `if`
-  predicates and runtime `case` subjects. The planned iteration is tracked in
-  [Runtime-Guarded Static Source Lowering](runtime-guarded-source-lowering.md).
-- Conditional predicates outside the modeled side-effect-free subset.
+- Static evaluation of conditional predicates outside the modeled
+  side-effect-free subset.
 - Broader case pattern and fallthrough semantics.
 - Complex array/list-based source paths outside exact indexed, associative,
   append, command-substitution, and file-populated arrays.
@@ -482,10 +480,8 @@ unsupported forms:
 - Compound, multi-source, or pipeline conditional source predicates.
 - Source-free control flow whose body effects exceed the current conservative
   state merge.
-- Runtime-guarded source-bearing `if` / `case` bodies whose source sites are
-  exact but whose guard cannot yet be preserved and lowered.
-- Guard predicates outside exact file/glob tests, exact `shopt -q`, and the
-  current safe `grep -q` subset.
+- Static guard evaluation outside exact file/glob tests, exact `shopt -q`, and
+  the current safe `grep -q` subset.
 - Source arguments that require word splitting, command substitution, or
   unresolved runtime values.
 - Command predicates outside the safe `grep -q` file-check subset.
@@ -549,8 +545,13 @@ scope:
   `head`, `grep -lF` / `grep -lE`, `realpath`, `dirname`, and `basename`.
 - Branch-aware `if` / `elif` / `else` source lowering is implemented for the
   side-effect-free predicate subset and fail-closed branch-state merge.
+- Runtime-guarded `if` / `elif` / `else` source lowering is implemented for
+  exact source sites inside unknown predicates that do not themselves contain
+  source-bearing commands.
 - Exact `case` source lowering is implemented for known scalar subjects,
   mutually exclusive arms, and no-op unreachable source sites.
+- Runtime-guarded `case` lowering is implemented for unknown scalar subjects
+  with supported patterns and exact arm-local source sites.
 - Bounded local function source lowering is implemented for known definitions,
   exact arguments, positional source expressions, parent-state mutations,
   exact assignment prefixes, scalar `local` assignments, exact `return` /
@@ -574,11 +575,9 @@ Structured diagnostic objects are implemented for unsupported source failures.
 Current diagnostics are raised as explicit `UnsupportedSourceError` instances
 with stable codes, source locations, rejected fragments, messages, and hints.
 
-Future resolver increments should stay small, tested, and fail-closed. The
-next runtime-guarded static lowering work is tracked in
-[Runtime-Guarded Static Source Lowering](runtime-guarded-source-lowering.md).
-Case pattern broadening, complex array support, `extglob`, broader
+Future resolver increments should stay small, tested, and fail-closed. Case
+pattern broadening, complex array support, `extglob`, broader
 supplement-backed source resolution, recursive functions, non-equivalent
-branch-defined functions, branch-dependent function returns, and
-runtime-dispatch support should not be added as one-off resolver patches; those
-belong in the evaluator/IR design.
+branch-defined functions, branch-dependent function returns, runtime-dispatch
+support, and runtime source discovery should not be added as one-off resolver
+patches; those belong in the evaluator/IR design.

@@ -213,6 +213,8 @@ LIBRARY_SH=1
 Supported branch-aware source lowering includes `if` / `elif` / `else` with
 side-effect-free file, non-empty, empty, exact string, pattern, compound
 logical, arithmetic, regex, and safe `grep -q` predicates.
+Unknown runtime predicates are preserved when the predicate itself is not a
+source-bearing command and branch-local source sites are exact.
 
 ```bash
 if [[ -f ./optional.sh ]]; then
@@ -226,10 +228,11 @@ else
 fi
 ```
 
-Supported `case` blocks require known scalar subjects and modeled arm patterns:
-literal patterns, alternate patterns, default arms, quoted literals, and
-ordinary glob patterns without mixed quoting, backslash escapes, POSIX
-character classes, or fallthrough terminators.
+Supported `case` blocks use modeled arm patterns: literal patterns, alternate
+patterns, default arms, quoted literals, and ordinary glob patterns without
+mixed quoting, backslash escapes, POSIX character classes, or fallthrough
+terminators. Known scalar subjects are statically selected. Unknown runtime
+subjects preserve the original `case` and lower exact source sites in all arms.
 
 ```bash
 case "$ENV" in
@@ -280,11 +283,11 @@ bash -c "source ./dep.sh"            # child-shell semantics
 
 Other fail-closed families include unmatched or quoted globs, `extglob`
 patterns, `set -f` / `noglob`, `failglob` unmatched globs, `GLOBIGNORE`
-patterns that remove every source match, unsupported command predicates,
-multi-match glob file predicates, unsupported case subjects or arm patterns,
-unsupported process substitution outside modeled read-loop input, unknown
-runtime-dynamic or recursive function dispatch, non-equivalent branch-defined
-functions, branch-dependent function returns, nested dynamic substitutions, and
+patterns that remove every source match, source-bearing compound conditions,
+unsupported dynamic `case` subjects or arm patterns, unsupported process
+substitution outside modeled read-loop input, unknown runtime-dynamic or
+recursive function dispatch, non-equivalent branch-defined functions,
+branch-dependent function returns, nested dynamic substitutions, and
 multi-result command-substitution output where a single source path is required.
 
 ## Practical Remaining Work
@@ -294,11 +297,6 @@ The remaining source-resolution surface is narrower than general Bash support:
 - Explicit source-argument frames that combine top-level `set --` with later
   nested source calls remain fail-closed; see
   [Source Argument Semantics Completion](source-argument-semantics.md).
-- Runtime-guarded static lowering for exact source sites inside unknown `if`
-  predicates and runtime `case` subjects is tracked in
-  [Runtime-Guarded Static Source Lowering](runtime-guarded-source-lowering.md).
-- Broader source guards beyond exact file/glob predicates, exact `shopt -q`,
-  and safe `grep -q`.
 - `extglob` and full Bash edge semantics for `GLOBIGNORE`.
 - Broader `case` pattern and fallthrough semantics for source-bearing arms.
 - Recursive or runtime-dynamic source-bearing function dispatch. Exact
