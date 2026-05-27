@@ -490,12 +490,12 @@ def emit_report(name, payload, path):
     summary = payload.get("summary", {})
     print(f"[realworld] {name}: {summary}", file=sys.stderr)
     print(f"[realworld] results: {path.relative_to(REPO_ROOT)}", file=sys.stderr)
-    unmatched = [
-        record for record in payload.get("records", [])
-        if record.get("matched_expectation") is False
-    ]
-    for record in unmatched:
-        print(f"[realworld] unmatched: {record_summary(record)}", file=sys.stderr)
+    for record in payload.get("records", []):
+        if record.get("matched_expectation") is False:
+            print(
+                f"[realworld] unmatched: {record_summary(record)}{record_details(record)}",
+                file=sys.stderr,
+            )
 
 
 def result_summary(records):
@@ -980,21 +980,39 @@ def run_runtime_parity_probe(entrypoint_path, compiled_path, cwd, environment, t
 
 
 def runtime_failure_message(record):
+    if record["status"].startswith("compile-"):
+        return (
+            f"{record['project']} {record['entrypoint']} runtime: "
+            f"expected match, got {record['status']}{record_details(record)}"
+        )
+
     original = record.get("original", {})
     compiled = record.get("compiled", {})
     return (
         f"{record['project']} {record['entrypoint']} runtime: "
         f"expected match, got {record['status']} "
         f"original rc={original.get('returncode')} compiled rc={compiled.get('returncode')}"
+        f"{runtime_timeout_details(original, compiled)}"
         f"{runtime_output_details(original, compiled)}"
     )
+
+
+def runtime_timeout_details(original, compiled):
+    details = []
+    if original.get("status") == "timeout":
+        details.append(f"original timeout={original.get('timeout_seconds')}")
+    if compiled.get("status") == "timeout":
+        details.append(f"compiled timeout={compiled.get('timeout_seconds')}")
+    if not details:
+        return ""
+    return " (" + "; ".join(details) + ")"
 
 
 def runtime_output_details(original, compiled):
     details = []
     for key in ("stdout", "stderr"):
-        original_value = original.get(key, "")
-        compiled_value = compiled.get(key, "")
+        original_value = completed_output_text(original.get(key, ""))
+        compiled_value = completed_output_text(compiled.get(key, ""))
         if original_value != compiled_value:
             details.append(
                 f"{key} original={short_text(original_value)!r} compiled={short_text(compiled_value)!r}"
@@ -1009,6 +1027,55 @@ def short_text(value, limit=160):
     if len(value) <= limit:
         return value
     return value[:limit - 3] + "..."
+
+
+class RealWorldHarnessHelperTestCase(unittest.TestCase):
+    def test_runtime_compile_failure_message_includes_diagnostics(self):
+        message = runtime_failure_message({
+            "project": "project",
+            "entrypoint": "entry.sh",
+            "status": "compile-unsupported",
+            "diagnostics": [{
+                "code": "modashc.unresolved_source",
+                "line": 3,
+                "fragment": "source \"$target\"",
+            }],
+        })
+
+        self.assertIn("expected match, got compile-unsupported", message)
+        self.assertIn("diagnostic=modashc.unresolved_source", message)
+        self.assertIn("fragment='source \"$target\"'", message)
+
+    def test_runtime_failure_message_includes_timeout_side_and_output_diff(self):
+        message = runtime_failure_message({
+            "project": "project",
+            "entrypoint": "entry.sh",
+            "status": "timeout",
+            "original": {
+                "status": "timeout",
+                "timeout_seconds": 0.1,
+                "stdout": b"partial\n",
+                "stderr": "",
+            },
+            "compiled": {
+                "status": "complete",
+                "returncode": 0,
+                "stdout": "",
+                "stderr": "",
+            },
+        })
+
+        self.assertIn("original timeout=0.1", message)
+        self.assertIn("stdout original='partial\\n' compiled=''", message)
+
+    def test_runtime_output_details_normalizes_byte_streams(self):
+        self.assertEqual(
+            "",
+            runtime_output_details(
+                {"stdout": b"same\n", "stderr": b""},
+                {"stdout": "same\n", "stderr": ""},
+            ),
+        )
 
 
 @unittest.skipUnless(
