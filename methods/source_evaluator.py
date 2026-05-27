@@ -2352,9 +2352,11 @@ class SourceEvaluator:
             return
 
         if subject_value is None:
-            self._apply_unknown_case_block(node, state, stack)
-            state.occurrence_context = outer_occurrence_context
-            state.condition_context = outer_condition_context
+            try:
+                self._apply_unknown_case_block(node, state, stack)
+            finally:
+                state.occurrence_context = outer_occurrence_context
+                state.condition_context = outer_condition_context
             return
 
         base_state = state.child_shell_copy()

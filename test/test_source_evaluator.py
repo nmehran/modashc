@@ -690,6 +690,26 @@ class SourceEvaluatorTestCase(unittest.TestCase):
         self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.command-unresolved")
         self.assertEqual(cm.exception.diagnostic.location.line, 2)
 
+    def test_case_block_unknown_subject_return_restores_outer_source_context(self):
+        with ScriptProject() as project:
+            lib = project.write("lib.sh", textwrap.dedent("""\
+                case "$MODE" in
+                  *) return 0 ;;
+                esac
+                """))
+            after = project.write("after.sh", 'echo "after"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                source ./lib.sh
+                source ./after.sh
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [lib, after])
+        self.assertEqual(result.events[0].condition, None)
+        self.assertEqual(result.events[1].condition, None)
+        self.assertEqual(result.events[1].occurrence_model, OccurrenceModel.ONCE)
+
     def test_case_block_fallthrough_terminator_raises_structured_diagnostic(self):
         with ScriptProject() as project:
             project.write("prod.sh", 'echo "prod"\n')
