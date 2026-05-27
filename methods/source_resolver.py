@@ -2,17 +2,16 @@ import glob
 import os
 import re
 from dataclasses import dataclass
-from fnmatch import fnmatch, fnmatchcase
+from fnmatch import fnmatch
 
 from methods.regex.patterns import SOURCE_PATTERN, create_command_pattern
 from methods.regex.utilities import extract_bash_commands, strip_matching_quotes
 from methods.shell_line import get_commands
+from methods.source_patterns import UnsupportedPatternError, shell_pattern_matches
 
 ASSIGNMENT_WORD_PATTERN = re.compile(r'^[a-zA-Z_]\w*(?:\+)?=.*$')
 BASH_COMMAND_PATTERN = create_command_pattern(r'bash|/bin/bash|/usr/bin/bash', regex=True)
-UNSUPPORTED_GLOB_OPTIONS = frozenset({
-    'extglob',
-})
+UNSUPPORTED_GLOB_OPTIONS = frozenset()
 COMMAND_LEVEL_SOURCE_PATTERNS = (
     ('eval', None),
     (r'bash|/bin/bash|/usr/bin/bash', BASH_COMMAND_PATTERN),
@@ -443,7 +442,12 @@ def _brace_sequence_options(body: str):
 
 
 def _glob_matches(pattern: str, current_directory: str, glob_options: set[str], include_hidden: bool):
-    if include_hidden or 'nocaseglob' in glob_options:
+    if (
+        include_hidden
+        or 'nocaseglob' in glob_options
+        or 'extglob' in glob_options
+        or _has_escaped_pattern_meta(pattern)
+    ):
         return _manual_glob_matches(pattern, current_directory, glob_options, include_hidden)
 
     recursive = 'globstar' in glob_options
@@ -454,6 +458,10 @@ def _glob_matches(pattern: str, current_directory: str, glob_options: set[str], 
         root_dir=current_directory,
         recursive=recursive,
     ))
+
+
+def _has_escaped_pattern_meta(pattern: str):
+    return bool(re.search(r'\\[*?\[\]@!+()|]', pattern))
 
 
 def _manual_glob_matches(pattern: str, current_directory: str, glob_options: set[str], include_hidden: bool):
@@ -488,6 +496,49 @@ def _manual_glob_matches(pattern: str, current_directory: str, glob_options: set
     return sorted(matches)
 
 
+def _pattern_with_quoted_literals(pattern: str, raw_pattern: str):
+    if "$" in raw_pattern or strip_shell_word_quotes(raw_pattern) != pattern:
+        return pattern
+
+    output = []
+    in_single_quote = False
+    in_double_quote = False
+    escaped = False
+    index = 0
+    metacharacters = set("*?[]@!+()|")
+
+    while index < len(raw_pattern):
+        char = raw_pattern[index]
+        if escaped:
+            output.append(f"\\{char}" if char in metacharacters else char)
+            escaped = False
+            index += 1
+            continue
+
+        if char == "\\" and not in_single_quote:
+            escaped = True
+            index += 1
+            continue
+
+        if char == "'" and not in_double_quote:
+            in_single_quote = not in_single_quote
+            index += 1
+            continue
+
+        if char == '"' and not in_single_quote:
+            in_double_quote = not in_double_quote
+            index += 1
+            continue
+
+        if (in_single_quote or in_double_quote) and char in metacharacters:
+            output.append(f"\\{char}")
+        else:
+            output.append(char)
+        index += 1
+
+    return "".join(output)
+
+
 def _glob_static_root(absolute_pattern: str):
     drive, tail = os.path.splitdrive(absolute_pattern)
     parts = [part for part in tail.split(os.sep) if part]
@@ -500,7 +551,7 @@ def _glob_static_root(absolute_pattern: str):
 
 
 def _glob_segment_has_magic(segment: str):
-    return any(char in segment for char in "*?[")
+    return any(char in segment for char in "*?[") or has_unquoted_extglob(segment)
 
 
 def _glob_parts_match(pattern_parts: list[str], candidate_parts: list[str], glob_options: set[str],
@@ -532,9 +583,12 @@ def _hidden_glob_segment_blocked(pattern: str, candidate: str, include_hidden: b
 
 
 def _glob_segment_matches(pattern: str, candidate: str, glob_options: set[str]):
-    if 'nocaseglob' in glob_options:
-        return fnmatchcase(candidate.lower(), pattern.lower())
-    return fnmatchcase(candidate, pattern)
+    return shell_pattern_matches(
+        pattern,
+        candidate,
+        extglob='extglob' in glob_options,
+        nocase='nocaseglob' in glob_options,
+    )
 
 
 def _relative_glob_word(path: str, current_directory: str, pattern: str):
@@ -551,13 +605,21 @@ def _globignore_patterns(context: dict):
     return [pattern for pattern in globignore.split(":") if pattern]
 
 
-def _apply_globignore(matches: list[str], patterns: list[str]):
+def _apply_globignore(matches: list[str], patterns: list[str], glob_options: set[str]):
     if not patterns:
         return matches
     return [
         match
         for match in matches
-        if not any(fnmatchcase(match, pattern) for pattern in patterns)
+        if not any(
+            shell_pattern_matches(
+                pattern,
+                match,
+                extglob='extglob' in glob_options,
+                nocase='nocaseglob' in glob_options,
+            )
+            for pattern in patterns
+        )
     ]
 
 
@@ -572,17 +634,23 @@ def expand_glob_word(pattern: str, context: dict, source_site: str, raw_pattern:
 
     if 'noglob' in context.get('shell_options', set()):
         raise UnsupportedSourceError(f"unsupported noglob source pattern: {source_site.strip()}")
+    if has_unquoted_extglob(raw_pattern) and 'extglob' not in glob_options:
+        raise UnsupportedSourceError(f"unsupported disabled extglob source pattern: {source_site.strip()}")
 
     current_directory = context['current_directory']
     globignore_patterns = _globignore_patterns(context)
     include_hidden = 'dotglob' in glob_options or bool(globignore_patterns)
     matches = []
-    for expanded_pattern in _brace_expand(pattern, raw_pattern, source_site):
-        pattern_matches = _glob_matches(expanded_pattern, current_directory, glob_options, include_hidden)
-        filtered_matches = _apply_globignore(pattern_matches, globignore_patterns)
-        if not filtered_matches and pattern_matches and 'nullglob' not in glob_options:
-            raise UnsupportedSourceError(f"unsupported GLOBIGNORE source pattern: {source_site.strip()}")
-        matches.extend(filtered_matches)
+    matching_pattern = _pattern_with_quoted_literals(pattern, raw_pattern)
+    try:
+        for expanded_pattern in _brace_expand(matching_pattern, raw_pattern, source_site):
+            pattern_matches = _glob_matches(expanded_pattern, current_directory, glob_options, include_hidden)
+            filtered_matches = _apply_globignore(pattern_matches, globignore_patterns, glob_options)
+            if not filtered_matches and pattern_matches and 'nullglob' not in glob_options:
+                raise UnsupportedSourceError(f"unsupported GLOBIGNORE source pattern: {source_site.strip()}")
+            matches.extend(filtered_matches)
+    except UnsupportedPatternError as exc:
+        raise UnsupportedSourceError(f"unsupported source pattern: {source_site.strip()} ({exc})") from exc
 
     if not matches:
         if 'nullglob' in glob_options:
@@ -1106,7 +1174,7 @@ class SourceResolver:
         if '`' in source_expression:
             raise UnsupportedSourceError(f"unsupported backtick source command: {source_site.strip()}")
 
-        if has_unquoted_glob(source_expression):
+        if has_unquoted_glob(source_expression) or has_unquoted_extglob(source_expression):
             words = parse_shell_words(source_expression)
             if len(words) != 1:
                 raise UnsupportedSourceError(f"unsupported source glob arguments: {source_site.strip()}")

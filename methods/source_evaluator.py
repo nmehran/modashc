@@ -6221,7 +6221,7 @@ class SourceEvaluator:
                 "Reset cwd with an exact cd before the next source, or keep branch cwd effects convergent.",
             )
 
-        if has_unquoted_glob(source_expression) and (
+        if (has_unquoted_glob(source_expression) or has_unquoted_extglob(source_expression)) and (
             state.ambiguous_shell_options
             or state.ambiguous_glob_options
             or "GLOBIGNORE" in state.ambiguous_variables

@@ -1443,6 +1443,38 @@ class SourceEvaluatorTestCase(unittest.TestCase):
 
         self.assertEqual([event.path for event in result.events], [hidden, kept])
 
+        with ScriptProject() as project:
+            kept = project.write("plugins/a.sh", 'echo "a"\n')
+            project.write("plugins/b.sh", 'echo "b"\n')
+            project.write("plugins/c.sh", 'echo "c"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                shopt -s extglob
+                GLOBIGNORE=./plugins/@(b|c).sh
+                for dep in ./plugins/*.sh; do
+                  source "$dep"
+                done
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [kept])
+
+    def test_extglob_for_loop_sources_are_evaluated(self):
+        with ScriptProject() as project:
+            first = project.write("plugins/a.sh", 'echo "a"\n')
+            second = project.write("plugins/b.sh", 'echo "b"\n')
+            project.write("plugins/c.sh", 'echo "c"\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                shopt -s extglob
+                for dep in ./plugins/@(a|b).sh; do
+                  source "$dep"
+                done
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.path for event in result.events], [first, second])
+
     def test_direct_glob_source_event_uses_matched_runtime_word(self):
         with ScriptProject() as project:
             dep = project.write("plugins/only.sh", 'echo "only"\n')
@@ -1461,7 +1493,7 @@ class SourceEvaluatorTestCase(unittest.TestCase):
             "unmatched glob": 'for dep in ./plugins/*.sh; do source "$dep"; done\n',
             "quoted glob": 'for dep in "./plugins/*.sh"; do source "$dep"; done\n',
             "failglob": 'shopt -s failglob\nfor dep in ./plugins/*.sh; do source "$dep"; done\n',
-            "extglob": 'shopt -s extglob\nfor dep in ./plugins/@(a|b).sh; do source "$dep"; done\n',
+            "disabled extglob": 'for dep in ./plugins/@(a|b).sh; do source "$dep"; done\n',
             "globignore removes all matches": (
                 'GLOBIGNORE=./plugins/a.sh:./plugins/b.sh\n'
                 'for dep in ./plugins/*.sh; do source "$dep"; done\n'
@@ -1476,7 +1508,7 @@ class SourceEvaluatorTestCase(unittest.TestCase):
                     SourceEvaluator().evaluate(entry)
 
             self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.loop-word-list")
-            expected_line = 2 if name in {"failglob", "extglob", "globignore removes all matches"} else 1
+            expected_line = 2 if name in {"failglob", "globignore removes all matches"} else 1
             self.assertEqual(cm.exception.diagnostic.location.line, expected_line)
 
     def test_circular_source_raises_recursion_error(self):

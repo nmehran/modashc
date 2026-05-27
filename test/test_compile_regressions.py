@@ -511,6 +511,44 @@ class CompileRegressionTestCase(unittest.TestCase):
 
             project.assert_compiled_matches(self, "main.sh", env={"LC_ALL": "C"})
 
+        with ScriptProject() as project:
+            project.write("plugins/a.sh", 'echo "extglob:a:$dep"\n')
+            project.write("plugins/b.sh", 'echo "extglob:b:$dep"\n')
+            project.write("plugins/c.sh", 'echo "unexpected:c:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                shopt -s extglob
+                for dep in ./plugins/@(a|b).sh; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh", env={"LC_ALL": "C"})
+
+        with ScriptProject() as project:
+            project.write("plugins/pre.sh", 'echo "extglob-zero-or-more:$dep"\n')
+            project.write("plugins/pred.sh", 'echo "extglob-one-d:$dep"\n')
+            project.write("plugins/predd.sh", 'echo "extglob-two-d:$dep"\n')
+            project.write("plugins/b.sh", 'echo "extglob-optional:$dep"\n')
+            project.write("plugins/ab.sh", 'echo "extglob-optional-a:$dep"\n')
+            project.write("plugins/c.sh", 'echo "extglob-plus:$dep"\n')
+            project.write("plugins/cc.sh", 'echo "extglob-plus-two:$dep"\n')
+            project.write("plugins/skip.sh", 'echo "unexpected skip:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                shopt -s extglob
+                for dep in ./plugins/?(a)b.sh ./plugins/+(c).sh ./plugins/pre*(d).sh ./plugins/!(skip).sh; do
+                  source "$dep"
+                done
+                """))
+
+            output = project.compile("main.sh", mode="executable")
+            expected = project.run("main.sh", env={"LC_ALL": "C"})
+            actual = project.run(output, env={"LC_ALL": "C"})
+            compiled_content = output.read_text()
+
+        self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
+        self.assertEqual(actual.stdout, expected.stdout)
+        self.assertNotIn("unexpected skip", compiled_content)
+
     def test_brace_and_nullglob_for_loop_sources_match_bash(self):
         with ScriptProject() as project:
             project.write("plugins/a.sh", 'echo "brace:a:$dep"\n')
@@ -573,8 +611,23 @@ class CompileRegressionTestCase(unittest.TestCase):
             project.write("plugins/.hidden.sh", 'echo "globignore:hidden:$dep"\n')
             project.write("plugins/a.sh", 'echo "globignore:a:$dep"\n')
             project.write("plugins/b.sh", 'echo "globignore:b:$dep"\n')
+            project.write("plugins/c.sh", 'echo "globignore:c:$dep"\n')
             project.write("main.sh", textwrap.dedent("""\
-                GLOBIGNORE=./plugins/b.sh
+                GLOBIGNORE=./plugins/b.sh:./plugins/c.sh
+                for dep in ./plugins/*.sh; do
+                  source "$dep"
+                done
+                """))
+
+            project.assert_compiled_matches(self, "main.sh", env={"LC_ALL": "C"})
+
+        with ScriptProject() as project:
+            project.write("plugins/a.sh", 'echo "globignore extglob:a:$dep"\n')
+            project.write("plugins/b.sh", 'echo "unexpected:b:$dep"\n')
+            project.write("plugins/c.sh", 'echo "unexpected:c:$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                shopt -s extglob
+                GLOBIGNORE=./plugins/@(b|c).sh
                 for dep in ./plugins/*.sh; do
                   source "$dep"
                 done
@@ -588,6 +641,33 @@ class CompileRegressionTestCase(unittest.TestCase):
             project.write("main.sh", 'source ./plugins/*.sh\necho "main"\n')
 
             project.assert_compiled_matches(self, "main.sh", env={"LC_ALL": "C"})
+
+        with ScriptProject() as project:
+            project.write("plugins/a.sh", 'echo "direct extglob:$1:$2"\n')
+            project.write("plugins/b.sh", 'echo "unexpected direct extglob"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                shopt -s extglob
+                source ./plugins/@(a|b).sh explicit
+                """))
+
+            project.assert_compiled_matches(self, "main.sh", env={"LC_ALL": "C"})
+
+        with ScriptProject() as project:
+            project.write("plugins/@(a|b)-literal.sh", 'echo "quoted extglob literal"\n')
+            project.write("plugins/a-literal.sh", 'echo "unexpected extglob expansion"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                shopt -s extglob
+                source ./plugins/"@(a|b)"-*.sh
+                """))
+
+            output = project.compile("main.sh", mode="executable")
+            expected = project.run("main.sh", env={"LC_ALL": "C"})
+            actual = project.run(output, env={"LC_ALL": "C"})
+            compiled_content = output.read_text()
+
+        self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
+        self.assertEqual(actual.stdout, expected.stdout)
+        self.assertNotIn("unexpected extglob expansion", compiled_content)
 
     def test_direct_source_glob_with_quoted_literal_path_chars_matches_bash(self):
         with ScriptProject() as project:
@@ -2675,8 +2755,8 @@ class CompileRegressionTestCase(unittest.TestCase):
                 'shopt -s failglob\nfor file in ./missing/*.sh; do source "$file"; done\n',
                 'for file in ./missing/*.sh; do source "$file"; done',
             ),
-            "extglob loop": (
-                'shopt -s extglob\nfor file in ./plugins/@(a|b).sh; do source "$file"; done\n',
+            "disabled extglob loop": (
+                'for file in ./plugins/@(a|b).sh; do source "$file"; done\n',
                 'for file in ./plugins/@(a|b).sh; do source "$file"; done',
             ),
             "noglob loop": (
