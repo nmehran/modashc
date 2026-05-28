@@ -12,6 +12,9 @@ from methods.source_patterns import UnsupportedPatternError, shell_pattern_match
 ASSIGNMENT_WORD_PATTERN = re.compile(r'^[a-zA-Z_]\w*(?:\+)?=.*$')
 BASH_COMMAND_PATTERN = create_command_pattern(r'bash|/bin/bash|/usr/bin/bash', regex=True)
 UNSUPPORTED_GLOB_OPTIONS = frozenset()
+MISSING_SOURCE = "missing-source"
+MISSING_SOURCE_NO_FILENAME = "missing-source-no-filename"
+MISSING_SOURCE_REPLACEMENT_KINDS = frozenset({MISSING_SOURCE, MISSING_SOURCE_NO_FILENAME})
 COMMAND_LEVEL_SOURCE_PATTERNS = (
     ('eval', None),
     (r'bash|/bin/bash|/usr/bin/bash', BASH_COMMAND_PATTERN),
@@ -33,6 +36,18 @@ class UnsupportedSourceError(NotImplementedError):
         if self.diagnostic is not None:
             return self
         return UnsupportedSourceError(str(self), diagnostic=diagnostic, code=self.code, hint=self.hint)
+
+
+def is_missing_source_replacement_kind(replacement_kind: str):
+    return replacement_kind in MISSING_SOURCE_REPLACEMENT_KINDS
+
+
+def missing_source_status(replacement_kind: str):
+    if replacement_kind == MISSING_SOURCE:
+        return 1
+    if replacement_kind == MISSING_SOURCE_NO_FILENAME:
+        return 2
+    raise ValueError(f"unknown missing-source replacement kind: {replacement_kind}")
 
 
 @dataclass(frozen=True)
@@ -1234,7 +1249,7 @@ class SourceResolver:
                     source_expression,
                     source_site,
                     context,
-                    "missing-source-no-filename",
+                    MISSING_SOURCE_NO_FILENAME,
                 )
             if not matches[0].exists:
                 return _missing_source_result(
@@ -1242,7 +1257,7 @@ class SourceResolver:
                     source_expression,
                     source_site,
                     context,
-                    "missing-source",
+                    MISSING_SOURCE,
                 )
             source_arguments = tuple(match.word for match in matches[1:]) or None
 
@@ -1266,7 +1281,7 @@ class SourceResolver:
                     source_expression,
                     source_site,
                     context,
-                    "missing-source",
+                    MISSING_SOURCE,
                 )
 
         if resolved_path := self.resolve_path(source_expression, context):

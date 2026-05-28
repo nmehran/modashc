@@ -20,12 +20,15 @@ from methods.source_effects import (
 from methods.source_frontend import LineParserFrontend
 from methods.source_resolver import (
     ASSIGNMENT_WORD_PATTERN,
+    MISSING_SOURCE_NO_FILENAME,
     ResolvedSource,
     UnsupportedSourceError,
     contains_source_command,
     contains_nested_source_command,
     extract_heredoc_delimiters,
     is_heredoc_end,
+    is_missing_source_replacement_kind,
+    missing_source_status,
     parse_shell_words_preserving_quotes,
     strip_shell_word_quotes,
 )
@@ -70,10 +73,6 @@ def shell_quote_words(words):
     return " ".join(shell_quote(word) for word in words)
 
 
-def missing_source_status(replacement_kind: str):
-    return 2 if replacement_kind == "missing-source-no-filename" else 1
-
-
 def source_command_name(source_site: str):
     try:
         words = parse_shell_words_preserving_quotes(source_site.strip())
@@ -85,7 +84,7 @@ def source_command_name(source_site: str):
 def render_missing_source_failure(source_declaration, indent: str):
     command_name = source_command_name(source_declaration.source_site)
     status = missing_source_status(source_declaration.replacement_kind)
-    if source_declaration.replacement_kind == "missing-source-no-filename":
+    if source_declaration.replacement_kind == MISSING_SOURCE_NO_FILENAME:
         messages = [
             f"{command_name}: filename argument required",
             f"{command_name}: usage: {command_name} filename [arguments]",
@@ -502,7 +501,7 @@ def render_source_dispatch(
         seen_patterns.add(pattern)
         if source_declaration.replacement_kind == "noop-source":
             rendered_source = f"{indent}    :"
-        elif source_declaration.replacement_kind.startswith("missing-source"):
+        elif is_missing_source_replacement_kind(source_declaration.replacement_kind):
             rendered_source = render_missing_source_failure(source_declaration, f"{indent}    ")
         else:
             rendered_source = indent_block(
@@ -780,7 +779,7 @@ def render_source_site_replacement(
 
     if declaration.replacement_kind == "noop-source":
         return f"{separator}:"
-    if declaration.replacement_kind.startswith("missing-source"):
+    if is_missing_source_replacement_kind(declaration.replacement_kind):
         return f"{separator}{{\n{render_missing_source_failure(declaration, indent)}\n{indent}}}"
 
     rendered_source = indent_block(
@@ -1132,7 +1131,7 @@ def render_executable_script(entry_point: str, context: dict):
                     source_declaration for source_declaration in source_declarations
                     if (
                         source_declaration.replacement_kind in {"source", "noop-source", "retained-source"}
-                        or source_declaration.replacement_kind.startswith("missing-source")
+                        or is_missing_source_replacement_kind(source_declaration.replacement_kind)
                     )
                 ]
                 if source_site_declarations:

@@ -42,6 +42,7 @@ from methods.source_patterns import (
     split_extglob_alternatives,
 )
 from methods.source_resolver import (
+    MISSING_SOURCE_NO_FILENAME,
     ResolvedSource,
     UnsupportedSourceError,
     contains_source_command,
@@ -53,6 +54,8 @@ from methods.source_resolver import (
     has_unquoted_extglob,
     contains_unquoted_token,
     has_unquoted_glob,
+    is_missing_source_replacement_kind,
+    missing_source_status,
     parse_shell_words_preserving_quotes,
     source_command_index,
     strip_shell_word_quotes,
@@ -4371,7 +4374,7 @@ class SourceEvaluator:
 
         if not resolved_source:
             return SourceInvocation(resolved_source, source_arguments=source_arguments)
-        if resolved_source.replacement_kind == "missing-source-no-filename" and source_arguments:
+        if resolved_source.replacement_kind == MISSING_SOURCE_NO_FILENAME and source_arguments:
             raise self._unsupported_source_argument(
                 node,
                 "unsupported nullglob source argument shift",
@@ -4604,11 +4607,7 @@ class SourceEvaluator:
 
     @staticmethod
     def _is_missing_source(resolved_source: ResolvedSource):
-        return resolved_source.replacement_kind in {"missing-source", "missing-source-no-filename"}
-
-    @staticmethod
-    def _missing_source_status(replacement_kind: str):
-        return 2 if replacement_kind == "missing-source-no-filename" else 1
+        return is_missing_source_replacement_kind(resolved_source.replacement_kind)
 
     def _record_missing_source(
         self,
@@ -4634,7 +4633,7 @@ class SourceEvaluator:
                 occurrence_model=OccurrenceModel.CONDITIONAL,
                 source_value=source_value,
             )
-            branch_state.last_status = self._missing_source_status(replacement_kind)
+            branch_state.last_status = missing_source_status(replacement_kind)
             self._merge_possible_states(state, [base_state, branch_state])
             return
 
@@ -4648,7 +4647,7 @@ class SourceEvaluator:
             state,
             source_value=source_value,
         )
-        state.last_status = self._missing_source_status(replacement_kind)
+        state.last_status = missing_source_status(replacement_kind)
 
     @staticmethod
     def _unsupported_positional_source(node: SourceSite, state: EvaluationState, message: str, hint: str):
