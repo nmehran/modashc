@@ -348,7 +348,8 @@ multi-result command-substitution output where a single source path is required.
 The remaining source-resolution surface is narrower than general Bash support:
 
 - Missing-source runtime-error lowering for unmatched or all-ignored
-  source-producing globs that Bash would leave as literal missing source paths.
+  source-producing globs that Bash would leave as literal missing source paths;
+  see [Missing Source Runtime Error Lowering](missing-source-runtime-lowering.md).
 - Remaining case edge semantics such as collating symbols, equivalence classes,
   and broader locale-dependent pattern behavior. The implemented deterministic
   `extglob` / `GLOBIGNORE` subset is covered in

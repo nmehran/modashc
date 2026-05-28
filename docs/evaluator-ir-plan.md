@@ -407,21 +407,22 @@ readable provenance; fallthrough cases are annotated as conditional because
 multiple arms may run.
 
 Executable mode preserves unknown or runtime-dynamic subjects when all possible
-source sites are exact and the original `case` can be retained. It rejects
-`extglob`, collating symbols, equivalence classes, broader locale-dependent
-patterns, and case bodies whose source-relevant behavior cannot be modeled.
+source sites are exact and the original `case` can be retained. It supports the
+deterministic `extglob` subset and rejects collating symbols, equivalence
+classes, broader locale-dependent patterns, and case bodies whose
+source-relevant behavior cannot be modeled.
 
 ### Globs
 
 Ordinary file-glob expansion is implemented for finite loop word lists and for
 direct source expressions with one or more matches. Option-aware loop glob
 expansion is implemented for `nullglob`, `dotglob`, `globstar`, `nocaseglob`,
-deterministic brace expansion, and practical `GLOBIGNORE` filtering. Broader
-glob expansion should remain deterministic and cwd-aware:
+`extglob`, deterministic brace expansion, and practical `GLOBIGNORE` filtering.
+Broader glob expansion should remain deterministic and cwd-aware:
 
 - sort matches lexically
-- reject `extglob`, `set -f`, and all-ignored `GLOBIGNORE` matches unless their
-  semantics are fully modeled
+- reject `set -f`, branch-dependent glob state, and all-ignored `GLOBIGNORE`
+  matches unless their semantics are fully modeled
 - reject ambiguous directory state
 
 ## Diagnostics

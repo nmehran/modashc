@@ -27,8 +27,11 @@ keep only in code comments or tests.
   segments, command substitutions, process substitutions, and `bash -c`
   boundaries.
 - [Source Pattern Semantics Completion](source-pattern-semantics.md):
-  planned static completion for pattern context boundaries, `extglob`,
+  implemented static completion for pattern context boundaries, `extglob`,
   `GLOBIGNORE`, and modeled case/source-guard pattern semantics.
+- [Missing Source Runtime Error Lowering](missing-source-runtime-lowering.md):
+  planned static lowering for unmatched or all-filtered source-producing globs
+  that Bash would execute as runtime source failures.
 - [Source-Relevant Control Flow Boundaries](source-control-flow-boundaries.md):
   source-free control-flow pass-through, exact source
   conditions, and practical source guard predicates.
@@ -68,8 +71,8 @@ The intended approach is captured in the
   bounded `while` / `until`, and modeled `while read` file enumeration from
   exact files and safe producers
 - Remaining glob/source-argument semantics: source arguments requiring word
-  splitting, plus missing-source runtime-error lowering for unmatched or
-  all-ignored source-producing globs
+  splitting, plus missing-source runtime-error lowering tracked in
+  [Missing Source Runtime Error Lowering](missing-source-runtime-lowering.md)
 - Broader source guard predicates and remaining case edge semantics outside
   deterministic pattern completion
 - Runtime-dynamic source dispatch, recursive source-bearing functions,

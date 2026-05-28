@@ -219,4 +219,5 @@ Reject:
 - full parser replacement for unsupported shell grammar
 - broad source argument word splitting
 - missing-source runtime-error lowering for unmatched or all-ignored
-  source-producing globs
+  source-producing globs; see
+  [Missing Source Runtime Error Lowering](missing-source-runtime-lowering.md)

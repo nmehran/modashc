@@ -471,6 +471,9 @@ and validate explicit user-provided values on the second pass.
 These still need separate specs before implementation:
 
 - Broader glob semantics beyond ordinary deterministic file globs.
+- Missing-source runtime-error lowering for unmatched or all-filtered
+  source-producing globs; see
+  [Missing Source Runtime Error Lowering](missing-source-runtime-lowering.md).
 - Static evaluation of conditional predicates outside the modeled
   side-effect-free subset.
 - Remaining case edge semantics such as collating symbols, equivalence
