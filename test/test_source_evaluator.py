@@ -1514,6 +1514,34 @@ class SourceEvaluatorTestCase(unittest.TestCase):
         self.assertEqual([event.replacement_kind for event in result.events], ["missing-source-no-filename"])
         self.assertEqual([event.source_value for event in result.events], [""])
 
+    def test_direct_brace_and_nullglob_shift_source_events_are_evaluated(self):
+        with ScriptProject() as project:
+            project.write("real.sh", 'echo real\n')
+            project.write("fallback.sh", 'echo fallback\n')
+            entry = project.write("main.sh", textwrap.dedent("""\
+                source ./{real,missing}.sh
+                shopt -s nullglob
+                source ./missing/*.sh ./fallback.sh arg
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.replacement_kind for event in result.events], ["source", "source"])
+        self.assertEqual([event.source_value for event in result.events], ["./real.sh", "./fallback.sh"])
+        self.assertEqual([event.source_arguments for event in result.events], [("./missing.sh",), ("arg",)])
+
+    def test_failglob_direct_source_event_is_expansion_failure(self):
+        with ScriptProject() as project:
+            entry = project.write("main.sh", textwrap.dedent("""\
+                shopt -s failglob
+                source ./missing/*.sh; source ./skipped/*.sh
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.replacement_kind for event in result.events], ["source-expansion-failure"])
+        self.assertEqual([event.source_value for event in result.events], ["./missing/*.sh"])
+
     def test_unsupported_for_loop_words_raise_structured_diagnostic(self):
         cases = {
             "command substitution": 'for dep in $(cat deps.txt); do source "$dep"; done\n',

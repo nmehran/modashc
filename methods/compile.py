@@ -28,6 +28,7 @@ from methods.source_resolver import (
     extract_heredoc_delimiters,
     is_heredoc_end,
     is_missing_source_replacement_kind,
+    is_source_expansion_failure_replacement_kind,
     missing_source_status,
     parse_shell_words_preserving_quotes,
     strip_shell_word_quotes,
@@ -100,6 +101,15 @@ def render_missing_source_failure(source_declaration, indent: str):
     for message in remaining_messages:
         lines.append(f"{indent}printf '%s\\n' {shell_quote(message)} >&2")
     lines.append(f"{indent}( exit {status} )")
+    return "\n".join(lines)
+
+
+def render_source_expansion_failure(source_declaration, indent: str):
+    lines = [
+        f"{indent}printf '%s: line %s: no match: %s\\n' "
+        f'"${{BASH_SOURCE[0]}}" "${{LINENO}}" {shell_quote(source_declaration.source_value or "")} >&2',
+        f"{indent}( exit 1 )",
+    ]
     return "\n".join(lines)
 
 
@@ -503,6 +513,8 @@ def render_source_dispatch(
             rendered_source = f"{indent}    :"
         elif is_missing_source_replacement_kind(source_declaration.replacement_kind):
             rendered_source = render_missing_source_failure(source_declaration, f"{indent}    ")
+        elif is_source_expansion_failure_replacement_kind(source_declaration.replacement_kind):
+            rendered_source = render_source_expansion_failure(source_declaration, f"{indent}    ")
         else:
             rendered_source = indent_block(
                 render_source(
@@ -781,6 +793,8 @@ def render_source_site_replacement(
         return f"{separator}:"
     if is_missing_source_replacement_kind(declaration.replacement_kind):
         return f"{separator}{{\n{render_missing_source_failure(declaration, indent)}\n{indent}}}"
+    if is_source_expansion_failure_replacement_kind(declaration.replacement_kind):
+        return f"{separator}{{\n{render_source_expansion_failure(declaration, indent)}\n{indent}}} #"
 
     rendered_source = indent_block(
         render_source(
@@ -1132,6 +1146,7 @@ def render_executable_script(entry_point: str, context: dict):
                     if (
                         source_declaration.replacement_kind in {"source", "noop-source", "retained-source"}
                         or is_missing_source_replacement_kind(source_declaration.replacement_kind)
+                        or is_source_expansion_failure_replacement_kind(source_declaration.replacement_kind)
                     )
                 ]
                 if source_site_declarations:

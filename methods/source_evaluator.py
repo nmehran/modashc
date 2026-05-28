@@ -42,6 +42,8 @@ from methods.source_patterns import (
     split_extglob_alternatives,
 )
 from methods.source_resolver import (
+    FailglobExpansionError,
+    MISSING_SOURCE,
     MISSING_SOURCE_NO_FILENAME,
     ResolvedSource,
     UnsupportedSourceError,
@@ -55,8 +57,10 @@ from methods.source_resolver import (
     contains_unquoted_token,
     has_unquoted_glob,
     is_missing_source_replacement_kind,
+    is_source_expansion_failure_replacement_kind,
     missing_source_status,
     parse_shell_words_preserving_quotes,
+    source_expansion_failure_result,
     source_command_index,
     strip_shell_word_quotes,
 )
@@ -369,6 +373,12 @@ class LoopContinueSignal(Exception):
 
 
 @dataclass
+class LineAbortSignal(Exception):
+    path: Path
+    line: int
+
+
+@dataclass
 class ReadLoopWords:
     variable: str
     values: tuple[str, ...]
@@ -397,6 +407,13 @@ class RetainedHelperSourceSite:
 class SourceInvocation:
     source: ResolvedSource | None
     source_arguments: tuple[str, ...] | None = None
+
+
+@dataclass(frozen=True)
+class ExpandedSourceWord:
+    word: str
+    path: str | None = None
+    exists: bool = True
 
 
 @dataclass(frozen=True)
@@ -520,8 +537,11 @@ class SourceEvaluator:
 
     def _evaluate_nodes(self, nodes, state: EvaluationState, stack: tuple[Path, ...]):
         nodes = tuple(nodes)
+        aborted_lines = set()
         for index, node in enumerate(nodes):
             try:
+                if (node.location.path, node.location.line) in aborted_lines:
+                    continue
                 if isinstance(node, Assignment):
                     self._apply_assignment(node, state)
                 elif isinstance(node, ArrayAssignment):
@@ -549,6 +569,8 @@ class SourceEvaluator:
             except (FunctionReturnSignal, SourceReturnSignal):
                 self._disable_unreachable_sources(nodes[index + 1:], "return")
                 raise
+            except LineAbortSignal as signal:
+                aborted_lines.add((signal.path, signal.line))
 
     def _apply_assignment(self, node: Assignment, state: EvaluationState):
         if node.prefix == "local" and state.local_scopes:
@@ -3601,6 +3623,7 @@ class SourceEvaluator:
             source_expression=atom.source_expression,
             separator=atom.separator,
             is_control_flow=False,
+            is_condition_source=True,
         )
 
     @staticmethod
@@ -4273,6 +4296,20 @@ class SourceEvaluator:
                 source_value,
             )
             return
+        if self._is_source_expansion_failure(resolved_source):
+            replacement_kind = resolved_source.replacement_kind
+            if self.mode == "context":
+                return
+            self._record_source_expansion_failure(
+                source_path,
+                node,
+                node.source_expression,
+                source_site,
+                state,
+                replacement_kind,
+                source_value,
+            )
+            return
 
         if self._source_site_has_unknown_status_guard(node, state):
             base_state = state.child_shell_copy()
@@ -4350,6 +4387,9 @@ class SourceEvaluator:
                 source_arguments=positional_source.source_arguments,
             )
 
+        if self._source_expression_needs_word_expansion(resolved_expression):
+            return self._resolve_expanded_source_invocation(resolved_expression, node, state)
+
         source_site = f"{node.command_name} {node.source_expression.strip()}"
         path_expression, source_arguments = self._split_source_expression_arguments(
             resolved_expression,
@@ -4387,6 +4427,178 @@ class SourceEvaluator:
                 resolved_source.source_arguments,
                 source_arguments,
             ),
+        )
+
+    def _resolve_expanded_source_invocation(
+        self,
+        source_expression: str,
+        node: SourceSite,
+        state: EvaluationState,
+    ):
+        source_site = f"{node.command_name} {node.source_expression.strip()}"
+        try:
+            expanded_words = self._expand_source_command_words(source_expression, node, state)
+        except FailglobExpansionError as exc:
+            if self.mode == "context":
+                return SourceInvocation(None)
+            if node.is_condition_source:
+                raise self._unsupported_source_expansion_failure(
+                    node,
+                    "unsupported failglob source condition",
+                    "Failglob condition lowering must preserve Bash's condition-line abort semantics.",
+                ) from exc
+            if state.function_body_depth > 0:
+                raise self._unsupported_source_expansion_failure(
+                    node,
+                    "unsupported function failglob source expansion",
+                    "Failglob inside a function can abort the caller's physical line and needs function-aware lowering.",
+                ) from exc
+            if self._source_site_has_unknown_status_guard(node, state):
+                raise self._unsupported_source_expansion_failure(
+                    node,
+                    "unsupported conditional failglob source expansion",
+                    "Failglob after an unknown &&/|| guard cannot be lowered without changing later line behavior.",
+                ) from exc
+            return SourceInvocation(
+                source_expansion_failure_result(
+                    exc.pattern,
+                    node.source_expression,
+                    source_site,
+                    state.resolver_context(),
+                )
+            )
+
+        if not expanded_words:
+            return SourceInvocation(
+                ResolvedSource(
+                    path=str(state.cwd),
+                    source_expression=node.source_expression.strip(),
+                    source_site=source_site,
+                    replacement_kind=MISSING_SOURCE_NO_FILENAME,
+                    source_value="",
+                )
+            )
+
+        source_word, *argument_words = expanded_words
+        if not source_word.exists:
+            return SourceInvocation(
+                ResolvedSource(
+                    path=source_word.path or str(state.cwd / source_word.word),
+                    source_expression=node.source_expression.strip(),
+                    source_site=source_site,
+                    replacement_kind=MISSING_SOURCE,
+                    source_value=source_word.word,
+                ),
+                source_arguments=tuple(word.word for word in argument_words) or None,
+            )
+
+        if source_word.path is not None:
+            resolved_source = ResolvedSource(
+                path=source_word.path,
+                source_expression=node.source_expression.strip(),
+                source_site=source_site,
+                source_value=source_word.word,
+            )
+        else:
+            resolved_source = SOURCE_RESOLVER.resolve_source_expression(
+                self._shell_quote(source_word.word),
+                source_site,
+                state.resolver_context(),
+            )
+            if resolved_source is not None:
+                resolved_source = replace(
+                    resolved_source,
+                    source_expression=node.source_expression.strip(),
+                    source_site=source_site,
+                    source_value=source_word.word,
+                )
+
+        if not resolved_source:
+            return SourceInvocation(None)
+
+        return SourceInvocation(
+            resolved_source,
+            source_arguments=tuple(word.word for word in argument_words) or None,
+        )
+
+    @staticmethod
+    def _source_expression_needs_word_expansion(source_expression: str):
+        try:
+            words = parse_shell_words_preserving_quotes(source_expression)
+        except UnsupportedSourceError:
+            return False
+        return any(
+            has_unquoted_glob(word)
+            or has_unquoted_brace_expansion(word)
+            or has_unquoted_extglob(word)
+            for word in words
+        )
+
+    def _expand_source_command_words(self, source_expression: str, node: SourceSite, state: EvaluationState):
+        try:
+            raw_words = parse_shell_words_preserving_quotes(source_expression)
+        except UnsupportedSourceError as exc:
+            raise with_source_diagnostic(
+                exc,
+                str(node.location.path),
+                node.location.line - 1,
+                node.text,
+                node.text,
+                "unsupported.source.argument",
+            ) from exc
+
+        expanded_words: list[ExpandedSourceWord] = []
+        for raw_word in raw_words:
+            if (
+                has_unquoted_glob(raw_word)
+                or has_unquoted_brace_expansion(raw_word)
+                or has_unquoted_extglob(raw_word)
+            ):
+                resolved_word = resolve_variable_references(raw_word, state.resolver_context())
+                resolved_word = os.path.expandvars(resolved_word)
+                resolved_word = strip_shell_word_quotes(resolved_word)
+                matches = expand_glob_word(
+                    resolved_word,
+                    state.resolver_context(),
+                    node.text,
+                    raw_pattern=raw_word,
+                    allow_missing_literal=True,
+                )
+                expanded_words.extend(
+                    ExpandedSourceWord(
+                        word=match.word,
+                        path=match.path,
+                        exists=match.exists,
+                    )
+                    for match in matches
+                )
+                continue
+
+            if not expanded_words and raw_word.strip() in QUOTED_ALL_POSITIONALS_SOURCE_EXPRESSIONS:
+                raise self._unsupported_positional_source(
+                    node,
+                    state,
+                    "unsupported shifted positional source expression",
+                    "Nullglob source shifting to $@/$* is not modeled.",
+                )
+
+            expanded_words.extend(
+                ExpandedSourceWord(word=argument)
+                for argument in self._resolve_source_argument_words([raw_word], node, state)
+            )
+
+        return expanded_words
+
+    @staticmethod
+    def _unsupported_source_expansion_failure(node: SourceSite, message: str, hint: str):
+        return unsupported_source_error(
+            str(node.location.path),
+            node.location.line - 1,
+            node.text,
+            node.text,
+            "unsupported.source.expansion-failure",
+            message,
+            hint,
         )
 
     def _split_source_expression_arguments(
@@ -4609,6 +4821,10 @@ class SourceEvaluator:
     def _is_missing_source(resolved_source: ResolvedSource):
         return is_missing_source_replacement_kind(resolved_source.replacement_kind)
 
+    @staticmethod
+    def _is_source_expansion_failure(resolved_source: ResolvedSource):
+        return is_source_expansion_failure_replacement_kind(resolved_source.replacement_kind)
+
     def _record_missing_source(
         self,
         source_path: Path,
@@ -4648,6 +4864,29 @@ class SourceEvaluator:
             source_value=source_value,
         )
         state.last_status = missing_source_status(replacement_kind)
+
+    def _record_source_expansion_failure(
+        self,
+        source_path: Path,
+        node: SourceSite,
+        source_expression: str,
+        source_site: str,
+        state: EvaluationState,
+        replacement_kind: str,
+        source_value: str | None,
+    ):
+        self._record_event(
+            source_path,
+            node,
+            source_expression,
+            source_site,
+            ExecutionModel.PARENT_SOURCE,
+            replacement_kind,
+            state,
+            source_value=source_value,
+        )
+        state.last_status = 1
+        raise LineAbortSignal(node.location.path, node.location.line)
 
     @staticmethod
     def _unsupported_positional_source(node: SourceSite, state: EvaluationState, message: str, hint: str):
@@ -4860,6 +5099,16 @@ class SourceEvaluator:
                 "unsupported.source.child-shell",
                 "unsupported missing child-shell source",
                 "Missing-source runtime lowering is supported only for parent-shell source sites.",
+            )
+        if self._is_source_expansion_failure(invocation.source):
+            raise unsupported_source_error(
+                str(node.location.path),
+                node.location.line - 1,
+                node.text,
+                node.text,
+                "unsupported.source.child-shell",
+                "unsupported child-shell source expansion failure",
+                "Failglob source expansion failure lowering is supported only for parent-shell source sites.",
             )
 
         source_path = Path(invocation.source.path)

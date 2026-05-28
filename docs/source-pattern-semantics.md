@@ -136,9 +136,11 @@ Acceptance:
 - `nullglob`, `failglob`, `dotglob`, `globstar`, `nocaseglob`, `set -f`, and
   `GLOBIGNORE` interactions are tested together for accepted and rejected
   source sites.
-- All-ignored direct source globs are handled by the follow-on
-  [Missing Source Runtime Error Lowering](missing-source-runtime-lowering.md)
-  iteration.
+- All-ignored direct source globs are handled by
+  [Missing Source Runtime Error Lowering](missing-source-runtime-lowering.md);
+  direct brace-only expansion, exact `nullglob` source-word shifting, and
+  direct `failglob` expansion failures are handled by
+  [Source Expansion Failure Semantics](source-expansion-failure-semantics.md).
 
 Reject:
 

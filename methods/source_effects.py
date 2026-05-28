@@ -201,6 +201,7 @@ class SourceSite(IRNode):
     source_expression: str
     separator: str = ""
     is_control_flow: bool = False
+    is_condition_source: bool = False
 
 
 @dataclass(frozen=True)

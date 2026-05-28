@@ -757,6 +757,101 @@ class CompileRegressionTestCase(unittest.TestCase):
         )
         self.assertNotIn('\n  source "$dep"', compiled_content)
 
+    def test_direct_brace_source_expansion_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("real.sh", 'printf "brace-real:%s:%s\\n" "$1" "$?"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                source ./{real,missing}.sh
+                printf 'after:%s\\n' "$?"
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+        with ScriptProject() as project:
+            project.write("real.sh", 'echo "unexpected real"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                source ./{missing,real}.sh
+                printf 'missing-first:%s\\n' "$?"
+                """))
+
+            output = project.compile("main.sh", mode="executable")
+            expected = project.run("main.sh")
+            actual = project.run(output)
+            compiled_content = output.read_text()
+
+        self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
+        self.assertEqual(
+            self.normalized_bash_source_errors(actual.stdout),
+            self.normalized_bash_source_errors(expected.stdout),
+        )
+        self.assertNotIn("unexpected real", compiled_content)
+
+        with ScriptProject() as project:
+            project.write("real.sh", 'printf "brace-options:%s:%s\\n" "$1" "$?"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                shopt -s nullglob failglob
+                GLOBIGNORE='*.sh'
+                source ./{real,missing}.sh
+                """))
+
+            project.assert_compiled_matches(self, "main.sh")
+
+    def test_nullglob_source_word_shift_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("fallback.sh", 'printf "fallback:%s:%s\\n" "$1" "$?"\n')
+            project.write("plugins/a.sh", 'printf "plugin-a:%s:%s\\n" "$1" "$2"\n')
+            project.write("plugins/b.sh", 'echo "unexpected plugin-b source"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                shopt -s nullglob
+                source ./missing/*.sh ./fallback.sh arg
+                printf 'fallback-status:%s\\n' "$?"
+                source ./empty/*.sh ./plugins/*.sh explicit
+                printf 'plugin-status:%s\\n' "$?"
+                """))
+
+            output = project.compile("main.sh", mode="executable")
+            expected = project.run("main.sh")
+            actual = project.run(output)
+            compiled_content = output.read_text()
+
+        self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
+        self.assertEqual(actual.stdout, expected.stdout)
+        self.assertNotIn("source ./missing/*.sh ./fallback.sh", compiled_content)
+        self.assertNotIn("source ./empty/*.sh ./plugins/*.sh", compiled_content)
+        self.assertNotIn("unexpected plugin-b source", compiled_content)
+
+    def test_failglob_source_expansion_failure_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'echo "unexpected dep source"\n')
+            project.write("plugins/a.sh", 'echo "unexpected plugin source"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                shopt -s failglob
+                source ./missing/*.sh
+                printf 'direct:%s\\n' "$?"
+                echo before; source ./missing/*.sh; echo SHOULD_NOT_RUN
+                printf 'same-line:%s\\n' "$?"
+                source ./dep.sh ./missing/*.sh
+                printf 'argument:%s\\n' "$?"
+                GLOBIGNORE=./plugins/a.sh
+                source ./plugins/*.sh
+                printf 'globignore:%s\\n' "$?"
+                """))
+
+            output = project.compile("main.sh", mode="executable")
+            expected = project.run("main.sh")
+            actual = project.run(output)
+            compiled_content = output.read_text()
+
+        self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
+        self.assertEqual(
+            self.normalized_bash_source_errors(actual.stdout),
+            self.normalized_bash_source_errors(expected.stdout),
+        )
+        self.assertNotIn("SHOULD_NOT_RUN", actual.stdout)
+        self.assertNotIn("unexpected dep source", compiled_content)
+        self.assertNotIn("unexpected plugin source", compiled_content)
+        self.assertNotIn("source ./missing/*.sh", compiled_content)
+
     def test_if_block_source_matches_bash(self):
         with ScriptProject() as project:
             project.write("optional.sh", 'echo "optional:$LOAD_OPTIONAL"\n')
@@ -2886,13 +2981,17 @@ class CompileRegressionTestCase(unittest.TestCase):
                 'set -f\nfor file in ./plugins/*.sh; do source "$file"; done\n',
                 'for file in ./plugins/*.sh; do source "$file"; done',
             ),
-            "direct source failglob unmatched": (
-                'shopt -s failglob\nsource ./missing/*.sh\n',
+            "failglob source condition": (
+                'shopt -s failglob\nif source ./missing/*.sh; then echo yes; fi\n',
                 'source ./missing/*.sh',
             ),
-            "direct source nullglob word shift": (
-                'shopt -s nullglob\nsource ./missing/*.sh ./fallback.sh\n',
-                'source ./missing/*.sh ./fallback.sh',
+            "unknown guarded failglob source": (
+                'shopt -s failglob\nmaybe && source ./missing/*.sh || echo fallback\n',
+                'source ./missing/*.sh',
+            ),
+            "function failglob source": (
+                'shopt -s failglob\nload(){ source ./missing/*.sh; }\nload\n',
+                'source ./missing/*.sh',
             ),
             "divergent if branch state": (
                 'if [[ -n "$USE_A" ]]; then\n  DEP=./a.sh\nelse\n  DEP=./b.sh\nfi\nsource "$DEP"\n',

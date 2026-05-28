@@ -15,6 +15,7 @@ UNSUPPORTED_GLOB_OPTIONS = frozenset()
 MISSING_SOURCE = "missing-source"
 MISSING_SOURCE_NO_FILENAME = "missing-source-no-filename"
 MISSING_SOURCE_REPLACEMENT_KINDS = frozenset({MISSING_SOURCE, MISSING_SOURCE_NO_FILENAME})
+SOURCE_EXPANSION_FAILURE = "source-expansion-failure"
 COMMAND_LEVEL_SOURCE_PATTERNS = (
     ('eval', None),
     (r'bash|/bin/bash|/usr/bin/bash', BASH_COMMAND_PATTERN),
@@ -38,8 +39,19 @@ class UnsupportedSourceError(NotImplementedError):
         return UnsupportedSourceError(str(self), diagnostic=diagnostic, code=self.code, hint=self.hint)
 
 
+class FailglobExpansionError(UnsupportedSourceError):
+    def __init__(self, pattern: str, source_site: str):
+        super().__init__(f"unsupported failglob source pattern: {source_site.strip()}")
+        self.pattern = pattern
+        self.source_site = source_site
+
+
 def is_missing_source_replacement_kind(replacement_kind: str):
     return replacement_kind in MISSING_SOURCE_REPLACEMENT_KINDS
+
+
+def is_source_expansion_failure_replacement_kind(replacement_kind: str):
+    return replacement_kind == SOURCE_EXPANSION_FAILURE
 
 
 def missing_source_status(replacement_kind: str):
@@ -654,6 +666,20 @@ def _missing_source_result(word: str, source_expression: str, source_site: str, 
     )
 
 
+def source_expansion_failure_result(word: str, source_expression: str, source_site: str, context: dict):
+    return ResolvedSource(
+        path=_missing_glob_match(word or ".", context['current_directory']).path,
+        source_expression=source_expression.strip(),
+        source_site=source_site.strip(),
+        replacement_kind=SOURCE_EXPANSION_FAILURE,
+        source_value=word,
+    )
+
+
+def _has_pathname_expansion_pattern(pattern: str):
+    return has_unquoted_glob(pattern) or has_unquoted_extglob(pattern)
+
+
 def expand_glob_word(
     pattern: str,
     context: dict,
@@ -681,19 +707,32 @@ def expand_glob_word(
     matching_pattern = _pattern_with_quoted_literals(pattern, raw_pattern)
     try:
         for expanded_pattern in _brace_expand(matching_pattern, raw_pattern, source_site):
-            pattern_matches = _glob_matches(expanded_pattern, current_directory, glob_options, include_hidden)
+            has_pathname_pattern = _has_pathname_expansion_pattern(expanded_pattern)
+            if has_pathname_pattern:
+                pattern_matches = _glob_matches(expanded_pattern, current_directory, glob_options, include_hidden)
+            else:
+                literal_path = (
+                    expanded_pattern
+                    if os.path.isabs(expanded_pattern)
+                    else os.path.join(current_directory, expanded_pattern)
+                )
+                pattern_matches = [expanded_pattern] if os.path.exists(literal_path) else []
             if not pattern_matches:
-                if 'failglob' in glob_options:
-                    raise UnsupportedSourceError(f"unsupported failglob source pattern: {source_site.strip()}")
-                if 'nullglob' in glob_options:
+                if 'failglob' in glob_options and has_pathname_pattern:
+                    raise FailglobExpansionError(expanded_pattern, source_site)
+                if 'nullglob' in glob_options and has_pathname_pattern:
                     continue
                 if allow_missing_literal:
                     matches.append(_missing_glob_match(expanded_pattern, current_directory))
                     continue
-            filtered_matches = _apply_globignore(pattern_matches, globignore_patterns, glob_options)
+            filtered_matches = (
+                _apply_globignore(pattern_matches, globignore_patterns, glob_options)
+                if has_pathname_pattern
+                else pattern_matches
+            )
             if not filtered_matches and pattern_matches and 'nullglob' not in glob_options:
                 if 'failglob' in glob_options:
-                    raise UnsupportedSourceError(f"unsupported failglob source pattern: {source_site.strip()}")
+                    raise FailglobExpansionError(expanded_pattern, source_site)
                 if allow_missing_literal:
                     matches.append(_missing_glob_match(expanded_pattern, current_directory))
                     continue
@@ -703,8 +742,8 @@ def expand_glob_word(
         raise UnsupportedSourceError(f"unsupported source pattern: {source_site.strip()} ({exc})") from exc
 
     if not matches:
-        if 'failglob' in glob_options:
-            raise UnsupportedSourceError(f"unsupported failglob source pattern: {source_site.strip()}")
+        if 'failglob' in glob_options and _has_pathname_expansion_pattern(matching_pattern):
+            raise FailglobExpansionError(matching_pattern, source_site)
         if 'nullglob' in glob_options:
             return ()
         if allow_missing_literal:
@@ -1231,7 +1270,11 @@ class SourceResolver:
         if '`' in source_expression:
             raise UnsupportedSourceError(f"unsupported backtick source command: {source_site.strip()}")
 
-        if has_unquoted_glob(source_expression) or has_unquoted_extglob(source_expression):
+        if (
+            has_unquoted_glob(source_expression)
+            or has_unquoted_brace_expansion(source_expression)
+            or has_unquoted_extglob(source_expression)
+        ):
             words = parse_shell_words(source_expression)
             if len(words) != 1:
                 raise UnsupportedSourceError(f"unsupported source glob arguments: {source_site.strip()}")

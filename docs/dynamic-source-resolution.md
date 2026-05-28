@@ -284,9 +284,13 @@ Accept loop globs only when:
 - Modeled shell state is limited to `nullglob`, `dotglob`, `globstar`,
   `nocaseglob`, `extglob`, `failglob`, and practical `GLOBIGNORE` filtering.
 
-Accept direct source globs when the glob resolves to at least one regular file.
-For multiple direct-source matches, source the first expanded word and pass the
-remaining expanded words as positional arguments to that sourced file.
+Accept direct source globs and direct brace-only source expansion when command
+word expansion resolves to at least one regular file. For multiple
+direct-source expanded words, source the first expanded word and pass the
+remaining expanded words as positional arguments to that sourced file. Exact
+`nullglob` source-word shifting and direct `failglob` expansion failures are
+covered by
+[Source Expansion Failure Semantics](source-expansion-failure-semantics.md).
 
 Reject examples:
 
@@ -299,9 +303,10 @@ for dep in ./plugins/*.sh; do source "$dep"; done
 ```
 
 Currently rejected glob-affecting state includes `set -f`, branch-dependent or
-runtime-dynamic glob options. Exact `GLOBIGNORE` all-filtered source-producing
-globs lower to Bash-equivalent runtime source failures when `nullglob` is not
-set.
+runtime-dynamic glob options, source-condition `failglob`, function-body
+`failglob`, unknown-guard `failglob`, and source-bearing loop `failglob`
+failures. Exact `GLOBIGNORE` all-filtered source-producing globs lower to
+Bash-equivalent runtime source failures when `nullglob` is not set.
 
 ### Command-Substitution Word Lists
 
@@ -556,6 +561,9 @@ scope:
 - Missing-source runtime-error lowering is implemented for unmatched or
   all-filtered source-producing globs when Bash behavior is deterministic; see
   [Missing Source Runtime Error Lowering](missing-source-runtime-lowering.md).
+- Direct brace-only source expansion, exact `nullglob` source-word shifting,
+  and direct `failglob` expansion failure lowering are implemented; see
+  [Source Expansion Failure Semantics](source-expansion-failure-semantics.md).
 - Exact custom-IFS scalar and command-substitution loop word splitting is
   implemented.
 - Safe producer word lists are implemented for `cat`, `find`, `printf`, `sort`,

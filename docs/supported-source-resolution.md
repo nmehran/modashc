@@ -131,17 +131,20 @@ Loop glob handling is option-aware for `nullglob`, `dotglob`, `globstar`,
 `nocaseglob`, `extglob`, practical `GLOBIGNORE` filtering, comma braces, and
 simple brace sequences.
 
-## Direct Source Globs
+## Direct Source Expansion
 
-Supported when the direct source glob resolves to one or more regular files:
+Supported when direct source command-word expansion resolves to one or more
+regular files:
 
 ```bash
 source ./single-plugin/*.sh
+source ./{real,missing}.sh
 ```
 
-When a direct source glob resolves to multiple matches, Bash treats the first
-expanded word as the source file and passes the remaining expanded words as
-positional arguments to that sourced file. Executable mode preserves that shape:
+When a direct source glob, extglob, or brace expansion resolves to multiple
+command words, Bash treats the first expanded word as the source file and
+passes the remaining expanded words as positional arguments to that sourced
+file. Executable mode preserves that shape:
 
 ```bash
 source ./plugins/*.sh extra
@@ -157,6 +160,27 @@ command. Ordinary unmatched globs and exact `GLOBIGNORE` all-filtered globs
 produce a missing-file failure with status `1`; bare `nullglob` source sites
 that lose their filename produce Bash's no-filename source failure with status
 `2`.
+
+Exact `nullglob` source-word shifting is supported when a later exact word
+becomes the filename:
+
+```bash
+shopt -s nullglob
+source ./missing/*.sh ./fallback.sh arg
+```
+
+Here `./fallback.sh` is sourced with `arg` as `$1`.
+
+Direct `failglob` expansion failures are lowered when the source site is not in
+an unsupported condition or runtime-dependent guard:
+
+```bash
+shopt -s failglob
+source ./missing/*.sh
+```
+
+The generated executable prints a Bash-shaped `no match` diagnostic, preserves
+status `1`, and prevents later commands on the same physical line from running.
 
 ## Direct Source Arguments
 
@@ -341,8 +365,9 @@ printf ready | source ./dep.sh       # lastpipe-sensitive final segment
 ```
 
 Other fail-closed families include quoted globs, `set -f` / `noglob`,
-`failglob` unmatched globs, branch-dependent or runtime-dynamic glob state,
-`nullglob` source sites where later words would become the filename, source
+`failglob` inside source conditions, `failglob` after runtime-dependent
+`&&` / `||` guards, `failglob` inside function bodies, `failglob` loop
+word-list failures, branch-dependent or runtime-dynamic glob state, source
 commands in unsupported shell grammar, final pipeline segments whose semantics
 depend on `lastpipe`, unsupported dynamic `case` subjects or arm patterns,
 unsupported process substitution outside modeled read-loop or child-shell input,
@@ -359,6 +384,9 @@ The remaining source-resolution surface is narrower than general Bash support:
   and broader locale-dependent pattern behavior. The implemented deterministic
   `extglob` / `GLOBIGNORE` subset is covered in
   [Source Pattern Semantics Completion](source-pattern-semantics.md).
+- Remaining `failglob` boundaries inside source conditions, function bodies,
+  and source-bearing loop word lists. Direct expansion outcomes are covered in
+  [Source Expansion Failure Semantics](source-expansion-failure-semantics.md).
 - Recursive or runtime-dynamic source-bearing function dispatch. Exact
   makepkg-style helper calls using quoted `$@` / `$*` are covered by
   [Source Supplements And Exact Helper Sources](source-supplements.md).

@@ -69,10 +69,12 @@ runtime failures that can be represented without executing shell code.
 - Do not treat arbitrary missing literal source paths as resolved dependencies
   in this iteration unless they arise from an accepted source-producing glob
   outcome.
-- Do not model `failglob` expansion abort semantics yet.
+- `failglob` expansion abort semantics are handled by
+  [Source Expansion Failure Semantics](source-expansion-failure-semantics.md).
 - Do not broaden source-argument word splitting.
-- Do not support `nullglob` cases where later command words become the source
-  filename unless that word shift is exact and explicitly tested.
+- Exact `nullglob` cases where later command words become the source filename
+  are handled by
+  [Source Expansion Failure Semantics](source-expansion-failure-semantics.md).
 - Do not replace the line frontend with a full Bash parser.
 
 ## Implemented Scope
@@ -129,9 +131,8 @@ Acceptance:
 
 Reject:
 
-- `failglob` unmatched or all-filtered source globs.
-- `nullglob` direct source sites where a later explicit word would become the
-  filename unless exact word shifting is implemented in this tranche.
+- `failglob` source conditions, function bodies, and source-bearing loop
+  word-list failures.
 - Branch-dependent or runtime-dynamic glob state.
 - Missing-source sites inside unsupported shell grammar.
 
@@ -203,8 +204,8 @@ Acceptance:
 - Add synthetic runtime parity tests for direct missing source globs,
   all-filtered `GLOBIGNORE`, `nullglob` bare source failures, and loop literal
   missing-word behavior.
-- Add safety tests for rejected `failglob`, unsupported `nullglob` word-shift
-  cases, branch-dependent glob state, and unsupported grammar.
+- Add safety tests for rejected source-condition `failglob`, branch-dependent
+  glob state, and unsupported grammar.
 - Add or promote a real-world fixture only if it represents the supported
   static contract without requiring runtime discovery.
 - Update the support matrix and dynamic-source docs after implementation.
@@ -221,8 +222,8 @@ Required checks:
 
 ## Deferred After This Iteration
 
-- `failglob` expansion abort semantics.
-- `nullglob` source-word shifting where later words become the filename.
+- `failglob` source conditions, function bodies, and source-bearing loop
+  word-list failures.
 - Arbitrary missing literal source files unrelated to source-producing glob
   expansion.
 - Recursive or runtime-dynamic source-bearing function dispatch.

@@ -32,6 +32,10 @@ keep only in code comments or tests.
 - [Missing Source Runtime Error Lowering](missing-source-runtime-lowering.md):
   implemented static lowering for unmatched or all-filtered source-producing globs
   that Bash would execute as runtime source failures.
+- [Source Expansion Failure Semantics](source-expansion-failure-semantics.md):
+  implemented static completion for direct brace-only source expansion,
+  exact `nullglob` source-word shifting, and direct `failglob` expansion
+  failure lowering.
 - [Source-Relevant Control Flow Boundaries](source-control-flow-boundaries.md):
   source-free control-flow pass-through, exact source
   conditions, and practical source guard predicates.
@@ -71,6 +75,7 @@ The intended approach is captured in the
   bounded `while` / `until`, and modeled `while read` file enumeration from
   exact files and safe producers
 - Remaining source-argument semantics: source arguments requiring word splitting
+  beyond exact direct expansion outcomes
 - Broader source guard predicates and remaining case edge semantics outside
   deterministic pattern completion
 - Runtime-dynamic source dispatch, recursive source-bearing functions,
