@@ -870,6 +870,172 @@ class CompileRegressionTestCase(unittest.TestCase):
         self.assertNotIn("SHOULD_NOT_RUN", actual.stdout)
         self.assertNotIn("unexpected dep source", compiled_content)
         self.assertNotIn("unexpected plugin source", compiled_content)
+
+    def test_failglob_source_conditions_match_bash(self):
+        cases = {
+            "one-line if": textwrap.dedent("""\
+                shopt -s failglob
+                if source ./missing/*.sh; then echo yes; fi
+                printf 'status:%s\\n' "$?"
+                """),
+            "multiline if else": textwrap.dedent("""\
+                shopt -s failglob
+                if source ./missing/*.sh
+                then
+                  echo yes
+                else
+                  echo no
+                fi
+                printf 'status:%s\\n' "$?"
+                """),
+            "errexit": textwrap.dedent("""\
+                set -e
+                shopt -s failglob
+                if source ./missing/*.sh; then echo yes; fi
+                echo SHOULD_NOT_RUN
+                """),
+        }
+
+        for name, content in cases.items():
+            with self.subTest(name=name), ScriptProject() as project:
+                project.write("main.sh", content)
+
+                output = project.compile("main.sh", mode="executable")
+                expected = project.run("main.sh")
+                actual = project.run(output)
+                compiled_content = output.read_text()
+
+            self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
+            self.assertEqual(
+                self.normalized_bash_source_errors(actual.stdout),
+                self.normalized_bash_source_errors(expected.stdout),
+            )
+            self.assertNotIn("source ./missing/*.sh", compiled_content)
+            self.assertNotIn("echo yes", compiled_content)
+            self.assertNotIn("echo no", compiled_content)
+
+    def test_failglob_loop_word_failures_match_bash(self):
+        cases = {
+            "inline": textwrap.dedent("""\
+                shopt -s failglob
+                for file in ./missing/*.sh; do source "$file"; done
+                printf 'status:%s\\n' "$?"
+                """),
+            "multiline": textwrap.dedent("""\
+                shopt -s failglob
+                for file in ./missing/*.sh
+                do
+                  source "$file"
+                  echo SHOULD_NOT_RUN
+                done
+                printf 'status:%s\\n' "$?"
+                """),
+            "errexit": textwrap.dedent("""\
+                set -e
+                shopt -s failglob
+                for file in ./missing/*.sh
+                do
+                  source "$file"
+                done
+                echo SHOULD_NOT_RUN
+                """),
+        }
+
+        for name, content in cases.items():
+            with self.subTest(name=name), ScriptProject() as project:
+                project.write("main.sh", content)
+
+                output = project.compile("main.sh", mode="executable")
+                expected = project.run("main.sh")
+                actual = project.run(output)
+                compiled_content = output.read_text()
+
+            self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
+            self.assertEqual(
+                self.normalized_bash_source_errors(actual.stdout),
+                self.normalized_bash_source_errors(expected.stdout),
+            )
+            self.assertNotIn('source "$file"', compiled_content)
+            self.assertNotIn("SHOULD_NOT_RUN", actual.stdout)
+
+    def test_source_free_failglob_loop_does_not_dirty_later_source_state(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'printf "dep:%s\\n" "$DEP"\n')
+            project.write("other.sh", 'echo "unexpected other"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                shopt -s failglob
+                DEP=./dep.sh
+                for file in ./missing/*.sh
+                do
+                  DEP=./other.sh
+                done
+                source "$DEP"
+                """))
+
+            output = project.compile("main.sh", mode="executable")
+            expected = project.run("main.sh")
+            actual = project.run(output)
+            compiled_content = project.path("compiled.sh").read_text()
+
+        self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
+        self.assertEqual(
+            self.normalized_bash_source_errors(actual.stdout),
+            self.normalized_bash_source_errors(expected.stdout),
+        )
+        self.assertNotIn("unexpected other", compiled_content)
+        self.assertNotIn('source "$DEP"', compiled_content)
+
+    def test_failglob_function_body_failures_match_bash(self):
+        cases = {
+            "compact": textwrap.dedent("""\
+                shopt -s failglob
+                load(){ echo before; source ./missing/*.sh; echo SHOULD_NOT_RUN_FUNC; }
+                load; echo SHOULD_NOT_RUN_LINE
+                printf 'status:%s\\n' "$?"
+                """),
+            "multiline": textwrap.dedent("""\
+                shopt -s failglob
+                load(){
+                  echo before
+                  source ./missing/*.sh
+                  echo SHOULD_NOT_RUN_FUNC
+                }
+                load
+                echo next
+                printf 'status:%s\\n' "$?"
+                """),
+            "nested": textwrap.dedent("""\
+                shopt -s failglob
+                inner(){ echo inner-before; source ./missing/*.sh; echo SHOULD_NOT_RUN_INNER; }
+                outer(){ echo outer-before; inner; echo SHOULD_NOT_RUN_OUTER; }
+                outer; echo SHOULD_NOT_RUN_LINE
+                echo next
+                """),
+            "errexit": textwrap.dedent("""\
+                set -e
+                shopt -s failglob
+                load(){ echo before; source ./missing/*.sh; echo SHOULD_NOT_RUN_FUNC; }
+                load
+                echo SHOULD_NOT_RUN_LINE
+                """),
+        }
+
+        for name, content in cases.items():
+            with self.subTest(name=name), ScriptProject() as project:
+                project.write("main.sh", content)
+
+                output = project.compile("main.sh", mode="executable")
+                expected = project.run("main.sh")
+                actual = project.run(output)
+                compiled_content = output.read_text()
+
+            self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
+            self.assertEqual(
+                self.normalized_bash_source_errors(actual.stdout),
+                self.normalized_bash_source_errors(expected.stdout),
+            )
+            self.assertNotIn("source ./missing/*.sh", compiled_content)
+            self.assertNotIn("SHOULD_NOT_RUN", actual.stdout)
         self.assertNotIn("source ./missing/*.sh", compiled_content)
 
     def test_if_block_source_matches_bash(self):
@@ -2989,10 +3155,6 @@ class CompileRegressionTestCase(unittest.TestCase):
                 'for file in "./plugins/*.sh"; do source "$file"; done\n',
                 'for file in "./plugins/*.sh"; do source "$file"; done',
             ),
-            "failglob unmatched loop": (
-                'shopt -s failglob\nfor file in ./missing/*.sh; do source "$file"; done\n',
-                'for file in ./missing/*.sh; do source "$file"; done',
-            ),
             "disabled extglob loop": (
                 'for file in ./plugins/@(a|b).sh; do source "$file"; done\n',
                 'for file in ./plugins/@(a|b).sh; do source "$file"; done',
@@ -3001,16 +3163,8 @@ class CompileRegressionTestCase(unittest.TestCase):
                 'set -f\nfor file in ./plugins/*.sh; do source "$file"; done\n',
                 'for file in ./plugins/*.sh; do source "$file"; done',
             ),
-            "failglob source condition": (
-                'shopt -s failglob\nif source ./missing/*.sh; then echo yes; fi\n',
-                'source ./missing/*.sh',
-            ),
             "unknown guarded failglob source": (
                 'shopt -s failglob\nmaybe && source ./missing/*.sh || echo fallback\n',
-                'source ./missing/*.sh',
-            ),
-            "function failglob source": (
-                'shopt -s failglob\nload(){ source ./missing/*.sh; }\nload\n',
                 'source ./missing/*.sh',
             ),
             "divergent if branch state": (

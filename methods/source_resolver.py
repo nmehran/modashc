@@ -16,6 +16,11 @@ MISSING_SOURCE = "missing-source"
 MISSING_SOURCE_NO_FILENAME = "missing-source-no-filename"
 MISSING_SOURCE_REPLACEMENT_KINDS = frozenset({MISSING_SOURCE, MISSING_SOURCE_NO_FILENAME})
 SOURCE_EXPANSION_FAILURE = "source-expansion-failure"
+SOURCE_EXPANSION_FAILURE_RETURN = "source-expansion-failure-return"
+SOURCE_EXPANSION_FAILURE_REPLACEMENT_KINDS = frozenset({
+    SOURCE_EXPANSION_FAILURE,
+    SOURCE_EXPANSION_FAILURE_RETURN,
+})
 COMMAND_LEVEL_SOURCE_PATTERNS = (
     ('eval', None),
     (r'bash|/bin/bash|/usr/bin/bash', BASH_COMMAND_PATTERN),
@@ -51,7 +56,7 @@ def is_missing_source_replacement_kind(replacement_kind: str):
 
 
 def is_source_expansion_failure_replacement_kind(replacement_kind: str):
-    return replacement_kind == SOURCE_EXPANSION_FAILURE
+    return replacement_kind in SOURCE_EXPANSION_FAILURE_REPLACEMENT_KINDS
 
 
 def missing_source_status(replacement_kind: str):
@@ -667,12 +672,18 @@ def _missing_source_result(word: str, source_expression: str, source_site: str, 
     )
 
 
-def source_expansion_failure_result(word: str, source_expression: str, source_site: str, context: dict):
+def source_expansion_failure_result(
+    word: str,
+    source_expression: str,
+    source_site: str,
+    context: dict,
+    replacement_kind: str = SOURCE_EXPANSION_FAILURE,
+):
     return ResolvedSource(
         path=_missing_glob_match(word or ".", context['current_directory']).path,
         source_expression=source_expression.strip(),
         source_site=source_site.strip(),
-        replacement_kind=SOURCE_EXPANSION_FAILURE,
+        replacement_kind=replacement_kind,
         source_value=word,
     )
 

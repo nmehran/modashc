@@ -1542,13 +1542,50 @@ class SourceEvaluatorTestCase(unittest.TestCase):
         self.assertEqual([event.replacement_kind for event in result.events], ["source-expansion-failure"])
         self.assertEqual([event.source_value for event in result.events], ["./missing/*.sh"])
 
+    def test_failglob_function_source_event_returns_from_function(self):
+        with ScriptProject() as project:
+            entry = project.write("main.sh", textwrap.dedent("""\
+                shopt -s failglob
+                load(){ source ./missing/*.sh; echo skipped; }
+                load; echo skipped-line
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.replacement_kind for event in result.events], ["source-expansion-failure-return"])
+        self.assertEqual([event.source_value for event in result.events], ["./missing/*.sh"])
+        self.assertEqual(
+            [(replacement.old, replacement.new) for replacement in result.line_replacements],
+            [("load", "load #")],
+        )
+
+    def test_failglob_condition_and_loop_record_block_replacements(self):
+        with ScriptProject() as project:
+            entry = project.write("main.sh", textwrap.dedent("""\
+                shopt -s failglob
+                if source ./missing/*.sh
+                then
+                  source ./unreachable-if.sh
+                fi
+                for dep in ./missing/*.bash
+                do
+                  source "$dep"
+                done
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual(result.events, ())
+        self.assertEqual([source.source_site for source in result.disabled_sources], ['source "$dep"'])
+        self.assertTrue(any("no match: %s" in replacement.new for replacement in result.line_replacements))
+        self.assertTrue(any(replacement.old == "./missing/*.bash" for replacement in result.line_replacements))
+
     def test_unsupported_for_loop_words_raise_structured_diagnostic(self):
         cases = {
             "command substitution": 'for dep in $(cat deps.txt); do source "$dep"; done\n',
             "unknown scalar": 'for dep in "$DEP"; do source "$dep"; done\n',
             "unknown array": 'for dep in "${deps[@]}"; do source "$dep"; done\n',
             "quoted glob": 'for dep in "./plugins/*.sh"; do source "$dep"; done\n',
-            "failglob": 'shopt -s failglob\nfor dep in ./plugins/*.sh; do source "$dep"; done\n',
             "disabled extglob": 'for dep in ./plugins/@(a|b).sh; do source "$dep"; done\n',
         }
 
@@ -1560,8 +1597,7 @@ class SourceEvaluatorTestCase(unittest.TestCase):
                     SourceEvaluator().evaluate(entry)
 
             self.assertEqual(cm.exception.diagnostic.code, "unsupported.source.loop-word-list")
-            expected_line = 2 if name in {"failglob", "globignore removes all matches"} else 1
-            self.assertEqual(cm.exception.diagnostic.location.line, expected_line)
+            self.assertEqual(cm.exception.diagnostic.location.line, 1)
 
     def test_circular_source_raises_recursion_error(self):
         with ScriptProject() as project:

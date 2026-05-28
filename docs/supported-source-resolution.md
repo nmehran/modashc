@@ -174,8 +174,8 @@ source ./missing/*.sh ./fallback.sh arg
 
 Here `./fallback.sh` is sourced with `arg` as `$1`.
 
-Direct `failglob` expansion failures are lowered when the source site is not in
-an unsupported condition or runtime-dependent guard:
+Direct `failglob` expansion failures are lowered when the source site is not
+behind a runtime-dependent guard:
 
 ```bash
 shopt -s failglob
@@ -184,6 +184,9 @@ source ./missing/*.sh
 
 The generated executable prints a Bash-shaped `no match` diagnostic, preserves
 status `1`, and prevents later commands on the same physical line from running.
+Parsed source conditions, parsed source-bearing `for` loop word lists, and
+direct function-body source sites are also lowered when the failure is
+deterministic.
 
 ## Direct Source Arguments
 
@@ -368,16 +371,14 @@ printf ready | source ./dep.sh       # lastpipe-sensitive final segment
 ```
 
 Other fail-closed families include quoted globs, `set -f` / `noglob`,
-`failglob` inside source conditions, `failglob` after runtime-dependent
-`&&` / `||` guards, `failglob` inside function bodies, `failglob` loop
-word-list failures, branch-dependent or runtime-dynamic glob state, source
-commands in unsupported shell grammar, final pipeline segments whose semantics
-depend on `lastpipe`, unsupported dynamic `case` subjects or arm patterns,
-unsupported process substitution outside modeled read-loop or child-shell input,
-unknown runtime-dynamic or recursive function dispatch, non-equivalent
-branch-defined functions, branch-dependent function returns, nested dynamic
-substitutions, and multi-result command-substitution output where a single
-source path is required.
+`failglob` after runtime-dependent `&&` / `||` guards, branch-dependent or
+runtime-dynamic glob state, source commands in unsupported shell grammar, final
+pipeline segments whose semantics depend on `lastpipe`, unsupported dynamic
+`case` subjects or arm patterns, unsupported process substitution outside
+modeled read-loop or child-shell input, unknown runtime-dynamic or recursive
+function dispatch, non-equivalent branch-defined functions, branch-dependent
+function returns, nested dynamic substitutions, and multi-result
+command-substitution output where a single source path is required.
 
 ## Practical Remaining Work
 
@@ -387,9 +388,6 @@ The remaining source-resolution surface is narrower than general Bash support:
   and broader locale-dependent pattern behavior. The implemented deterministic
   `extglob` / `GLOBIGNORE` subset is covered in
   [Source Pattern Semantics Completion](source-pattern-semantics.md).
-- Remaining `failglob` boundaries inside source conditions, function bodies,
-  and source-bearing loop word lists. Direct expansion outcomes are covered in
-  [Source Expansion Failure Semantics](source-expansion-failure-semantics.md).
 - Recursive or runtime-dynamic source-bearing function dispatch. Exact
   makepkg-style helper calls using quoted `$@` / `$*` are covered by
   [Source Supplements And Exact Helper Sources](source-supplements.md).

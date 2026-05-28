@@ -21,6 +21,7 @@ from methods.source_frontend import LineParserFrontend
 from methods.source_resolver import (
     ASSIGNMENT_WORD_PATTERN,
     MISSING_SOURCE_NO_FILENAME,
+    SOURCE_EXPANSION_FAILURE_RETURN,
     ResolvedSource,
     UnsupportedSourceError,
     contains_source_command,
@@ -104,12 +105,14 @@ def render_missing_source_failure(source_declaration, indent: str):
     return "\n".join(lines)
 
 
-def render_source_expansion_failure(source_declaration, indent: str):
+def render_source_expansion_failure(source_declaration, indent: str, *, return_from_function: bool = False):
     lines = [
         f"{indent}printf '%s: line %s: no match: %s\\n' "
         f'"${{BASH_SOURCE[0]}}" "${{LINENO}}" {shell_quote(source_declaration.source_value or "")} >&2',
         f"{indent}( exit 1 )",
     ]
+    if return_from_function:
+        lines.append(f"{indent}return 1")
     return "\n".join(lines)
 
 
@@ -514,7 +517,13 @@ def render_source_dispatch(
         elif is_missing_source_replacement_kind(source_declaration.replacement_kind):
             rendered_source = render_missing_source_failure(source_declaration, f"{indent}    ")
         elif is_source_expansion_failure_replacement_kind(source_declaration.replacement_kind):
-            rendered_source = render_source_expansion_failure(source_declaration, f"{indent}    ")
+            rendered_source = render_source_expansion_failure(
+                source_declaration,
+                f"{indent}    ",
+                return_from_function=(
+                    source_declaration.replacement_kind == SOURCE_EXPANSION_FAILURE_RETURN
+                ),
+            )
         else:
             rendered_source = indent_block(
                 render_source(
@@ -794,6 +803,12 @@ def render_source_site_replacement(
     if is_missing_source_replacement_kind(declaration.replacement_kind):
         return f"{separator}{{\n{render_missing_source_failure(declaration, indent)}\n{indent}}}"
     if is_source_expansion_failure_replacement_kind(declaration.replacement_kind):
+        if declaration.replacement_kind == SOURCE_EXPANSION_FAILURE_RETURN:
+            return (
+                f"{separator}{{\n"
+                f"{render_source_expansion_failure(declaration, indent, return_from_function=True)}\n"
+                f"{indent}}}"
+            )
         return f"{separator}{{\n{render_source_expansion_failure(declaration, indent)}\n{indent}}} #"
 
     rendered_source = indent_block(

@@ -45,6 +45,8 @@ from methods.source_resolver import (
     FailglobExpansionError,
     MISSING_SOURCE,
     MISSING_SOURCE_NO_FILENAME,
+    SOURCE_EXPANSION_FAILURE,
+    SOURCE_EXPANSION_FAILURE_RETURN,
     ResolvedSource,
     UnsupportedSourceError,
     contains_source_command,
@@ -378,6 +380,16 @@ class LineAbortSignal(Exception):
     line: int
 
 
+class SourceConditionExpansionFailureSignal(Exception):
+    def __init__(self, pattern: str):
+        super().__init__(pattern)
+        self.pattern = pattern
+
+
+class FunctionSourceExpansionAbortSignal(Exception):
+    pass
+
+
 @dataclass
 class ReadLoopWords:
     variable: str
@@ -463,6 +475,7 @@ class SourceEvaluator:
         self.line_replacements: list[LineReplacement] = []
         self.retained_helper_source_sites: list[RetainedHelperSourceSite] = []
         self._retained_helper_stack: list[str] = []
+        self._source_line_cache: dict[Path, tuple[str, ...]] = {}
 
     def evaluate(self, entrypoint: str | Path):
         entrypoint = Path(entrypoint).resolve()
@@ -1319,6 +1332,14 @@ class SourceEvaluator:
     def _apply_for_loop(self, node: ForLoop, state: EvaluationState, stack: tuple[Path, ...]):
         try:
             words = self._resolve_loop_words(node, state)
+        except FailglobExpansionError as exc:
+            if self.mode == "context":
+                return
+            if not self._node_list_may_source(node.body):
+                state.last_status = 1
+                return
+            self._record_for_loop_expansion_failure(node, exc.pattern, state)
+            return
         except UnsupportedSourceError:
             if self.mode == "context":
                 return
@@ -1755,6 +1776,8 @@ class SourceEvaluator:
                     ),
                     state,
                 )
+            except FailglobExpansionError:
+                raise
             except UnsupportedSourceError as exc:
                 raise self._unsupported_loop_words(node, str(exc)) from exc
 
@@ -2385,6 +2408,10 @@ class SourceEvaluator:
                             stack,
                             branch,
                         )
+                    except SourceConditionExpansionFailureSignal as signal:
+                        state.copy_from(condition_state)
+                        self._record_if_block_expansion_failure(node, signal.pattern, state)
+                        return
                     except UnsupportedSourceError as exc:
                         if (
                             self.mode == "context"
@@ -4443,30 +4470,25 @@ class SourceEvaluator:
         except FailglobExpansionError as exc:
             if self.mode == "context":
                 return SourceInvocation(None)
-            if node.is_condition_source:
-                raise self._unsupported_source_expansion_failure(
-                    node,
-                    "unsupported failglob source condition",
-                    "Failglob condition lowering must preserve Bash's condition-line abort semantics.",
-                ) from exc
-            if state.function_body_depth > 0:
-                raise self._unsupported_source_expansion_failure(
-                    node,
-                    "unsupported function failglob source expansion",
-                    "Failglob inside a function can abort the caller's physical line and needs function-aware lowering.",
-                ) from exc
             if self._source_site_has_unknown_status_guard(node, state):
                 raise self._unsupported_source_expansion_failure(
                     node,
                     "unsupported conditional failglob source expansion",
                     "Failglob after an unknown &&/|| guard cannot be lowered without changing later line behavior.",
                 ) from exc
+            if node.is_condition_source:
+                raise SourceConditionExpansionFailureSignal(exc.pattern) from exc
             return SourceInvocation(
                 source_expansion_failure_result(
                     exc.pattern,
                     node.source_expression,
                     source_site,
                     resolver_context,
+                    replacement_kind=(
+                        SOURCE_EXPANSION_FAILURE_RETURN
+                        if state.function_body_depth > 0
+                        else SOURCE_EXPANSION_FAILURE
+                    ),
                 )
             )
 
@@ -4907,6 +4929,8 @@ class SourceEvaluator:
             source_value=source_value,
         )
         state.last_status = 1
+        if replacement_kind == SOURCE_EXPANSION_FAILURE_RETURN:
+            raise FunctionSourceExpansionAbortSignal()
         raise LineAbortSignal(node.location.path, node.location.line)
 
     @staticmethod
@@ -5716,11 +5740,18 @@ class SourceEvaluator:
         state.function_body_depth += 1
         state.local_scopes.append({})
         return_status = None
+        source_expansion_abort = False
         try:
             try:
                 self._evaluate_nodes(function_def.body, state, stack)
             except FunctionReturnSignal as signal:
                 return_status = signal.status
+            except FunctionSourceExpansionAbortSignal:
+                return_status = 1
+                source_expansion_abort = True
+                if previous_function_body_depth > 0:
+                    self._record_function_abort_call_replacement(call_node, nested=True)
+                    raise
         finally:
             local_scope = state.local_scopes.pop()
             self._restore_local_scope(local_scope, state)
@@ -5733,7 +5764,14 @@ class SourceEvaluator:
             state.function_body_depth = previous_function_body_depth
         if return_status is not None:
             state.last_status = return_status
+            if source_expansion_abort:
+                self._record_function_abort_call_replacement(call_node, nested=False)
+                raise LineAbortSignal(call_node.location.path, call_node.location.line)
         return return_status
+
+    def _record_function_abort_call_replacement(self, call_node: RawCommand, *, nested: bool):
+        replacement = f"{{ {call_node.text}; return 1; }}" if nested else f"{call_node.text} #"
+        self._record_line_replacement(call_node.location, call_node.text, replacement)
 
     def _resolve_function_name(self, word: str, node: RawCommand, state: EvaluationState):
         if "$" not in word:
@@ -6503,6 +6541,98 @@ class SourceEvaluator:
                 f"done {node.trailing}",
                 "done",
             )
+
+    def _record_if_block_expansion_failure(self, node: IfBlock, pattern: str, state: EvaluationState):
+        end_location = node.end_location or node.location
+        return_from_function = state.function_body_depth > 0
+        self._record_control_block_expansion_failure(
+            node.location,
+            end_location,
+            pattern,
+            return_from_function=return_from_function,
+        )
+        state.last_status = 1
+        if return_from_function:
+            raise FunctionSourceExpansionAbortSignal()
+
+    def _record_for_loop_expansion_failure(self, node: ForLoop, pattern: str, state: EvaluationState):
+        if node.end_location is None:
+            raise self._unsupported_loop_words(node, "unsupported failglob loop without exact end location")
+
+        self._record_line_replacement(node.location, node.words_text, "")
+        self._disable_unreachable_sources(node.body, f"for {node.variable} in {node.words_text}")
+        failure = self._source_expansion_failure_inline(
+            pattern,
+            return_from_function=state.function_body_depth > 0,
+        )
+        done_replacement = f"done; {failure}"
+        if node.trailing:
+            done_replacement = f"{done_replacement} #"
+            done_fragment = f"done {node.trailing}"
+        else:
+            done_fragment = "done"
+        self._record_line_replacement(node.end_location, done_fragment, done_replacement)
+
+        state.last_status = 1
+        if state.function_body_depth > 0:
+            raise FunctionSourceExpansionAbortSignal()
+
+    def _record_control_block_expansion_failure(
+        self,
+        start_location: SourceLocation,
+        end_location: SourceLocation,
+        pattern: str,
+        *,
+        return_from_function: bool = False,
+    ):
+        path = start_location.path
+        if start_location.line == end_location.line:
+            old = self._source_line_text(path, start_location.line)
+            replacement = self._source_expansion_failure_inline(
+                pattern,
+                return_from_function=return_from_function,
+            )
+            if not return_from_function:
+                replacement = f"{replacement} #"
+            self._record_line_replacement(start_location, old, replacement)
+            return
+
+        self._record_line_replacement(
+            start_location,
+            self._source_line_text(path, start_location.line),
+            self._source_expansion_failure_inline(pattern, return_from_function=return_from_function),
+        )
+        for line in range(start_location.line + 1, end_location.line):
+            old = self._source_line_text(path, line)
+            if old:
+                self._record_line_replacement(SourceLocation(path, line, 1), old, ":")
+
+        end_replacement = "return 1" if return_from_function else "( exit 1 )"
+        self._record_line_replacement(
+            end_location,
+            self._source_line_text(path, end_location.line),
+            end_replacement,
+        )
+
+    def _source_line_text(self, path: Path, line: int):
+        lines = self._source_line_cache.get(path)
+        if lines is None:
+            lines = tuple(path.read_text().splitlines())
+            self._source_line_cache[path] = lines
+        try:
+            return lines[line - 1].strip()
+        except IndexError:
+            return ""
+
+    def _source_expansion_failure_inline(self, pattern: str, *, return_from_function: bool = False):
+        commands = [
+            "printf '%s: line %s: no match: %s\\n' "
+            f'"${{BASH_SOURCE[0]}}" "${{LINENO}}" {self._shell_quote(pattern)} >&2',
+            "( exit 1 )",
+        ]
+        if return_from_function:
+            commands.append("return 1")
+        return "{ " + "; ".join(commands) + "; }"
 
     def _record_line_replacement(self, location: SourceLocation, old: str, new: str):
         self.line_replacements.append(LineReplacement(location, old.strip(), new.strip()))

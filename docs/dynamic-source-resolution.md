@@ -288,7 +288,7 @@ Accept direct source globs and direct brace-only source expansion when command
 word expansion resolves to at least one regular file. For multiple
 direct-source expanded words, source the first expanded word and pass the
 remaining expanded words as positional arguments to that sourced file. Exact
-`nullglob` source-word shifting and direct `failglob` expansion failures are
+`nullglob` source-word shifting and deterministic `failglob` expansion failures are
 covered by
 [Source Expansion Failure Semantics](source-expansion-failure-semantics.md).
 
@@ -303,10 +303,9 @@ for dep in ./plugins/*.sh; do source "$dep"; done
 ```
 
 Currently rejected glob-affecting state includes `set -f`, branch-dependent or
-runtime-dynamic glob options, source-condition `failglob`, function-body
-`failglob`, unknown-guard `failglob`, and source-bearing loop `failglob`
-failures. Exact `GLOBIGNORE` all-filtered source-producing globs lower to
-Bash-equivalent runtime source failures when `nullglob` is not set.
+runtime-dynamic glob options, and unknown-guard `failglob`. Exact `GLOBIGNORE`
+all-filtered source-producing globs lower to Bash-equivalent runtime source
+failures when `nullglob` is not set.
 
 ### Command-Substitution Word Lists
 
@@ -562,7 +561,7 @@ scope:
   all-filtered source-producing globs when Bash behavior is deterministic; see
   [Missing Source Runtime Error Lowering](missing-source-runtime-lowering.md).
 - Direct brace-only source expansion, exact `nullglob` source-word shifting,
-  and direct `failglob` expansion failure lowering are implemented; see
+  and deterministic `failglob` expansion failure lowering are implemented; see
   [Source Expansion Failure Semantics](source-expansion-failure-semantics.md).
 - Exact custom-IFS scalar and command-substitution loop word splitting is
   implemented.

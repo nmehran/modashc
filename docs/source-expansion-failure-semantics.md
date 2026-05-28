@@ -82,24 +82,25 @@ order. The compiler can model the finite deterministic cases directly.
   Executable output prints a Bash-shaped `no match` diagnostic, returns status
   `1`, and comments out the rest of the original physical line to preserve
   Bash's line-abort behavior.
+- Parsed source conditions and parsed source-bearing `for` loops lower the whole
+  control-flow block to skip unreachable bodies, preserve status `1`, and avoid
+  leaving live `source` commands in executable output.
+- Direct function-body source failures lower through a function-aware `return 1`
+  path. Direct and nested function call sites are rewritten so Bash's caller-line
+  abort behavior is preserved without commenting out compact function closers.
 
 ## Non-Goals
 
 - Do not add runtime discovery, xtrace, sandbox execution, or supplement
   generation.
-- Do not support `failglob` inside `if source ...` / `elif source ...`
-  conditions yet; preserving Bash's condition-line abort requires broader
-  control-flow replacement.
-- Do not support `failglob` inside function bodies yet; expansion failure can
-  abort the caller's physical line and needs function-aware lowering.
 - Do not lower `failglob` after an unknown `&&` / `||` guard, because whether
   the expansion happens is runtime-dependent and affects later commands on the
   same line.
-- Do not support `failglob` loop word-list lowering yet. Multiline loop
-  replacement needs whole-loop artifact rewriting, not source-site replacement.
 - Do not treat arbitrary non-expanded missing literal source paths as supported
   dependencies.
 - Do not broaden source argument word splitting.
+- Do not claim support for source expansion failures inside shell grammar the
+  current frontend does not parse as structured source-aware IR.
 
 ## Acceptance
 
@@ -115,14 +116,14 @@ order. The compiler can model the finite deterministic cases directly.
   normalizing generated script line numbers.
 - Later commands on the same physical line after a lowered `failglob` source
   do not run.
-- Unsupported `failglob` condition, function, and unknown-guard cases fail
-  before output with structured diagnostics.
+- Parsed source conditions, parsed source-bearing loop word lists, and direct
+  function-body failures match Bash status and skipped-body behavior.
+- Unknown-guard `failglob` cases still fail before output with structured
+  diagnostics.
 - Full unit, real-world corpus, runtime parity, and whitespace checks pass.
 
 ## Remaining Work
 
-- `failglob` in source conditions, function bodies, and source-bearing loop
-  word lists.
 - Arbitrary missing literal source files unrelated to modeled expansion
   outcomes.
 - Recursive or runtime-dynamic source-bearing function dispatch.

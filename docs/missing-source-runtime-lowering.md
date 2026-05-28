@@ -131,8 +131,8 @@ Acceptance:
 
 Reject:
 
-- `failglob` source conditions, function bodies, and source-bearing loop
-  word-list failures.
+- Runtime-dependent `failglob` guards and failglob failures inside unsupported
+  shell grammar.
 - Branch-dependent or runtime-dynamic glob state.
 - Missing-source sites inside unsupported shell grammar.
 
@@ -179,7 +179,8 @@ Acceptance:
 
 Reject:
 
-- `failglob` loop expansion failures.
+- Runtime-dependent `failglob` loop guards and failglob loop failures inside
+  unsupported shell grammar.
 - Loop bodies whose source path depends on unsupported mutation between the loop
   variable assignment and the source command.
 - Dynamic loop word producers that cannot prove whether the source path is
@@ -204,8 +205,8 @@ Acceptance:
 - Add synthetic runtime parity tests for direct missing source globs,
   all-filtered `GLOBIGNORE`, `nullglob` bare source failures, and loop literal
   missing-word behavior.
-- Add safety tests for rejected source-condition `failglob`, branch-dependent
-  glob state, and unsupported grammar.
+- Add safety tests for runtime-dependent `failglob`, branch-dependent glob state,
+  and unsupported grammar.
 - Add or promote a real-world fixture only if it represents the supported
   static contract without requiring runtime discovery.
 - Update the support matrix and dynamic-source docs after implementation.
@@ -222,8 +223,6 @@ Required checks:
 
 ## Deferred After This Iteration
 
-- `failglob` source conditions, function bodies, and source-bearing loop
-  word-list failures.
 - Arbitrary missing literal source files unrelated to source-producing glob
   expansion.
 - Recursive or runtime-dynamic source-bearing function dispatch.

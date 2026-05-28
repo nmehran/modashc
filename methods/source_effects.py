@@ -148,6 +148,8 @@ class ForLoop(IRNode):
     body: tuple[IRNode, ...]
     words_text: str
     is_exact: bool = True
+    end_location: SourceLocation | None = None
+    trailing: str = ""
 
 
 @dataclass(frozen=True)
@@ -180,6 +182,7 @@ class IfBranch:
 @dataclass(frozen=True)
 class IfBlock(IRNode):
     branches: tuple[IfBranch, ...]
+    end_location: SourceLocation | None = None
 
 
 @dataclass(frozen=True)

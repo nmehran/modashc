@@ -388,6 +388,7 @@ class LineParserFrontend:
                         location=SourceLocation(script_path, line_number, column),
                         text=code_line.strip(),
                         branches=tuple(branches),
+                        end_location=SourceLocation(script_path, index + 1, 1),
                     ), index + 1
 
                 if current_keyword is None or (current_keyword in {"if", "elif"} and not saw_then):
@@ -1153,12 +1154,15 @@ class LineParserFrontend:
 
         body_lines = []
         next_line_index = body_start_index
+        end_line_number = do_line_index + 1
+        trailing = ""
 
         if inline_body is not None and inline_body.strip():
             done_match = INLINE_DONE_PATTERN.match(inline_body.strip())
             if not done_match:
                 return None, line_index + 1
             body_lines.append((do_line_index + 1, done_match.group(1).strip()))
+            trailing = (done_match.group(2) or "").strip()
             next_line_index = do_line_index + 1
         else:
             body_index = body_start_index
@@ -1183,6 +1187,7 @@ class LineParserFrontend:
                 )
                 stripped_body_line = body_code_line.strip()
                 if stripped_body_line == "done" and control_depth == 0:
+                    end_line_number = body_line_number
                     next_line_index = body_index + 1
                     break
 
@@ -1205,6 +1210,8 @@ class LineParserFrontend:
             body=body,
             words_text=words_text.strip(),
             is_exact=is_exact,
+            end_location=SourceLocation(script_path, end_line_number, 1),
+            trailing=trailing,
         ), next_line_index
 
     def _parse_while_loop(self, script_path: Path, line_number: int, code_line: str, lines: list[str],
