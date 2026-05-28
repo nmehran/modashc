@@ -128,8 +128,8 @@ done
 ```
 
 Loop glob handling is option-aware for `nullglob`, `dotglob`, `globstar`,
-`nocaseglob`, practical `GLOBIGNORE` filtering, comma braces, and simple brace
-sequences.
+`nocaseglob`, `extglob`, practical `GLOBIGNORE` filtering, comma braces, and
+simple brace sequences.
 
 ## Direct Source Globs
 
@@ -333,16 +333,15 @@ bash -c "source $DEP"                # parent-expanded dynamic payload
 printf ready | source ./dep.sh       # lastpipe-sensitive final segment
 ```
 
-Other fail-closed families include unmatched or quoted globs, `extglob`
-patterns, `set -f` / `noglob`, `failglob` unmatched globs, `GLOBIGNORE`
-patterns that remove every source match, source commands in unsupported shell
-grammar, final pipeline segments whose semantics depend on `lastpipe`,
-unsupported dynamic `case` subjects or arm patterns, unsupported process
-substitution outside modeled read-loop or child-shell input, unknown
+Other fail-closed families include unmatched or quoted globs, `set -f` /
+`noglob`, `failglob` unmatched globs, branch-dependent or runtime-dynamic glob
+state, `GLOBIGNORE` patterns that remove every source match, source commands in
+unsupported shell grammar, final pipeline segments whose semantics depend on
+`lastpipe`, unsupported dynamic `case` subjects or arm patterns, unsupported
+process substitution outside modeled read-loop or child-shell input, unknown
 runtime-dynamic or recursive function dispatch, non-equivalent branch-defined
 functions, branch-dependent function returns, nested dynamic substitutions, and
-multi-result command-substitution output where a single source path is
-required.
+multi-result command-substitution output where a single source path is required.
 
 ## Practical Remaining Work
 
@@ -351,8 +350,8 @@ The remaining source-resolution surface is narrower than general Bash support:
 - Missing-source runtime-error lowering for unmatched or all-ignored
   source-producing globs that Bash would leave as literal missing source paths.
 - Remaining case edge semantics such as collating symbols, equivalence classes,
-  and broader locale-dependent pattern behavior. The deterministic pattern
-  iteration is scoped in
+  and broader locale-dependent pattern behavior. The implemented deterministic
+  `extglob` / `GLOBIGNORE` subset is covered in
   [Source Pattern Semantics Completion](source-pattern-semantics.md).
 - Recursive or runtime-dynamic source-bearing function dispatch. Exact
   makepkg-style helper calls using quoted `$@` / `$*` are covered by

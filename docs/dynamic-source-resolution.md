@@ -278,11 +278,11 @@ Accept loop globs only when:
 
 - The glob metacharacters are unquoted.
 - The pattern is an ordinary file glob using `*`, `?`, `[]`, deterministic
-  brace expansion, or modeled `globstar` recursion.
+  brace expansion, modeled `extglob`, or modeled `globstar` recursion.
 - Expansion is cwd-aware and deterministic.
 - Every match is a regular file.
 - Modeled shell state is limited to `nullglob`, `dotglob`, `globstar`,
-  `nocaseglob`, `failglob`, and practical `GLOBIGNORE` filtering.
+  `nocaseglob`, `extglob`, `failglob`, and practical `GLOBIGNORE` filtering.
 
 Accept direct source globs when the glob resolves to at least one regular file.
 For multiple direct-source matches, source the first expanded word and pass the
@@ -294,14 +294,13 @@ Reject examples:
 for dep in "./plugins/*.sh"; do source "$dep"; done
 set -f
 for dep in ./plugins/*.sh; do source "$dep"; done
-shopt -s extglob
-for dep in ./plugins/@(a|b).sh; do source "$dep"; done
 GLOBIGNORE=./plugins/a.sh:./plugins/b.sh
 for dep in ./plugins/*.sh; do source "$dep"; done
 ```
 
-Currently rejected glob-affecting state includes `set -f`, `extglob`, and cases
-where `GLOBIGNORE` removes every matched source path.
+Currently rejected glob-affecting state includes `set -f`, branch-dependent or
+runtime-dynamic glob options, and cases where `GLOBIGNORE` removes every matched
+source path.
 
 ### Command-Substitution Word Lists
 
@@ -509,7 +508,7 @@ unsupported forms:
 - Branch-divergent cwd, variables, arrays, or shell options followed by later
   source resolution that depends on that divergent state.
 - Case subjects or arm patterns outside the exact modeled case subset,
-  including `extglob`, collating symbols, equivalence classes, and broader
+  including collating symbols, equivalence classes, and broader
   locale-dependent matching.
 
 These are not merely more dynamic resolvers. They require control-flow and
@@ -595,8 +594,8 @@ Current diagnostics are raised as explicit `UnsupportedSourceError` instances
 with stable codes, source locations, rejected fragments, messages, and hints.
 
 Future resolver increments should stay small, tested, and fail-closed. Case
-pattern broadening, complex array support, `extglob`, broader
-supplement-backed source resolution, recursive functions, non-equivalent
-branch-defined functions, branch-dependent function returns, runtime-dispatch
-support, and runtime source discovery should not be added as one-off resolver
-patches; those belong in the evaluator/IR design.
+pattern broadening, complex array support, broader supplement-backed source
+resolution, recursive functions, non-equivalent branch-defined functions,
+branch-dependent function returns, runtime-dispatch support, and runtime source
+discovery should not be added as one-off resolver patches; those belong in the
+evaluator/IR design.
