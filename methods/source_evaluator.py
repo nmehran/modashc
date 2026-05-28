@@ -583,6 +583,9 @@ class SourceEvaluator:
             except (FunctionReturnSignal, SourceReturnSignal):
                 self._disable_unreachable_sources(nodes[index + 1:], "return")
                 raise
+            except FunctionSourceExpansionAbortSignal:
+                self._disable_unreachable_sources(nodes[index + 1:], "source expansion failure")
+                raise
             except LineAbortSignal as signal:
                 aborted_lines.add((signal.path, signal.line))
 
@@ -1337,6 +1340,8 @@ class SourceEvaluator:
                 return
             if not self._node_list_may_source(node.body):
                 state.last_status = 1
+                if state.function_body_depth > 0:
+                    raise FunctionSourceExpansionAbortSignal()
                 return
             self._record_for_loop_expansion_failure(node, exc.pattern, state)
             return
@@ -5671,6 +5676,23 @@ class SourceEvaluator:
         if function_def is None:
             return False
 
+        variants = state.function_variants.get(function_name, (function_def,))
+        if (
+            self.mode == "executable"
+            and node.separator in {"&&", "||"}
+            and state.last_status is None
+            and self._function_variants_may_source(variants)
+        ):
+            raise unsupported_source_error(
+                str(node.location.path),
+                node.location.line - 1,
+                node.text,
+                node.text,
+                "unsupported.source.function-guard",
+                f"unsupported unknown guarded source-relevant function call: {function_name}",
+                "Source-relevant function calls behind unknown &&/|| guards must be modeled explicitly before lowering.",
+            )
+
         if function_name in state.function_call_stack:
             raise unsupported_source_error(
                 str(node.location.path),
@@ -5682,7 +5704,6 @@ class SourceEvaluator:
                 "Recursive source effects need an explicit bounded recursion model.",
             )
 
-        variants = state.function_variants.get(function_name, (function_def,))
         arguments = self._resolve_function_arguments(function_name, words[index + 1:], node, state)
         prefix_words = words[:index]
         if len(variants) == 1:
@@ -5799,6 +5820,9 @@ class SourceEvaluator:
             for variants in state.function_variants.values()
             for function_def in variants
         )
+
+    def _function_variants_may_source(self, variants: tuple[FunctionDef, ...]):
+        return any(self._node_list_may_source(function_def.body) for function_def in variants)
 
     def _apply_function_assignment_prefixes(self, words: list[str], scope: dict, node: RawCommand,
                                             state: EvaluationState):

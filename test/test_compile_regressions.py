@@ -1018,10 +1018,24 @@ class CompileRegressionTestCase(unittest.TestCase):
                 load
                 echo SHOULD_NOT_RUN_LINE
                 """),
+            "source-free loop before later source": textwrap.dedent("""\
+                shopt -s failglob
+                load(){
+                  for file in ./missing/*.sh
+                  do
+                    echo SHOULD_NOT_RUN_LOOP
+                  done
+                  source ./dep.sh
+                  echo SHOULD_NOT_RUN_FUNC
+                }
+                load; echo SHOULD_NOT_RUN_LINE
+                echo next
+                """),
         }
 
         for name, content in cases.items():
             with self.subTest(name=name), ScriptProject() as project:
+                project.write("dep.sh", 'echo SHOULD_NOT_RUN_DEP\n')
                 project.write("main.sh", content)
 
                 output = project.compile("main.sh", mode="executable")
@@ -1035,6 +1049,8 @@ class CompileRegressionTestCase(unittest.TestCase):
                 self.normalized_bash_source_errors(expected.stdout),
             )
             self.assertNotIn("source ./missing/*.sh", compiled_content)
+            self.assertNotIn("source ./dep.sh", compiled_content)
+            self.assertNotIn("SHOULD_NOT_RUN_DEP", compiled_content)
             self.assertNotIn("SHOULD_NOT_RUN", actual.stdout)
         self.assertNotIn("source ./missing/*.sh", compiled_content)
 
@@ -3166,6 +3182,10 @@ class CompileRegressionTestCase(unittest.TestCase):
             "unknown guarded failglob source": (
                 'shopt -s failglob\nmaybe && source ./missing/*.sh || echo fallback\n',
                 'source ./missing/*.sh',
+            ),
+            "unknown guarded source function": (
+                'load_dep() { source ./dep.sh; }\nmaybe && load_dep || echo fallback\n',
+                'load_dep',
             ),
             "divergent if branch state": (
                 'if [[ -n "$USE_A" ]]; then\n  DEP=./a.sh\nelse\n  DEP=./b.sh\nfi\nsource "$DEP"\n',

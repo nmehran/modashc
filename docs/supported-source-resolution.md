@@ -371,14 +371,15 @@ printf ready | source ./dep.sh       # lastpipe-sensitive final segment
 ```
 
 Other fail-closed families include quoted globs, `set -f` / `noglob`,
-`failglob` after runtime-dependent `&&` / `||` guards, branch-dependent or
-runtime-dynamic glob state, source commands in unsupported shell grammar, final
-pipeline segments whose semantics depend on `lastpipe`, unsupported dynamic
-`case` subjects or arm patterns, unsupported process substitution outside
-modeled read-loop or child-shell input, unknown runtime-dynamic or recursive
-function dispatch, non-equivalent branch-defined functions, branch-dependent
-function returns, nested dynamic substitutions, and multi-result
-command-substitution output where a single source path is required.
+`failglob` after runtime-dependent `&&` / `||` guards, source-relevant local
+function calls behind unknown logical guards, branch-dependent or runtime-dynamic
+glob state, source commands in unsupported shell grammar, final pipeline
+segments whose semantics depend on `lastpipe`, unsupported dynamic `case`
+subjects or arm patterns, unsupported process substitution outside modeled
+read-loop or child-shell input, unknown runtime-dynamic or recursive function
+dispatch, non-equivalent branch-defined functions, branch-dependent function
+returns, nested dynamic substitutions, and multi-result command-substitution
+output where a single source path is required.
 
 ## Practical Remaining Work
 

@@ -93,9 +93,9 @@ order. The compiler can model the finite deterministic cases directly.
 
 - Do not add runtime discovery, xtrace, sandbox execution, or supplement
   generation.
-- Do not lower `failglob` after an unknown `&&` / `||` guard, because whether
-  the expansion happens is runtime-dependent and affects later commands on the
-  same line.
+- Do not lower `failglob` after an unknown `&&` / `||` guard, including through
+  source-relevant local function calls, because whether the expansion happens is
+  runtime-dependent and affects later commands on the same line.
 - Do not treat arbitrary non-expanded missing literal source paths as supported
   dependencies.
 - Do not broaden source argument word splitting.

@@ -484,8 +484,8 @@ These still need separate specs before implementation:
 - Complex array/list-based source paths outside exact indexed, associative,
   append, command-substitution, and file-populated arrays.
 - Broader user-defined function semantics, including runtime-dynamic dispatch,
-  recursive calls, non-equivalent branch-defined functions, and
-  branch-dependent returns.
+  recursive calls, non-equivalent branch-defined functions, branch-dependent
+  returns, and source-relevant function calls behind unknown logical guards.
 - Unsupported process substitution and generated source streams outside exact
   read-loop producer input or exact child-shell source boundaries.
 
