@@ -820,6 +820,26 @@ class CompileRegressionTestCase(unittest.TestCase):
         self.assertNotIn("source ./empty/*.sh ./plugins/*.sh", compiled_content)
         self.assertNotIn("unexpected plugin-b source", compiled_content)
 
+    def test_expanded_source_arguments_allow_non_files_after_source_file_matches_bash(self):
+        with ScriptProject() as project:
+            project.write("dep.sh", 'printf "dep:%s:%s:%s\\n" "$1" "$2" "$3"\n')
+            project.mkdir("args/dir")
+            project.write("args/file", "argument file\n")
+            project.write("main.sh", textwrap.dedent("""\
+                source ./dep.sh ./args/*
+                source ./{dep.sh,args/dir} brace
+                """))
+
+            output = project.compile("main.sh", mode="executable")
+            expected = project.run("main.sh")
+            actual = project.run(output)
+            compiled_content = output.read_text()
+
+        self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
+        self.assertEqual(actual.stdout, expected.stdout)
+        self.assertNotIn("source ./dep.sh ./args/*", compiled_content)
+        self.assertNotIn("source ./{dep.sh,args/dir}", compiled_content)
+
     def test_failglob_source_expansion_failure_matches_bash(self):
         with ScriptProject() as project:
             project.write("dep.sh", 'echo "unexpected dep source"\n')

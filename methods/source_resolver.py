@@ -84,6 +84,7 @@ class GlobMatch:
     word: str
     path: str
     exists: bool = True
+    is_file: bool = True
 
 
 @dataclass(frozen=True)
@@ -653,7 +654,7 @@ def _apply_globignore(matches: list[str], patterns: list[str], glob_options: set
 
 def _missing_glob_match(word: str, current_directory: str):
     path = word if os.path.isabs(word) else os.path.join(current_directory, word)
-    return GlobMatch(word=word, path=os.path.abspath(path), exists=False)
+    return GlobMatch(word=word, path=os.path.abspath(path), exists=False, is_file=False)
 
 
 def _missing_source_result(word: str, source_expression: str, source_site: str, context: dict, status_kind: str):
@@ -686,6 +687,7 @@ def expand_glob_word(
     source_site: str,
     raw_pattern: str | None = None,
     allow_missing_literal: bool = False,
+    require_files: bool = True,
 ):
     raw_pattern = raw_pattern if raw_pattern is not None else pattern
 
@@ -757,9 +759,10 @@ def expand_glob_word(
             continue
         path = match if os.path.isabs(match) else os.path.join(current_directory, match)
         resolved_path = os.path.abspath(path)
-        if not os.path.isfile(resolved_path):
+        is_file = os.path.isfile(resolved_path)
+        if require_files and not is_file:
             raise UnsupportedSourceError(f"unsupported non-file source glob match: {source_site.strip()}")
-        glob_matches.append(GlobMatch(word=match, path=resolved_path))
+        glob_matches.append(GlobMatch(word=match, path=resolved_path, is_file=is_file))
 
     return tuple(glob_matches)
 

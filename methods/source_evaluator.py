@@ -414,6 +414,7 @@ class ExpandedSourceWord:
     word: str
     path: str | None = None
     exists: bool = True
+    is_file: bool = True
 
 
 @dataclass(frozen=True)
@@ -4436,8 +4437,9 @@ class SourceEvaluator:
         state: EvaluationState,
     ):
         source_site = f"{node.command_name} {node.source_expression.strip()}"
+        resolver_context = state.resolver_context()
         try:
-            expanded_words = self._expand_source_command_words(source_expression, node, state)
+            expanded_words = self._expand_source_command_words(source_expression, node, state, resolver_context)
         except FailglobExpansionError as exc:
             if self.mode == "context":
                 return SourceInvocation(None)
@@ -4464,7 +4466,7 @@ class SourceEvaluator:
                     exc.pattern,
                     node.source_expression,
                     source_site,
-                    state.resolver_context(),
+                    resolver_context,
                 )
             )
 
@@ -4492,6 +4494,17 @@ class SourceEvaluator:
                 source_arguments=tuple(word.word for word in argument_words) or None,
             )
 
+        if source_word.path is not None and not source_word.is_file:
+            raise unsupported_source_error(
+                str(node.location.path),
+                node.location.line - 1,
+                node.text,
+                node.text,
+                "unsupported.source.resolution",
+                "unsupported non-file source glob match",
+                "The expanded source filename must resolve to a regular file.",
+            )
+
         if source_word.path is not None:
             resolved_source = ResolvedSource(
                 path=source_word.path,
@@ -4503,7 +4516,7 @@ class SourceEvaluator:
             resolved_source = SOURCE_RESOLVER.resolve_source_expression(
                 self._shell_quote(source_word.word),
                 source_site,
-                state.resolver_context(),
+                resolver_context,
             )
             if resolved_source is not None:
                 resolved_source = replace(
@@ -4534,7 +4547,13 @@ class SourceEvaluator:
             for word in words
         )
 
-    def _expand_source_command_words(self, source_expression: str, node: SourceSite, state: EvaluationState):
+    def _expand_source_command_words(
+        self,
+        source_expression: str,
+        node: SourceSite,
+        state: EvaluationState,
+        resolver_context: dict,
+    ):
         try:
             raw_words = parse_shell_words_preserving_quotes(source_expression)
         except UnsupportedSourceError as exc:
@@ -4554,21 +4573,23 @@ class SourceEvaluator:
                 or has_unquoted_brace_expansion(raw_word)
                 or has_unquoted_extglob(raw_word)
             ):
-                resolved_word = resolve_variable_references(raw_word, state.resolver_context())
+                resolved_word = resolve_variable_references(raw_word, resolver_context)
                 resolved_word = os.path.expandvars(resolved_word)
                 resolved_word = strip_shell_word_quotes(resolved_word)
                 matches = expand_glob_word(
                     resolved_word,
-                    state.resolver_context(),
+                    resolver_context,
                     node.text,
                     raw_pattern=raw_word,
                     allow_missing_literal=True,
+                    require_files=False,
                 )
                 expanded_words.extend(
                     ExpandedSourceWord(
                         word=match.word,
                         path=match.path,
                         exists=match.exists,
+                        is_file=match.is_file,
                     )
                     for match in matches
                 )

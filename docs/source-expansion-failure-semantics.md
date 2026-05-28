@@ -36,7 +36,8 @@ order. The compiler can model the finite deterministic cases directly.
   accepted output.
 - Brace-only direct source expansion produces command words. The first expanded
   word is the source filename and the remaining expanded words are source
-  positional arguments.
+  positional arguments. Only the selected source filename is required to be a
+  regular file; remaining expanded words are passed as exact arguments.
 - `nullglob` removes unmatched pathname-expansion words before source
   invocation. If a later exact word remains, that word becomes the source
   filename.
@@ -104,6 +105,8 @@ order. The compiler can model the finite deterministic cases directly.
 
 - Direct brace-only source expansion matches Bash for existing-first and
   missing-first cases.
+- Expanded source arguments after the selected source file may include non-file
+  pathnames and still match Bash.
 - Brace-only source words remain literal under `nullglob`, `failglob`, and
   `GLOBIGNORE`.
 - Exact `nullglob` word shifting matches Bash for literal fallback files and

@@ -153,6 +153,9 @@ source ./plugins/*.sh extra
 If `./plugins/*.sh` expands to `./plugins/00-loader.sh
 ./plugins/10-config.sh`, `00-loader.sh` is sourced with
 `./plugins/10-config.sh` and `extra` as its `$1` and `$2`.
+Only the first remaining expanded word must be a sourceable regular file;
+later expanded words are arguments and may name non-file paths exactly as Bash
+would pass them.
 
 When a supported direct source glob produces no usable source file, executable
 mode lowers Bash's runtime source failure instead of preserving a live source
