@@ -16,6 +16,10 @@ from test.support import ScriptProject
 
 
 class CompileRegressionTestCase(unittest.TestCase):
+    @staticmethod
+    def normalized_bash_source_errors(output: str):
+        return re.sub(r"^.*?: line [0-9]+: ", "<script>: line N: ", output, flags=re.MULTILINE)
+
     def test_relative_entry_point_compiles_to_runnable_script(self):
         with ScriptProject() as project:
             output_file = project.path("merged_script.sh")
@@ -374,7 +378,7 @@ class CompileRegressionTestCase(unittest.TestCase):
 
         self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
         self.assertEqual(actual.stdout, expected.stdout)
-        self.assertNotIn('source "$dep"', compiled_content)
+        self.assertNotIn('\n  source "$dep"', compiled_content)
 
     def test_exact_for_loop_repeated_same_line_sources_match_bash(self):
         with ScriptProject() as project:
@@ -604,7 +608,7 @@ class CompileRegressionTestCase(unittest.TestCase):
 
         self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
         self.assertEqual(actual.stdout, expected.stdout)
-        self.assertNotIn('source "$dep"', compiled_content)
+        self.assertNotIn('\n  source "$dep"', compiled_content)
 
     def test_globignore_for_loop_sources_match_bash(self):
         with ScriptProject() as project:
@@ -675,6 +679,83 @@ class CompileRegressionTestCase(unittest.TestCase):
             project.write("main.sh", 'source "./plugin {dir}#tag"/*.sh\necho "main"\n')
 
             project.assert_compiled_matches(self, "main.sh", env={"LC_ALL": "C"})
+
+    def test_missing_direct_source_globs_lower_runtime_failures(self):
+        with ScriptProject() as project:
+            project.write("plugins/a.sh", 'echo "unexpected:a"\n')
+            project.write("plugins/b.sh", 'echo "unexpected:b"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                source ./missing/*.sh
+                printf 'direct:%s\\n' "$?"
+                source ./missing/*.sh || printf 'optional:%s\\n' "$?"
+                if source ./missing/*.sh; then
+                  echo wrong-if
+                else
+                  printf 'if:%s\\n' "$?"
+                fi
+                if ! source ./missing/*.sh; then
+                  printf 'negated:%s\\n' "$?"
+                fi
+                GLOBIGNORE=./plugins/a.sh:./plugins/b.sh
+                source ./plugins/*.sh
+                printf 'globignore:%s\\n' "$?"
+                shopt -s nullglob
+                source ./empty/*.sh
+                printf 'nullglob:%s\\n' "$?"
+                """))
+
+            output = project.compile("main.sh", mode="executable")
+            compiled_content = output.read_text()
+            expected = project.run("main.sh")
+            actual = project.run(output)
+
+        self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
+        self.assertEqual(
+            self.normalized_bash_source_errors(actual.stdout),
+            self.normalized_bash_source_errors(expected.stdout),
+        )
+        self.assertNotIn("source ./missing/*.sh", compiled_content)
+        self.assertNotIn("source ./plugins/*.sh", compiled_content)
+        self.assertNotIn("source ./empty/*.sh", compiled_content)
+
+    def test_missing_loop_source_globs_lower_runtime_failures(self):
+        with ScriptProject() as project:
+            project.write("plugins/a.sh", 'echo "unexpected:a"\n')
+            project.write("plugins/b.sh", 'echo "unexpected:b"\n')
+            project.write("brace/real.sh", 'printf "brace-real:%s\\n" "$dep"\n')
+            project.write("main.sh", textwrap.dedent("""\
+                for dep in ./missing/*.sh; do
+                  source "$dep" || printf 'loop:%s\\n' "$?"
+                done
+                for dep in ./brace/{missing,real}.sh; do
+                  source "$dep" || printf 'brace:%s\\n' "$?"
+                done
+                DEPS="./scalar-missing/*.sh"
+                for dep in $DEPS; do
+                  source "$dep" || printf 'scalar:%s\\n' "$?"
+                done
+                GLOBIGNORE=./plugins/a.sh:./plugins/b.sh
+                for dep in ./plugins/*.sh; do
+                  source "$dep" || printf 'globignore:%s\\n' "$?"
+                done
+                shopt -s nullglob
+                for dep in ./empty/*.sh; do
+                  source "$dep"
+                done
+                printf 'null-loop:%s\\n' "$?"
+                """))
+
+            output = project.compile("main.sh", mode="executable")
+            compiled_content = output.read_text()
+            expected = project.run("main.sh")
+            actual = project.run(output)
+
+        self.assertEqual(actual.returncode, expected.returncode, actual.stdout)
+        self.assertEqual(
+            self.normalized_bash_source_errors(actual.stdout),
+            self.normalized_bash_source_errors(expected.stdout),
+        )
+        self.assertNotIn('\n  source "$dep"', compiled_content)
 
     def test_if_block_source_matches_bash(self):
         with ScriptProject() as project:
@@ -2789,10 +2870,6 @@ class CompileRegressionTestCase(unittest.TestCase):
                 'while [[ -n "$LOAD_DEP" ]]; do\n  source ./dep.sh\n  break\n done\n',
                 'while [[ -n "$LOAD_DEP" ]]',
             ),
-            "unmatched glob loop": (
-                'for file in ./missing/*.sh; do source "$file"; done\n',
-                'for file in ./missing/*.sh; do source "$file"; done',
-            ),
             "quoted glob loop": (
                 'for file in "./plugins/*.sh"; do source "$file"; done\n',
                 'for file in "./plugins/*.sh"; do source "$file"; done',
@@ -2809,13 +2886,13 @@ class CompileRegressionTestCase(unittest.TestCase):
                 'set -f\nfor file in ./plugins/*.sh; do source "$file"; done\n',
                 'for file in ./plugins/*.sh; do source "$file"; done',
             ),
-            "globignore removes all loop matches": (
-                'GLOBIGNORE=./plugins/a.sh:./plugins/b.sh\nfor file in ./plugins/*.sh; do source "$file"; done\n',
-                'for file in ./plugins/*.sh; do source "$file"; done',
-            ),
-            "direct source nullglob removes filename": (
-                'shopt -s nullglob\nsource ./missing/*.sh\n',
+            "direct source failglob unmatched": (
+                'shopt -s failglob\nsource ./missing/*.sh\n',
                 'source ./missing/*.sh',
+            ),
+            "direct source nullglob word shift": (
+                'shopt -s nullglob\nsource ./missing/*.sh ./fallback.sh\n',
+                'source ./missing/*.sh ./fallback.sh',
             ),
             "divergent if branch state": (
                 'if [[ -n "$USE_A" ]]; then\n  DEP=./a.sh\nelse\n  DEP=./b.sh\nfi\nsource "$DEP"\n',

@@ -2,7 +2,8 @@
 
 ## Status
 
-Planned on the `iteration/missing-source-runtime-lowering` development branch.
+Implemented on the `iteration/missing-source-runtime-lowering` development
+branch.
 
 This iteration stays static. It does not run Bash, collect xtrace output,
 discover runtime source paths, or treat missing dependencies as successful
@@ -74,9 +75,24 @@ runtime failures that can be represented without executing shell code.
   filename unless that word shift is exact and explicitly tested.
 - Do not replace the line frontend with a full Bash parser.
 
+## Implemented Scope
+
+- Ordinary unmatched direct source globs lower to same-shell missing-file
+  failures with status `1`.
+- Direct source globs whose exact `GLOBIGNORE` removes every matched source file
+  lower to the same missing-file failure when `nullglob` is not set.
+- Bare direct source globs that disappear under exact `nullglob` lower to
+  Bash's no-filename source failure with status `2`.
+- Finite `for` loop glob words preserve Bash's distinction between one literal
+  missing pattern and zero `nullglob` iterations.
+- Lowered failures preserve status for `$?`, `&&`, `||`, `if source ...`, and
+  `if ! source ...`, and executable output contains no live source command for
+  accepted missing-source sites.
+
 ## Tranche 1: Direct Source Missing Runtime Errors
 
 Goal: lower deterministic missing-source outcomes for direct source commands.
+Implemented.
 
 Target examples:
 
@@ -131,7 +147,7 @@ Implementation notes:
 ## Tranche 2: Loop And Finite Expansion Missing Outcomes
 
 Goal: apply the same missing-source model to finite source-producing loops and
-word-list expansion paths.
+word-list expansion paths. Implemented.
 
 Target examples:
 
@@ -180,6 +196,7 @@ Implementation notes:
 ## Tranche 3: Promotion, Diagnostics, And Artifact Review
 
 Goal: make the behavior observable, documented, and hard to regress.
+Implemented with synthetic runtime parity coverage and support-matrix updates.
 
 Acceptance:
 

@@ -1485,19 +1485,43 @@ class SourceEvaluatorTestCase(unittest.TestCase):
         self.assertEqual([event.path for event in result.events], [dep])
         self.assertEqual([event.source_value for event in result.events], ["./plugins/only.sh"])
 
+    def test_missing_source_glob_events_are_evaluated(self):
+        with ScriptProject() as project:
+            entry = project.write("main.sh", textwrap.dedent("""\
+                source ./missing/*.sh
+                for dep in ./optional/*.sh; do
+                  source "$dep"
+                done
+                """))
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual(
+            [event.replacement_kind for event in result.events],
+            ["missing-source", "missing-source"],
+        )
+        self.assertEqual(
+            [event.source_value for event in result.events],
+            ["./missing/*.sh", "./optional/*.sh"],
+        )
+
+    def test_nullglob_direct_source_event_is_no_filename_failure(self):
+        with ScriptProject() as project:
+            entry = project.write("main.sh", 'shopt -s nullglob\nsource ./missing/*.sh\n')
+
+            result = SourceEvaluator().evaluate(entry)
+
+        self.assertEqual([event.replacement_kind for event in result.events], ["missing-source-no-filename"])
+        self.assertEqual([event.source_value for event in result.events], [""])
+
     def test_unsupported_for_loop_words_raise_structured_diagnostic(self):
         cases = {
             "command substitution": 'for dep in $(cat deps.txt); do source "$dep"; done\n',
             "unknown scalar": 'for dep in "$DEP"; do source "$dep"; done\n',
             "unknown array": 'for dep in "${deps[@]}"; do source "$dep"; done\n',
-            "unmatched glob": 'for dep in ./plugins/*.sh; do source "$dep"; done\n',
             "quoted glob": 'for dep in "./plugins/*.sh"; do source "$dep"; done\n',
             "failglob": 'shopt -s failglob\nfor dep in ./plugins/*.sh; do source "$dep"; done\n',
             "disabled extglob": 'for dep in ./plugins/@(a|b).sh; do source "$dep"; done\n',
-            "globignore removes all matches": (
-                'GLOBIGNORE=./plugins/a.sh:./plugins/b.sh\n'
-                'for dep in ./plugins/*.sh; do source "$dep"; done\n'
-            ),
         }
 
         for name, content in cases.items():

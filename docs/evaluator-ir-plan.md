@@ -421,8 +421,8 @@ expansion is implemented for `nullglob`, `dotglob`, `globstar`, `nocaseglob`,
 Broader glob expansion should remain deterministic and cwd-aware:
 
 - sort matches lexically
-- reject `set -f`, branch-dependent glob state, and all-ignored `GLOBIGNORE`
-  matches unless their semantics are fully modeled
+- reject `set -f`, branch-dependent glob state, and `failglob` expansion aborts
+  unless their semantics are fully modeled
 - reject ambiguous directory state
 
 ## Diagnostics

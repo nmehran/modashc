@@ -70,6 +70,40 @@ def shell_quote_words(words):
     return " ".join(shell_quote(word) for word in words)
 
 
+def missing_source_status(replacement_kind: str):
+    return 2 if replacement_kind == "missing-source-no-filename" else 1
+
+
+def source_command_name(source_site: str):
+    try:
+        words = parse_shell_words_preserving_quotes(source_site.strip())
+    except UnsupportedSourceError:
+        words = []
+    return strip_shell_word_quotes(words[0]) if words else "source"
+
+
+def render_missing_source_failure(source_declaration, indent: str):
+    command_name = source_command_name(source_declaration.source_site)
+    status = missing_source_status(source_declaration.replacement_kind)
+    if source_declaration.replacement_kind == "missing-source-no-filename":
+        messages = [
+            f"{command_name}: filename argument required",
+            f"{command_name}: usage: {command_name} filename [arguments]",
+        ]
+    else:
+        messages = [f"{source_declaration.source_value}: No such file or directory"]
+
+    first_message, *remaining_messages = messages
+    lines = [
+        f"{indent}printf '%s: line %s: %s\\n' "
+        f'"${{BASH_SOURCE[0]}}" "${{LINENO}}" {shell_quote(first_message)} >&2'
+    ]
+    for message in remaining_messages:
+        lines.append(f"{indent}printf '%s\\n' {shell_quote(message)} >&2")
+    lines.append(f"{indent}( exit {status} )")
+    return "\n".join(lines)
+
+
 def construct_file_separator(filepath, entry_point, delimiter="-", length=120):
     # Get the basename of the file for the header
     filename = os.path.relpath(filepath, start=os.path.dirname(entry_point))
@@ -468,6 +502,8 @@ def render_source_dispatch(
         seen_patterns.add(pattern)
         if source_declaration.replacement_kind == "noop-source":
             rendered_source = f"{indent}    :"
+        elif source_declaration.replacement_kind.startswith("missing-source"):
+            rendered_source = render_missing_source_failure(source_declaration, f"{indent}    ")
         else:
             rendered_source = indent_block(
                 render_source(
@@ -738,12 +774,14 @@ def render_source_site_replacement(
         return f"{separator}{render_retained_source_dispatch(retained_declarations, render_source, indent, positional_frame_names)}"
 
     declaration = declarations[0]
-    if declaration.replacement_kind == "noop-source":
-        return f"{separator}:"
-
     unique_paths = {source_declaration.path for source_declaration in declarations}
     if len(declarations) > 1 and len(unique_paths) > 1:
         return f"{separator}{render_source_dispatch(declaration.source_expression, declarations, render_source, indent, positional_frame_names)}"
+
+    if declaration.replacement_kind == "noop-source":
+        return f"{separator}:"
+    if declaration.replacement_kind.startswith("missing-source"):
+        return f"{separator}{{\n{render_missing_source_failure(declaration, indent)}\n{indent}}}"
 
     rendered_source = indent_block(
         render_source(
@@ -1092,7 +1130,10 @@ def render_executable_script(entry_point: str, context: dict):
                 )
                 source_site_declarations = [
                     source_declaration for source_declaration in source_declarations
-                    if source_declaration.replacement_kind in {"source", "noop-source", "retained-source"}
+                    if (
+                        source_declaration.replacement_kind in {"source", "noop-source", "retained-source"}
+                        or source_declaration.replacement_kind.startswith("missing-source")
+                    )
                 ]
                 if source_site_declarations:
                     line = replace_source_site_declarations(

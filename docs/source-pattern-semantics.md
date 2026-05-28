@@ -136,9 +136,9 @@ Acceptance:
 - `nullglob`, `failglob`, `dotglob`, `globstar`, `nocaseglob`, `set -f`, and
   `GLOBIGNORE` interactions are tested together for accepted and rejected
   source sites.
-- All-ignored direct source globs remain fail-closed when preserving behavior
-  would require lowering Bash's missing-source runtime error without leaving a
-  live `source` command.
+- All-ignored direct source globs are handled by the follow-on
+  [Missing Source Runtime Error Lowering](missing-source-runtime-lowering.md)
+  iteration.
 
 Reject:
 
@@ -218,6 +218,3 @@ Reject:
 - xtrace/runtime source discovery and supplement generation
 - full parser replacement for unsupported shell grammar
 - broad source argument word splitting
-- missing-source runtime-error lowering for unmatched or all-ignored
-  source-producing globs; see
-  [Missing Source Runtime Error Lowering](missing-source-runtime-lowering.md)

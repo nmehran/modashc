@@ -299,8 +299,9 @@ for dep in ./plugins/*.sh; do source "$dep"; done
 ```
 
 Currently rejected glob-affecting state includes `set -f`, branch-dependent or
-runtime-dynamic glob options, and cases where `GLOBIGNORE` removes every matched
-source path.
+runtime-dynamic glob options. Exact `GLOBIGNORE` all-filtered source-producing
+globs lower to Bash-equivalent runtime source failures when `nullglob` is not
+set.
 
 ### Command-Substitution Word Lists
 
@@ -471,9 +472,6 @@ and validate explicit user-provided values on the second pass.
 These still need separate specs before implementation:
 
 - Broader glob semantics beyond ordinary deterministic file globs.
-- Missing-source runtime-error lowering for unmatched or all-filtered
-  source-producing globs; see
-  [Missing Source Runtime Error Lowering](missing-source-runtime-lowering.md).
 - Static evaluation of conditional predicates outside the modeled
   side-effect-free subset.
 - Remaining case edge semantics such as collating symbols, equivalence
@@ -555,6 +553,9 @@ scope:
   `dotglob`, `globstar`, `nocaseglob`, deterministic brace expansion, and
   practical `GLOBIGNORE` filtering. Direct source globs are implemented for
   one-match and multi-match source-argument cases.
+- Missing-source runtime-error lowering is implemented for unmatched or
+  all-filtered source-producing globs when Bash behavior is deterministic; see
+  [Missing Source Runtime Error Lowering](missing-source-runtime-lowering.md).
 - Exact custom-IFS scalar and command-substitution loop word splitting is
   implemented.
 - Safe producer word lists are implemented for `cat`, `find`, `printf`, `sort`,

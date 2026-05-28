@@ -56,6 +56,7 @@ class ResolvedSource:
 class GlobMatch:
     word: str
     path: str
+    exists: bool = True
 
 
 @dataclass(frozen=True)
@@ -623,7 +624,28 @@ def _apply_globignore(matches: list[str], patterns: list[str], glob_options: set
     ]
 
 
-def expand_glob_word(pattern: str, context: dict, source_site: str, raw_pattern: str | None = None):
+def _missing_glob_match(word: str, current_directory: str):
+    path = word if os.path.isabs(word) else os.path.join(current_directory, word)
+    return GlobMatch(word=word, path=os.path.abspath(path), exists=False)
+
+
+def _missing_source_result(word: str, source_expression: str, source_site: str, context: dict, status_kind: str):
+    return ResolvedSource(
+        path=_missing_glob_match(word or ".", context['current_directory']).path,
+        source_expression=source_expression.strip(),
+        source_site=source_site.strip(),
+        replacement_kind=status_kind,
+        source_value=word,
+    )
+
+
+def expand_glob_word(
+    pattern: str,
+    context: dict,
+    source_site: str,
+    raw_pattern: str | None = None,
+    allow_missing_literal: bool = False,
+):
     raw_pattern = raw_pattern if raw_pattern is not None else pattern
 
     glob_options = set(context.get('glob_options', set()))
@@ -645,20 +667,40 @@ def expand_glob_word(pattern: str, context: dict, source_site: str, raw_pattern:
     try:
         for expanded_pattern in _brace_expand(matching_pattern, raw_pattern, source_site):
             pattern_matches = _glob_matches(expanded_pattern, current_directory, glob_options, include_hidden)
+            if not pattern_matches:
+                if 'failglob' in glob_options:
+                    raise UnsupportedSourceError(f"unsupported failglob source pattern: {source_site.strip()}")
+                if 'nullglob' in glob_options:
+                    continue
+                if allow_missing_literal:
+                    matches.append(_missing_glob_match(expanded_pattern, current_directory))
+                    continue
             filtered_matches = _apply_globignore(pattern_matches, globignore_patterns, glob_options)
             if not filtered_matches and pattern_matches and 'nullglob' not in glob_options:
+                if 'failglob' in glob_options:
+                    raise UnsupportedSourceError(f"unsupported failglob source pattern: {source_site.strip()}")
+                if allow_missing_literal:
+                    matches.append(_missing_glob_match(expanded_pattern, current_directory))
+                    continue
                 raise UnsupportedSourceError(f"unsupported GLOBIGNORE source pattern: {source_site.strip()}")
             matches.extend(filtered_matches)
     except UnsupportedPatternError as exc:
         raise UnsupportedSourceError(f"unsupported source pattern: {source_site.strip()} ({exc})") from exc
 
     if not matches:
+        if 'failglob' in glob_options:
+            raise UnsupportedSourceError(f"unsupported failglob source pattern: {source_site.strip()}")
         if 'nullglob' in glob_options:
             return ()
+        if allow_missing_literal:
+            return (_missing_glob_match(matching_pattern, current_directory),)
         raise UnsupportedSourceError(f"unsupported unmatched source glob: {source_site.strip()}")
 
     glob_matches = []
     for match in matches:
+        if isinstance(match, GlobMatch):
+            glob_matches.append(match)
+            continue
         path = match if os.path.isabs(match) else os.path.join(current_directory, match)
         resolved_path = os.path.abspath(path)
         if not os.path.isfile(resolved_path):
@@ -1179,9 +1221,29 @@ class SourceResolver:
             if len(words) != 1:
                 raise UnsupportedSourceError(f"unsupported source glob arguments: {source_site.strip()}")
 
-            matches = expand_glob_word(words[0], context, source_site, raw_pattern=source_expression)
+            matches = expand_glob_word(
+                words[0],
+                context,
+                source_site,
+                raw_pattern=source_expression,
+                allow_missing_literal=True,
+            )
             if not matches:
-                raise UnsupportedSourceError(f"unsupported empty source glob output: {source_site.strip()}")
+                return _missing_source_result(
+                    "",
+                    source_expression,
+                    source_site,
+                    context,
+                    "missing-source-no-filename",
+                )
+            if not matches[0].exists:
+                return _missing_source_result(
+                    matches[0].word,
+                    source_expression,
+                    source_site,
+                    context,
+                    "missing-source",
+                )
             source_arguments = tuple(match.word for match in matches[1:]) or None
 
             return ResolvedSource(
@@ -1193,6 +1255,19 @@ class SourceResolver:
                 source_value=matches[0].word,
                 source_arguments=source_arguments,
             )
+
+        missing_source_words = context.get('missing_source_words', set())
+        if missing_source_words:
+            resolved_word = self.resolve_variable_references(source_expression, context)
+            resolved_word = os.path.expandvars(strip_matching_quotes(resolved_word))
+            if resolved_word in missing_source_words:
+                return _missing_source_result(
+                    resolved_word,
+                    source_expression,
+                    source_site,
+                    context,
+                    "missing-source",
+                )
 
         if resolved_path := self.resolve_path(source_expression, context):
             return ResolvedSource(

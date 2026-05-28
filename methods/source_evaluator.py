@@ -223,6 +223,7 @@ class EvaluationState:
     function_variants: dict[str, tuple[FunctionDef, ...]] = field(default_factory=dict)
     shell_options: set[str] = field(default_factory=set)
     glob_options: set[str] = field(default_factory=set)
+    missing_source_words: set[str] = field(default_factory=set)
     bash_source_stack: tuple[Path, ...] = ()
     occurrence_context: OccurrenceModel = OccurrenceModel.ONCE
     condition_context: str | None = None
@@ -250,6 +251,7 @@ class EvaluationState:
             'current_directory': str(self.cwd),
             'shell_options': self.shell_options,
             'glob_options': self.glob_options,
+            'missing_source_words': self.missing_source_words,
         }
 
     def runtime_context(self):
@@ -258,6 +260,7 @@ class EvaluationState:
             'current_directory': str(self.cwd),
             'shell_options': self.shell_options,
             'glob_options': self.glob_options,
+            'missing_source_words': self.missing_source_words,
         }
 
     def snapshot(self):
@@ -283,6 +286,7 @@ class EvaluationState:
             function_variants=copy.deepcopy(self.function_variants),
             shell_options=set(self.shell_options),
             glob_options=set(self.glob_options),
+            missing_source_words=set(self.missing_source_words),
             bash_source_stack=self.bash_source_stack,
             occurrence_context=self.occurrence_context,
             condition_context=self.condition_context,
@@ -319,6 +323,7 @@ class EvaluationState:
         self.function_variants = copy.deepcopy(other.function_variants)
         self.shell_options = set(other.shell_options)
         self.glob_options = set(other.glob_options)
+        self.missing_source_words = set(other.missing_source_words)
         self.bash_source_stack = other.bash_source_stack
         self.occurrence_context = other.occurrence_context
         self.condition_context = other.condition_context
@@ -1714,10 +1719,16 @@ class SourceEvaluator:
             try:
                 glob_word = resolve_variable_references(word, state.resolver_context())
                 glob_word = os.path.expandvars(glob_word)
-                return [
-                    match.word
-                    for match in expand_glob_word(glob_word, state.resolver_context(), node.text, raw_pattern=raw_word)
-                ]
+                return self._loop_glob_match_words(
+                    expand_glob_word(
+                        glob_word,
+                        state.resolver_context(),
+                        node.text,
+                        raw_pattern=raw_word,
+                        allow_missing_literal=True,
+                    ),
+                    state,
+                )
             except UnsupportedSourceError as exc:
                 raise self._unsupported_loop_words(node, str(exc)) from exc
 
@@ -1790,8 +1801,16 @@ class SourceEvaluator:
             if has_unquoted_glob(field):
                 try:
                     words.extend(
-                        match.word
-                        for match in expand_glob_word(field, state.resolver_context(), node.text, raw_pattern=field)
+                        self._loop_glob_match_words(
+                            expand_glob_word(
+                                field,
+                                state.resolver_context(),
+                                node.text,
+                                raw_pattern=field,
+                                allow_missing_literal=True,
+                            ),
+                            state,
+                        )
                     )
                 except UnsupportedSourceError as exc:
                     raise self._unsupported_loop_words(node, str(exc)) from exc
@@ -2116,13 +2135,30 @@ class SourceEvaluator:
             if has_unquoted_glob(field):
                 try:
                     words.extend(
-                        match.word
-                        for match in expand_glob_word(field, state.resolver_context(), node.text, raw_pattern=field)
+                        self._loop_glob_match_words(
+                            expand_glob_word(
+                                field,
+                                state.resolver_context(),
+                                node.text,
+                                raw_pattern=field,
+                                allow_missing_literal=True,
+                            ),
+                            state,
+                        )
                     )
                 except UnsupportedSourceError as exc:
                     raise self._unsupported_loop_words(node, str(exc)) from exc
             else:
                 words.append(field)
+        return words
+
+    @staticmethod
+    def _loop_glob_match_words(matches, state: EvaluationState):
+        words = []
+        for match in matches:
+            if not match.exists:
+                state.missing_source_words.add(match.word)
+            words.append(match.word)
         return words
 
     def _split_ifs_fields_for_node(self, text: str, node, state: EvaluationState):
@@ -3123,6 +3159,8 @@ class SourceEvaluator:
         else:
             target.glob_options = set(first_glob_options)
             target.ambiguous_glob_options = False
+
+        target.missing_source_words = set().union(*(state.missing_source_words for state in possible_states))
 
         first_last_status = first.last_status
         target.last_status = (
@@ -4212,11 +4250,27 @@ class SourceEvaluator:
             )
 
         source_path = Path(resolved_source.path)
-        source_value = resolved_source.source_value or self._source_runtime_value(
-            resolved_source.source_expression,
-            state,
+        source_value = (
+            resolved_source.source_value
+            if resolved_source.source_value is not None
+            else self._source_runtime_value(resolved_source.source_expression, state)
         )
         replacement_kind = self._source_site_replacement_kind(node)
+        if self._is_missing_source(resolved_source):
+            replacement_kind = resolved_source.replacement_kind
+            if self.mode == "context":
+                return
+            self._record_missing_source(
+                source_path,
+                node,
+                node.source_expression,
+                source_site,
+                state,
+                replacement_kind,
+                source_value,
+            )
+            return
+
         if self._source_site_has_unknown_status_guard(node, state):
             base_state = state.child_shell_copy()
             branch_state = state.conditional_copy()
@@ -4317,6 +4371,12 @@ class SourceEvaluator:
 
         if not resolved_source:
             return SourceInvocation(resolved_source, source_arguments=source_arguments)
+        if resolved_source.replacement_kind == "missing-source-no-filename" and source_arguments:
+            raise self._unsupported_source_argument(
+                node,
+                "unsupported nullglob source argument shift",
+                "Nullglob source sites with later words becoming the filename are not modeled yet.",
+            )
 
         return SourceInvocation(
             resolved_source,
@@ -4543,6 +4603,54 @@ class SourceEvaluator:
         return "source"
 
     @staticmethod
+    def _is_missing_source(resolved_source: ResolvedSource):
+        return resolved_source.replacement_kind in {"missing-source", "missing-source-no-filename"}
+
+    @staticmethod
+    def _missing_source_status(replacement_kind: str):
+        return 2 if replacement_kind == "missing-source-no-filename" else 1
+
+    def _record_missing_source(
+        self,
+        source_path: Path,
+        node: SourceSite,
+        source_expression: str,
+        source_site: str,
+        state: EvaluationState,
+        replacement_kind: str,
+        source_value: str | None,
+    ):
+        if self._source_site_has_unknown_status_guard(node, state):
+            base_state = state.child_shell_copy()
+            branch_state = state.conditional_copy()
+            self._record_event(
+                source_path,
+                node,
+                source_expression,
+                source_site,
+                ExecutionModel.PARENT_SOURCE,
+                replacement_kind,
+                state,
+                occurrence_model=OccurrenceModel.CONDITIONAL,
+                source_value=source_value,
+            )
+            branch_state.last_status = self._missing_source_status(replacement_kind)
+            self._merge_possible_states(state, [base_state, branch_state])
+            return
+
+        self._record_event(
+            source_path,
+            node,
+            source_expression,
+            source_site,
+            ExecutionModel.PARENT_SOURCE,
+            replacement_kind,
+            state,
+            source_value=source_value,
+        )
+        state.last_status = self._missing_source_status(replacement_kind)
+
+    @staticmethod
     def _unsupported_positional_source(node: SourceSite, state: EvaluationState, message: str, hint: str):
         function_name = state.function_call_stack[-1] if state.function_call_stack else None
         return unsupported_source_error(
@@ -4743,6 +4851,16 @@ class SourceEvaluator:
                 "unsupported.source.child-shell",
                 "unsupported unresolved child-shell source",
                 "Child-shell source sites must resolve to exact source paths.",
+            )
+        if self._is_missing_source(invocation.source):
+            raise unsupported_source_error(
+                str(node.location.path),
+                node.location.line - 1,
+                node.text,
+                node.text,
+                "unsupported.source.child-shell",
+                "unsupported missing child-shell source",
+                "Missing-source runtime lowering is supported only for parent-shell source sites.",
             )
 
         source_path = Path(invocation.source.path)

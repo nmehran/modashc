@@ -151,6 +151,13 @@ If `./plugins/*.sh` expands to `./plugins/00-loader.sh
 ./plugins/10-config.sh`, `00-loader.sh` is sourced with
 `./plugins/10-config.sh` and `extra` as its `$1` and `$2`.
 
+When a supported direct source glob produces no usable source file, executable
+mode lowers Bash's runtime source failure instead of preserving a live source
+command. Ordinary unmatched globs and exact `GLOBIGNORE` all-filtered globs
+produce a missing-file failure with status `1`; bare `nullglob` source sites
+that lose their filename produce Bash's no-filename source failure with status
+`2`.
+
 ## Direct Source Arguments
 
 Supported direct source sites may pass exact positional arguments to the
@@ -323,7 +330,7 @@ Common examples:
 source "$DEP"                        # DEP unknown
 source ./dep.sh "$UNKNOWN_ARG"       # source argument unknown
 source ./dep.sh $ARG_WITH_SPACES     # would require word splitting
-source ./missing/*.sh                # unmatched direct glob
+source ./literal-missing.sh          # non-glob missing literal file
 source "$(cat one two)"              # ambiguous path output
 source "$(find . -name '*.sh')"      # ambiguous when multiple files match
 source "$(cat dep-path.txt | sort)"  # unapproved source-site pipeline
@@ -333,23 +340,21 @@ bash -c "source $DEP"                # parent-expanded dynamic payload
 printf ready | source ./dep.sh       # lastpipe-sensitive final segment
 ```
 
-Other fail-closed families include unmatched or quoted globs, `set -f` /
-`noglob`, `failglob` unmatched globs, branch-dependent or runtime-dynamic glob
-state, `GLOBIGNORE` patterns that remove every source match, source commands in
-unsupported shell grammar, final pipeline segments whose semantics depend on
-`lastpipe`, unsupported dynamic `case` subjects or arm patterns, unsupported
-process substitution outside modeled read-loop or child-shell input, unknown
-runtime-dynamic or recursive function dispatch, non-equivalent branch-defined
-functions, branch-dependent function returns, nested dynamic substitutions, and
-multi-result command-substitution output where a single source path is required.
+Other fail-closed families include quoted globs, `set -f` / `noglob`,
+`failglob` unmatched globs, branch-dependent or runtime-dynamic glob state,
+`nullglob` source sites where later words would become the filename, source
+commands in unsupported shell grammar, final pipeline segments whose semantics
+depend on `lastpipe`, unsupported dynamic `case` subjects or arm patterns,
+unsupported process substitution outside modeled read-loop or child-shell input,
+unknown runtime-dynamic or recursive function dispatch, non-equivalent
+branch-defined functions, branch-dependent function returns, nested dynamic
+substitutions, and multi-result command-substitution output where a single
+source path is required.
 
 ## Practical Remaining Work
 
 The remaining source-resolution surface is narrower than general Bash support:
 
-- Missing-source runtime-error lowering for unmatched or all-ignored
-  source-producing globs that Bash would leave as literal missing source paths;
-  see [Missing Source Runtime Error Lowering](missing-source-runtime-lowering.md).
 - Remaining case edge semantics such as collating symbols, equivalence classes,
   and broader locale-dependent pattern behavior. The implemented deterministic
   `extglob` / `GLOBIGNORE` subset is covered in
