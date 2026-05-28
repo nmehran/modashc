@@ -56,6 +56,12 @@ For the full current support matrix, examples, fail-closed behavior, and
 practical remaining source-resolution gaps, see
 [Supported Source Resolution](docs/supported-source-resolution.md).
 
+For runtime-dynamic values that cannot be inferred statically, executable mode
+can ingest validated JSON source supplements instead of guessing. The internal
+real-world suite pins `bash-completion` and `pacman` corpora, generated
+artifacts, and runtime parity probes so supported source-resolution behavior is
+checked against real shell projects as well as synthetic regressions.
+
 ## Usage
 
 ```sh
